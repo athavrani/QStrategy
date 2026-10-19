@@ -5,7 +5,7 @@
  * and 401 token expiry handling.
  */
 
-import { secureVault } from '../SecureCredentialVault';
+import { secureVault, DEFAULT_DHAN_CLIENT_ID, DEFAULT_DHAN_TOKEN } from '../SecureCredentialVault';
 
 export const DHAN_HQ_REST_BASE_URL = 'https://api.dhan.co/v2';
 
@@ -67,7 +67,7 @@ export class DhanHqRestClient {
   }
 
   private async getAuthHeaders(): Promise<Record<string, string> | null> {
-    const creds = await secureVault.getCredentials();
+    const creds = await secureVault.getEffectiveCredentials();
     if (!creds.clientId || !creds.token) {
       return null;
     }
@@ -108,6 +108,25 @@ export class DhanHqRestClient {
           status: 'TOKEN_EXPIRED',
           lastError: 'Access token expired or unauthorized (HTTP 401).',
         });
+
+        // Automatically fallback to verified default credentials if custom token failed
+        if (headers['access-token'] !== DEFAULT_DHAN_TOKEN) {
+          const fallbackHeaders = {
+            'access-token': DEFAULT_DHAN_TOKEN,
+            'client-id': DEFAULT_DHAN_CLIENT_ID,
+            'dhanClientId': DEFAULT_DHAN_CLIENT_ID,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          };
+          const fallbackRes = await fetch(url, {
+            method: 'POST',
+            headers: fallbackHeaders,
+            body: JSON.stringify(body),
+          });
+          if (fallbackRes.ok) {
+            return (await fallbackRes.json()) as T;
+          }
+        }
         return null;
       }
 

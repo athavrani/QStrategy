@@ -4,7 +4,14 @@
  * Put-Call Ratio (PCR) analytics, and strict nullability (zero fabricated data).
  */
 
-import { dhanHqRestClient, DhanHqRestClient, DhanOptionChainRawResponse, DhanOptionContractRaw } from './DhanHqRestClient';
+import {
+  dhanHqRestClient,
+  DhanHqRestClient,
+  DhanOptionChainRawResponse,
+  DhanOptionContractRaw,
+  DhanOptionChainStrikeItem,
+} from './DhanHqRestClient';
+import { dhanDirectService } from '../dhanDirectService';
 
 export interface OptionLegData {
   ltp: number | null;
@@ -27,6 +34,7 @@ export interface OptionChainResult {
   underlyingScrip: number;
   underlyingSeg: string;
   expiry: string;
+  expiryList?: string[];
   spotPrice: number | null;
   atmStrike: number | null;
   pcr: number | null;
@@ -42,6 +50,10 @@ export class DhanOptionChainService {
     this.restClient = client;
   }
 
+  public async getExpiryList(underlyingScrip: number, underlyingSeg: string): Promise<string[]> {
+    return this.restClient.fetchExpiryList(underlyingScrip, underlyingSeg);
+  }
+
   /**
    * Fetches and transforms live option chain from DhanHQ
    */
@@ -52,8 +64,9 @@ export class DhanOptionChainService {
     strikeStep = 50
   ): Promise<OptionChainResult | null> {
     let targetExpiry = expiry;
+    let expList: string[] = [];
     try {
-      const expList = await this.restClient.fetchExpiryList(underlyingScrip, underlyingSeg);
+      expList = await this.restClient.fetchExpiryList(underlyingScrip, underlyingSeg);
       if (expList && expList.length > 0) {
         if (!targetExpiry || !expList.includes(targetExpiry)) {
           targetExpiry = expList[0];
@@ -61,11 +74,63 @@ export class DhanOptionChainService {
       }
     } catch {}
 
-    const raw: DhanOptionChainRawResponse | null = await this.restClient.fetchOptionChain(
+    let raw: DhanOptionChainRawResponse | null = await this.restClient.fetchOptionChain(
       underlyingScrip,
       underlyingSeg,
       targetExpiry
     );
+
+    // Resilient Fallback: If restClient returns null, try fallback to dhanDirectService.fetchOptionChain
+    if (!raw || !raw.data || !raw.data.oc || Object.keys(raw.data.oc).length === 0) {
+      try {
+        const symbol =
+          underlyingScrip === 51 ? 'SENSEX' : underlyingScrip === 25 ? 'BANKNIFTY' : 'NIFTY';
+        const fallbackRes = await dhanDirectService.fetchOptionChain(targetExpiry, symbol);
+        if (fallbackRes && fallbackRes.oc && Object.keys(fallbackRes.oc).length > 0) {
+          const fallbackOc: Record<string, DhanOptionChainStrikeItem> = {};
+          for (const [strike, leg] of Object.entries(fallbackRes.oc)) {
+            const typedLeg = leg as {
+              ceLtp: number;
+              peLtp: number;
+              ceOi: number;
+              peOi: number;
+              ceIv?: number;
+              peIv?: number;
+              ceBid?: number;
+              ceAsk?: number;
+              peBid?: number;
+              peAsk?: number;
+              ceSecId?: string;
+              peSecId?: string;
+            };
+            fallbackOc[strike] = {
+              ce: {
+                last_price: typedLeg.ceLtp,
+                oi: typedLeg.ceOi,
+                implied_volatility: typedLeg.ceIv,
+                bid: typedLeg.ceBid,
+                ask: typedLeg.ceAsk,
+                security_id: typedLeg.ceSecId,
+              },
+              pe: {
+                last_price: typedLeg.peLtp,
+                oi: typedLeg.peOi,
+                implied_volatility: typedLeg.peIv,
+                bid: typedLeg.peBid,
+                ask: typedLeg.peAsk,
+                security_id: typedLeg.peSecId,
+              },
+            };
+          }
+          raw = {
+            data: {
+              last_price: fallbackRes.spotPrice,
+              oc: fallbackOc,
+            },
+          };
+        }
+      } catch {}
+    }
 
     if (!raw || !raw.data || !raw.data.oc || Object.keys(raw.data.oc).length === 0) {
       return null;
@@ -158,6 +223,7 @@ export class DhanOptionChainService {
       underlyingScrip,
       underlyingSeg,
       expiry: targetExpiry,
+      expiryList: expList,
       spotPrice,
       atmStrike,
       pcr,

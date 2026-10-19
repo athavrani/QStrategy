@@ -1,6 +1,9 @@
 import { DhanHqRestClient } from '../services/dhan/DhanHqRestClient';
 import { DhanOptionChainService } from '../services/dhan/DhanOptionChainService';
-import { secureVault } from '../services/SecureCredentialVault';
+import { secureVault, DEFAULT_DHAN_CLIENT_ID } from '../services/SecureCredentialVault';
+
+const VALID_MOCK_JWT =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMTAwMzQ1Njc4IiwiZXhwIjoxNzkyNDkxMDI1LCJkaGFuQ2xpZW50SWQiOiIxMTAwMzQ1Njc4In0.mock_signature_hash_bytes_for_valid_token_testing_50chars';
 
 // Mock expo-secure-store
 jest.mock('expo-secure-store', () => {
@@ -32,7 +35,7 @@ describe('DhanHqRestClient & OptionChainService Suite', () => {
     restClient = new DhanHqRestClient(1000);
     optionChainService = new DhanOptionChainService();
     // Configure valid mock credentials
-    await secureVault.saveCredentials('1100345678', 'mock.jwt.token');
+    await secureVault.saveCredentials('1100345678', VALID_MOCK_JWT);
   });
 
   afterEach(async () => {
@@ -40,10 +43,26 @@ describe('DhanHqRestClient & OptionChainService Suite', () => {
   });
 
   describe('DhanHqRestClient', () => {
-    test('returns null when credentials are unconfigured', async () => {
+    test('falls back to verified default credentials when custom credentials are cleared', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          data: {
+            NSE_EQ: {
+              '1333': { last_price: 1650.5 },
+            },
+          },
+        }),
+      });
+      global.fetch = mockFetch as any;
+
       await secureVault.clearCredentials();
       const res = await restClient.fetchLtp({ NSE_EQ: [1333] });
-      expect(res).toBeNull();
+      expect(res).not.toBeNull();
+      const [, options] = mockFetch.mock.calls[0];
+      expect(options.headers['client-id']).toBe(DEFAULT_DHAN_CLIENT_ID);
     });
 
     test('fetches LTP data successfully and injects correct auth headers', async () => {
@@ -66,7 +85,7 @@ describe('DhanHqRestClient & OptionChainService Suite', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url, options] = mockFetch.mock.calls[0];
       expect(url).toBe('https://api.dhan.co/v2/marketfeed/ltp');
-      expect(options.headers['access-token']).toBe('mock.jwt.token');
+      expect(options.headers['access-token']).toBe(VALID_MOCK_JWT);
       expect(options.headers['client-id']).toBe('1100345678');
       expect(res).toEqual({
         NSE_EQ: {

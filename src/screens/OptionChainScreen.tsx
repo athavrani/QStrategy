@@ -37,8 +37,21 @@ export const UNDERLYING_PRESETS: UnderlyingPreset[] = [
 
 type ViewMode = 'QUOTES_OI' | 'GREEKS';
 
+function formatExpiryDate(dateStr: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length < 3) return dateStr;
+  const day = parts[2];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthIdx = parseInt(parts[1], 10) - 1;
+  const monthName = months[monthIdx] || parts[1];
+  return `${day} ${monthName}`;
+}
+
 export function OptionChainScreen(): React.JSX.Element {
   const [selectedPreset, setSelectedPreset] = useState<UnderlyingPreset>(UNDERLYING_PRESETS[0]);
+  const [selectedExpiry, setSelectedExpiry] = useState<string>('');
+  const [strikeRange, setStrikeRange] = useState<'15' | '30' | 'ALL'>('15');
   const [viewMode, setViewMode] = useState<ViewMode>('QUOTES_OI');
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -68,10 +81,13 @@ export function OptionChainScreen(): React.JSX.Element {
         const result = await optionChainService.getOptionChain(
           selectedPreset.scripId,
           selectedPreset.segment,
-          '',
+          selectedExpiry,
           selectedPreset.strikeStep
         );
         setChainData(result);
+        if (result?.expiry && !selectedExpiry) {
+          setSelectedExpiry(result.expiry);
+        }
       } catch (err) {
         // Handled silently
       } finally {
@@ -79,7 +95,7 @@ export function OptionChainScreen(): React.JSX.Element {
         setIsRefreshing(false);
       }
     },
-    [selectedPreset, optionChainService]
+    [selectedPreset, selectedExpiry, optionChainService]
   );
 
   useEffect(() => {
@@ -88,6 +104,30 @@ export function OptionChainScreen(): React.JSX.Element {
 
   const activeSpot = chainData?.spotPrice ?? (selectedPreset.symbol === 'NIFTY' ? niftySpotFromStore : null);
   const atmStrike = chainData?.atmStrike ?? (activeSpot ? Math.round(activeSpot / selectedPreset.strikeStep) * selectedPreset.strikeStep : null);
+
+  // Filter strikes around ATM for responsive, high-density mobile viewing
+  const displayedStrikes = useMemo(() => {
+    if (!chainData || !chainData.strikes) return [];
+    if (strikeRange === 'ALL' || !atmStrike) return chainData.strikes;
+
+    const count = parseInt(strikeRange, 10);
+    const atmIndex = chainData.strikes.findIndex((s) => s.strikePrice === atmStrike);
+    let centerIndex = atmIndex;
+    if (centerIndex === -1) {
+      let minDiff = Infinity;
+      chainData.strikes.forEach((s, idx) => {
+        const diff = Math.abs(s.strikePrice - atmStrike);
+        if (diff < minDiff) {
+          minDiff = diff;
+          centerIndex = idx;
+        }
+      });
+    }
+
+    const start = Math.max(0, centerIndex - count);
+    const end = Math.min(chainData.strikes.length, centerIndex + count + 1);
+    return chainData.strikes.slice(start, end);
+  }, [chainData, atmStrike, strikeRange]);
 
   // PCR Analysis
   const pcr = chainData?.pcr ?? null;
@@ -106,6 +146,12 @@ export function OptionChainScreen(): React.JSX.Element {
   const handleSelectPreset = (preset: UnderlyingPreset) => {
     Haptics.selectionAsync();
     setSelectedPreset(preset);
+    setSelectedExpiry('');
+  };
+
+  const handleSelectExpiry = (exp: string) => {
+    Haptics.selectionAsync();
+    setSelectedExpiry(exp);
   };
 
   const handleToggleViewMode = (mode: ViewMode) => {
@@ -248,6 +294,32 @@ export function OptionChainScreen(): React.JSX.Element {
         })}
       </View>
 
+      {/* Expiry Selector Chips */}
+      {chainData?.expiryList && chainData.expiryList.length > 0 && (
+        <View style={styles.expiryContainer}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.expiryBar}
+          >
+            {chainData.expiryList.slice(0, 10).map((exp) => {
+              const isSelected = exp === (selectedExpiry || chainData.expiry);
+              return (
+                <TouchableOpacity
+                  key={exp}
+                  style={[styles.expiryChip, isSelected && styles.expiryChipActive]}
+                  onPress={() => handleSelectExpiry(exp)}
+                >
+                  <Text style={[styles.expiryChipText, isSelected && styles.expiryChipTextActive]}>
+                    📅 {formatExpiryDate(exp)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Spot Price & Telemetry Summary Header */}
       <View style={styles.spotHeader}>
         <View>
@@ -263,7 +335,7 @@ export function OptionChainScreen(): React.JSX.Element {
               style={styles.spotPriceText}
             />
             {chainData?.expiry ? (
-              <Text style={styles.expiryTag}>📅 {chainData.expiry}</Text>
+              <Text style={styles.expiryTag}>📅 {formatExpiryDate(chainData.expiry)}</Text>
             ) : null}
           </View>
         </View>
@@ -276,24 +348,45 @@ export function OptionChainScreen(): React.JSX.Element {
             </View>
           )}
 
-          {/* Mode Switch (Quotes vs Greeks) */}
-          <View style={styles.modeToggleGroup}>
-            <TouchableOpacity
-              style={[styles.modeBtn, viewMode === 'QUOTES_OI' && styles.modeBtnActive]}
-              onPress={() => handleToggleViewMode('QUOTES_OI')}
-            >
-              <Text style={[styles.modeBtnText, viewMode === 'QUOTES_OI' && styles.modeBtnTextActive]}>
-                OI & LTP
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modeBtn, viewMode === 'GREEKS' && styles.modeBtnActive]}
-              onPress={() => handleToggleViewMode('GREEKS')}
-            >
-              <Text style={[styles.modeBtnText, viewMode === 'GREEKS' && styles.modeBtnTextActive]}>
-                Greeks
-              </Text>
-            </TouchableOpacity>
+          {/* Mode & Strike Range Switch */}
+          <View style={styles.controlsRow}>
+            {/* Strike Range Selector */}
+            <View style={styles.rangeToggleGroup}>
+              {(['15', '30', 'ALL'] as const).map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.rangeBtn, strikeRange === r && styles.rangeBtnActive]}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    setStrikeRange(r);
+                  }}
+                >
+                  <Text style={[styles.rangeBtnText, strikeRange === r && styles.rangeBtnTextActive]}>
+                    {r === 'ALL' ? 'ALL' : `±${r}`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Mode Switch (Quotes vs Greeks) */}
+            <View style={styles.modeToggleGroup}>
+              <TouchableOpacity
+                style={[styles.modeBtn, viewMode === 'QUOTES_OI' && styles.modeBtnActive]}
+                onPress={() => handleToggleViewMode('QUOTES_OI')}
+              >
+                <Text style={[styles.modeBtnText, viewMode === 'QUOTES_OI' && styles.modeBtnTextActive]}>
+                  OI & LTP
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeBtn, viewMode === 'GREEKS' && styles.modeBtnActive]}
+                onPress={() => handleToggleViewMode('GREEKS')}
+              >
+                <Text style={[styles.modeBtnText, viewMode === 'GREEKS' && styles.modeBtnTextActive]}>
+                  Greeks
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </View>
@@ -320,12 +413,15 @@ export function OptionChainScreen(): React.JSX.Element {
         <View style={styles.loadingContainer}>
           <SkeletonLoader lines={12} height={42} spacing={4} />
         </View>
-      ) : chainData && chainData.strikes.length > 0 ? (
+      ) : chainData && displayedStrikes.length > 0 ? (
         <FlatList
-          data={chainData.strikes}
+          data={displayedStrikes}
           keyExtractor={(item) => `strike-${item.strikePrice}`}
           renderItem={renderStrikeRow}
           contentContainerStyle={styles.listContent}
+          initialNumToRender={30}
+          maxToRenderPerBatch={30}
+          windowSize={5}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
@@ -347,9 +443,13 @@ export function OptionChainScreen(): React.JSX.Element {
           }
         >
           <Text style={styles.emptyIcon}>📊</Text>
-          <Text style={styles.emptyTitle}>Live Option Chain Ready</Text>
+          <Text style={styles.emptyTitle}>
+            {feedStatus === 'ONLINE' ? 'Connecting to Option Chain' : 'Live Option Chain Ready'}
+          </Text>
           <Text style={styles.emptySubtitle}>
-            Configure your Dhan Client ID & Token in Settings to stream institutional DhanHQ v2 Option Chain & Greeks.
+            {feedStatus === 'ONLINE'
+              ? 'Retrieving live DhanHQ v2 institutional strike data & Greeks...'
+              : 'Configure your Dhan Client ID & Token in Settings to stream institutional DhanHQ v2 Option Chain & Greeks.'}
           </Text>
           <StatusBadge
             label={feedStatus === 'ONLINE' ? 'FEED CONNECTED' : 'AWAITING DHAN CREDENTIALS'}
@@ -357,6 +457,12 @@ export function OptionChainScreen(): React.JSX.Element {
             showDot={true}
             style={{ marginTop: 12 }}
           />
+          <TouchableOpacity
+            style={styles.retryBtn}
+            onPress={() => loadOptionChain(true)}
+          >
+            <Text style={styles.retryBtnText}>🔄 Tap to Reload</Text>
+          </TouchableOpacity>
         </ScrollView>
       )}
     </SafeAreaView>
@@ -396,6 +502,39 @@ const styles = StyleSheet.create({
   },
   presetChipTextActive: {
     color: theme.colors.textPrimary,
+    fontWeight: theme.typography.weights.bold,
+  },
+  expiryContainer: {
+    backgroundColor: theme.colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  expiryBar: {
+    flexDirection: 'row',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 6,
+    gap: 6,
+  },
+  expiryChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: theme.borderRadius.xs,
+    backgroundColor: theme.colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  expiryChipActive: {
+    backgroundColor: 'rgba(6, 182, 212, 0.15)',
+    borderColor: theme.colors.cyan,
+  },
+  expiryChipText: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.sizes.xs,
+    fontFamily: theme.typography.fontMono,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  expiryChipTextActive: {
+    color: theme.colors.cyan,
     fontWeight: theme.typography.weights.bold,
   },
   spotHeader: {
@@ -453,6 +592,36 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: theme.typography.sizes.xs,
     fontFamily: theme.typography.fontMono,
+    fontWeight: theme.typography.weights.bold,
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rangeToggleGroup: {
+    flexDirection: 'row',
+    backgroundColor: theme.colors.surfaceSubtle,
+    borderRadius: theme.borderRadius.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  rangeBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  rangeBtnActive: {
+    backgroundColor: 'rgba(59, 130, 246, 0.3)',
+  },
+  rangeBtnText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.sizes.micro,
+    fontFamily: theme.typography.fontMono,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  rangeBtnTextActive: {
+    color: '#60A5FA',
     fontWeight: theme.typography.weights.bold,
   },
   modeToggleGroup: {
@@ -629,5 +798,19 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
     maxWidth: 320,
+  },
+  retryBtn: {
+    marginTop: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: 8,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.borderActive,
+  },
+  retryBtnText: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.sizes.sm,
+    fontWeight: theme.typography.weights.semibold,
   },
 });
