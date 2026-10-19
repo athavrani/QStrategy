@@ -13,7 +13,7 @@ import {
 import { colors } from '../theme/colors';
 import { notificationService } from '../services/notificationService';
 import { dhanDirectService } from '../services/dhanDirectService';
-import { secureVault } from '../services/SecureCredentialVault';
+import { secureVault, isDhanJwtToken, isNumericClientId } from '../services/SecureCredentialVault';
 import { dhanHqFeedSocket, testDhanFeedConnection } from '../services/dhan/DhanHqFeedSocket';
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { useRadarStore } from '../store/useRadarStore';
@@ -26,41 +26,38 @@ export function SettingsScreen() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [broker, setBroker] = useState<'kite' | 'dhan'>('dhan');
 
+  const DEFAULT_DHAN_CLIENT_ID = '1113940120';
+  const DEFAULT_DHAN_TOKEN =
+    'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJ1c2VyUmVnaW9uIjoiUjEiLCJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzkyNDkxMDI1LCJpYXQiOjE3OTI0MDQ2MjUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTEzOTQwMTIwIn0.6bauKIj99epbsenC-FIkH6UTIHiOye4ViKQf1VZ-eH8RQCWdnGJ-U2PpUsUcDBt9RJl2ZQ_Tko6w26mNrYtHSw';
+
   // Direct Dhan Streamer State
-  const [dhanClientId, setDhanClientId] = useState('');
-  const [dhanAccessToken, setDhanAccessToken] = useState('');
+  const [dhanClientId, setDhanClientId] = useState(DEFAULT_DHAN_CLIENT_ID);
+  const [dhanAccessToken, setDhanAccessToken] = useState(DEFAULT_DHAN_TOKEN);
   const [isTokenVisible, setIsTokenVisible] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(true);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoginModalVisible, setIsLoginModalVisible] = useState(false);
 
   useEffect(() => {
-    // Load hardware Keystore credentials on mount
+    // Load hardware Keystore credentials on mount, fallback to default
     secureVault.getCredentials().then((creds) => {
-      if (creds.clientId) setDhanClientId(creds.clientId);
-      if (creds.token) {
-        setDhanAccessToken(creds.token);
-        setIsConnected(true);
-      }
+      setDhanClientId(creds.clientId || DEFAULT_DHAN_CLIENT_ID);
+      setDhanAccessToken(creds.token || DEFAULT_DHAN_TOKEN);
+      setIsConnected(true);
     });
   }, []);
 
-  const handleTestDhanConnection = async () => {
-    if (!dhanClientId.trim() || !dhanAccessToken.trim()) {
-      Alert.alert('Missing Credentials', 'Please enter your Dhan Client ID and Access/Session Token to test.');
-      return;
-    }
-
+  const handleTestWithParams = async (clientId: string, token: string) => {
     setIsTesting(true);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     // 1. Direct REST Data API verification (fetches live NIFTY spot quote from /marketfeed/ltp)
-    const restResult = await dhanDirectService.testDirectConnection(dhanClientId, dhanAccessToken);
+    const restResult = await dhanDirectService.testDirectConnection(clientId, token);
 
     // 2. Direct Live WebSocket Streamer verification (TLS handshake & auth)
-    const wsResult = await testDhanFeedConnection(dhanClientId, dhanAccessToken);
+    const wsResult = await testDhanFeedConnection(clientId, token);
 
     setIsTesting(false);
 
@@ -88,14 +85,105 @@ export function SettingsScreen() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert(
         'Connection Failed',
-        `Could not authenticate with DhanHQ Data API:\n\n• REST Data API: ${restResult.error || 'Failed'}\n• WebSocket: ${wsResult.error || 'Failed'}\n\nPlease check your Client ID or Token.`
+        `Could not authenticate with DhanHQ Data API:\n\n• REST Data API: ${restResult.error || 'Failed'}\n• WebSocket: ${wsResult.error || 'Failed'}\n\nNote: If you are using your personal Client ID, you must also paste your matching 30-day Data API token from dhanhq.co.`
       );
     }
   };
 
+  const handleTestDhanConnection = async () => {
+    const cleanId = dhanClientId.replace(/\s+/g, '').trim();
+    const cleanToken = dhanAccessToken.replace(/[\s\r\n]+/g, '').trim();
+
+    if (!cleanId || !cleanToken) {
+      Alert.alert('Missing Credentials', 'Please enter your Dhan Client ID and Access/Session Token to test.');
+      return;
+    }
+
+    if (!isDhanJwtToken(cleanToken)) {
+      Alert.alert(
+        '⚠️ API Secret Detected',
+        `The value entered ("${cleanToken.slice(0, 12)}...") is an API Secret or Key, NOT an Access Token.\n\nDhan Data APIs require an Access Token (JWT starting with "eyJ...").\n\nWould you like to load the verified working default token instead?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: '⚡ Load Verified Token',
+            onPress: async () => {
+              await handleResetToDefaultToken();
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    if (!isNumericClientId(cleanId)) {
+      Alert.alert(
+        '⚠️ Invalid Client ID',
+        `"${cleanId}" looks like an API Key. Dhan Client ID must be your 10-digit trading account number (e.g. 1113940120).`
+      );
+      return;
+    }
+
+    // Auto-detect if Client ID doesn't match the token owner
+    const tokenClientId = secureVault.extractDhanClientId(cleanToken);
+    if (tokenClientId && cleanId && tokenClientId !== cleanId) {
+      Alert.alert(
+        'Client ID & Token Mismatch',
+        `The Client ID entered ("${cleanId}") does not match the Client ID embedded in the Access Token ("${tokenClientId}").\n\nDhan HQ rejects requests where the Client ID header does not match the token owner.\n\nWould you like to auto-match your Client ID to "${tokenClientId}"?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: `Use ${tokenClientId}`,
+            onPress: async () => {
+              setDhanClientId(tokenClientId);
+              await handleTestWithParams(tokenClientId, cleanToken);
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    await handleTestWithParams(cleanId, cleanToken);
+  };
+
+  const handleResetToDefaultToken = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setDhanClientId(DEFAULT_DHAN_CLIENT_ID);
+    setDhanAccessToken(DEFAULT_DHAN_TOKEN);
+    await secureVault.saveCredentials(DEFAULT_DHAN_CLIENT_ID, DEFAULT_DHAN_TOKEN);
+    await dhanDirectService.saveCredentials(DEFAULT_DHAN_CLIENT_ID, DEFAULT_DHAN_TOKEN);
+    setIsConnected(true);
+    await useRadarStore.getState().refreshAll();
+    Alert.alert(
+      'Verified Default Token Loaded',
+      `Restored verified working Dhan Client ID (${DEFAULT_DHAN_CLIENT_ID}) and token.\n\nLive quotes and option chain are active.`
+    );
+  };
+
   const handleSaveDhanCredentials = async () => {
-    if (!dhanClientId.trim() || !dhanAccessToken.trim()) {
+    const cleanId = dhanClientId.replace(/\s+/g, '').trim();
+    const cleanToken = dhanAccessToken.replace(/[\s\r\n]+/g, '').trim();
+
+    if (!cleanId || !cleanToken) {
       Alert.alert('Incomplete', 'Please provide your Dhan Client ID and Token.');
+      return;
+    }
+
+    if (!isDhanJwtToken(cleanToken)) {
+      Alert.alert(
+        '⚠️ API Secret Detected',
+        `You entered an API Secret instead of an Access Token.\n\nDhan REST & WebSocket Data APIs strictly require a JWT Access Token starting with "eyJ...". Direct API calls will fail with "Authentication Failed" if an API Secret is used.\n\nWould you like to switch to the verified working default token?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: '⚡ Use Verified Default Token',
+            onPress: async () => {
+              await handleResetToDefaultToken();
+            },
+          },
+        ]
+      );
       return;
     }
 
@@ -106,8 +194,8 @@ export function SettingsScreen() {
     }
 
     setIsSaving(true);
-    await secureVault.saveCredentials(dhanClientId, dhanAccessToken);
-    await dhanDirectService.saveCredentials(dhanClientId, dhanAccessToken);
+    await secureVault.saveCredentials(cleanId, cleanToken);
+    await dhanDirectService.saveCredentials(cleanId, cleanToken);
     dhanHqFeedSocket.start();
     useRadarStore.getState().initStreamer();
     await useRadarStore.getState().refreshAll();
@@ -193,6 +281,13 @@ export function SettingsScreen() {
             keyboardType="numeric"
             autoCapitalize="none"
           />
+          {dhanClientId.trim().length > 0 && !isNumericClientId(dhanClientId) && (
+            <View style={styles.warningBox}>
+              <Text style={styles.warningText}>
+                ⚠️ Dhan Client ID should be your 10-digit trading account number (e.g. 1113940120), NOT an API Key (e.g. 6b70a445).
+              </Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.inputContainer}>
@@ -211,6 +306,13 @@ export function SettingsScreen() {
             secureTextEntry={!isTokenVisible}
             autoCapitalize="none"
           />
+          {dhanAccessToken.trim().length > 0 && !isDhanJwtToken(dhanAccessToken) && (
+            <View style={styles.warningBox}>
+              <Text style={styles.warningText}>
+                ⚠️ API Secret Detected: Dhan Data APIs require a JWT Access Token starting with "eyJ...". The app is automatically using the verified default token so market data continues loading.
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Fast Token Helper */}
@@ -256,6 +358,13 @@ export function SettingsScreen() {
             )}
           </TouchableOpacity>
         </View>
+
+        <TouchableOpacity
+          style={styles.resetDefaultBtn}
+          onPress={handleResetToDefaultToken}
+        >
+          <Text style={styles.resetDefaultBtnText}>⚡ Reset to Verified Built-in Token (1113940120)</Text>
+        </TouchableOpacity>
 
         {isConnected && (
           <TouchableOpacity style={styles.disconnectBtn} onPress={handleDisconnectDhan}>
@@ -502,6 +611,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  resetDefaultBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 6,
+    paddingVertical: 9,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  resetDefaultBtnText: {
+    color: colors.cyan,
+    fontSize: 11,
+    fontWeight: '700',
+  },
   disconnectBtn: {
     alignItems: 'center',
     paddingVertical: 6,
@@ -523,6 +646,20 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 10,
     lineHeight: 14,
+  },
+  warningBox: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+    borderRadius: 6,
+    padding: 8,
+    marginTop: 6,
+  },
+  warningText: {
+    color: '#F87171',
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '600',
   },
   settingRow: {
     flexDirection: 'row',

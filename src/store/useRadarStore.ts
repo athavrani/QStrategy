@@ -115,14 +115,28 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     }
 
     try {
-      const [session, stocks, overnight, breakout, niftyIndexQuote] = await Promise.all([
-        apiService.fetchMarketSession(),
-        apiService.fetchStockRadarList(),
-        apiService.fetchNiftyOvernightState(),
-        apiService.fetchNiftyBreakout180State(),
-        dhanDirectService.fetchNiftyIndexQuote(),
-        niftyOptionFeedService.syncLiveOptionChain(),
-      ]);
+      const [sessionRes, stocksRes, overnightRes, breakoutRes, niftyIndexQuoteRes, _chainRes] =
+        await Promise.allSettled([
+          apiService.fetchMarketSession(),
+          apiService.fetchStockRadarList(),
+          apiService.fetchNiftyOvernightState(),
+          apiService.fetchNiftyBreakout180State(),
+          dhanDirectService.fetchNiftyIndexQuote(),
+          niftyOptionFeedService.syncLiveOptionChain(),
+        ]);
+
+      const session =
+        sessionRes.status === 'fulfilled'
+          ? sessionRes.value
+          : {
+              status: 'CLOSED' as const,
+              istTime: new Date().toLocaleTimeString('en-IN'),
+              isTradingDay: true,
+            };
+      const stocks = stocksRes.status === 'fulfilled' ? stocksRes.value : get().stocks;
+      const overnight = overnightRes.status === 'fulfilled' ? overnightRes.value : get().niftyOvernight;
+      const breakout = breakoutRes.status === 'fulfilled' ? breakoutRes.value : get().niftyBreakout180;
+      const niftyIndexQuote = niftyIndexQuoteRes.status === 'fulfilled' ? niftyIndexQuoteRes.value : null;
 
       // Point 5.1: Monotonic Alert Latch Check & Journal Audit Recording
       // Process crossover triggers and fire notifications ONLY if unlatched for today's session
@@ -242,7 +256,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           // Preserve verified previous close
           const prevClose = (newStock.prevClose && newStock.prevClose > 0)
             ? newStock.prevClose
-            : (existing.prevClose && existing.prevClose > 0 ? existing.prevClose : undefined);
+            : (existing.prevClose && existing.prevClose > 0
+              ? existing.prevClose
+              : (dhanDirectService.getPrevClose(newStock.ticker) || undefined));
 
           const dayOpen = (newStock.dayOpen && newStock.dayOpen > 0)
             ? newStock.dayOpen
@@ -382,12 +398,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           let stockUpdated = false;
 
           // 1. Capture official PrevClose from Code 6 (PREV_CLOSE) or Quote dayClose
-          let prevClose = stock.prevClose || 0;
+          let prevClose = stock.prevClose || dhanDirectService.getPrevClose(stock.ticker) || 0;
           if ('prevClose' in tick && tick.prevClose && tick.prevClose > 0) {
             prevClose = tick.prevClose;
+            dhanDirectService.updatePrevClose(stock.ticker, prevClose);
             stockUpdated = true;
-          } else if ('dayClose' in tick && tick.dayClose > 0 && prevClose <= 0) {
+          } else if ('dayClose' in tick && tick.dayClose > 0 && prevClose <= 0 && tick.dayClose !== ('ltp' in tick ? tick.ltp : stock.spotPrice)) {
             prevClose = tick.dayClose;
+            dhanDirectService.updatePrevClose(stock.ticker, prevClose);
             stockUpdated = true;
           }
 
@@ -422,7 +440,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const hasCrossed = todayTradedShares >= avgShares && todayTradedShares > 0;
 
           // Determine accurate priceChangePct strictly from spotPrice and verified prevClose
-          const baselineClose = prevClose > 0 ? prevClose : (dayOpen > 0 ? dayOpen : stock.spotPrice);
+          const baselineClose = prevClose > 0 ? prevClose : (stock.prevClose || dhanDirectService.getPrevClose(stock.ticker) || (dayOpen > 0 ? dayOpen : spotPrice));
           const pctChange = (baselineClose > 0 && spotPrice > 0)
             ? +(((spotPrice - baselineClose) / baselineClose) * 100).toFixed(2)
             : stock.percentChange;

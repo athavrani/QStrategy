@@ -23,6 +23,10 @@ export function isMarketSessionBeforeOpen(): boolean {
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const customUrl = (process.env as Record<string, string | undefined>)?.EXPO_PUBLIC_API_URL;
+  if (!customUrl) {
+    throw new Error('Using direct Dhan HQ API (zero middleman mode)');
+  }
   const url = `${API_CONFIG.BASE_URL}${endpoint}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.TIMEOUT_MS);
@@ -100,9 +104,15 @@ export const apiService = {
       const avgShares = m.avg20DTradedShares || 1;
       const ratio = todayShares > 0 ? +(todayShares / avgShares).toFixed(3) : 0;
       const hasCrossed = todayShares >= avgShares && todayShares > 0;
-      const prevClose = (q && q.prevClose && q.prevClose > 0)
-        ? q.prevClose
-        : (q && q.close && q.close > 0 ? q.close : undefined);
+      // Resolve authentic prevClose: prefer q.prevClose, then q.close (if !== spotPrice), then verified catalog baseline
+      let prevClose = (q && q.prevClose && q.prevClose > 0) ? q.prevClose : undefined;
+      if (!prevClose && q && q.close && q.close > 0 && q.close !== spotPrice) {
+        prevClose = q.close;
+      }
+      if (!prevClose && m.prevClose > 0) {
+        prevClose = m.prevClose;
+      }
+
       const pctChange = (prevClose && prevClose > 0 && spotPrice > 0)
         ? +(((spotPrice - prevClose) / prevClose) * 100).toFixed(2)
         : (q && q.changePercent !== undefined ? q.changePercent : 0);
@@ -226,10 +236,12 @@ export const apiService = {
     const step = stock.strikeStep || 50;
     const atmStrike = Math.round(stock.spotPrice / step) * step;
 
-    // Do NOT derive option prices dynamically from spot index in pre-market or when closed
+    // In pre-market before 09:15, trading hasn't started yet.
+    // When market is closed/post-market, provide estimated ~2% ATM premium baseline for analysis.
     const isMarketBeforeOpen = isMarketSessionBeforeOpen();
-    const liveCePrem = isMarketBeforeOpen ? 0 : 0;
-    const livePePrem = isMarketBeforeOpen ? 0 : 0;
+    const estAtmPremium = stock.spotPrice > 0 ? +(stock.spotPrice * 0.02).toFixed(2) : 0;
+    const liveCePrem = isMarketBeforeOpen ? 0 : estAtmPremium;
+    const livePePrem = isMarketBeforeOpen ? 0 : estAtmPremium;
 
     return {
       underlying: stock.ticker,

@@ -44,8 +44,11 @@ export function TacticalStrikeModal({ visible, stock, tactical, onClose, onViewO
     }
   };
 
-  const priceChangePct = (stock.prevClose && stock.prevClose > 0 && stock.spotPrice > 0)
-    ? +(((stock.spotPrice - stock.prevClose) / stock.prevClose) * 100).toFixed(2)
+  const effectivePrevClose = (stock.prevClose && stock.prevClose > 0)
+    ? stock.prevClose
+    : (dhanDirectService.getPrevClose(stock.ticker) || 0);
+  const priceChangePct = (effectivePrevClose > 0 && stock.spotPrice > 0)
+    ? +(((stock.spotPrice - effectivePrevClose) / effectivePrevClose) * 100).toFixed(2)
     : stock.percentChange;
   const isPositive = priceChangePct > 0;
   const isNegative = priceChangePct < 0;

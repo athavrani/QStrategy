@@ -64,7 +64,7 @@ export class DhanHqFeedSocket {
    */
   public async start(): Promise<void> {
     this.isExplicitlyStopped = false;
-    const creds = await secureVault.getCredentials();
+    const creds = await secureVault.getEffectiveCredentials();
 
     if (!creds.isStreamerEnabled || !creds.clientId || !creds.token) {
       this.updateStatus('DISCONNECTED', 'Missing Dhan credentials or streamer disabled');
@@ -411,10 +411,12 @@ export async function testDhanFeedConnection(
   token: string
 ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
   return new Promise((resolve) => {
+    const cleanId = (clientId || '').replace(/\s+/g, '');
+    const cleanToken = (token || '').replace(/[\s\r\n]+/g, '');
     const startTime = Date.now();
     const wsUrl = `${OFFICIAL_DHAN_FEED_URL}?version=2&token=${encodeURIComponent(
-      token
-    )}&clientId=${encodeURIComponent(clientId)}&authType=2`;
+      cleanToken
+    )}&clientId=${encodeURIComponent(cleanId)}&authType=2`;
 
     try {
       const ws = new WebSocket(wsUrl);

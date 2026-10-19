@@ -61,7 +61,7 @@ export const DHAN_SECURITY_MAP: Record<string, DhanInstrumentMeta> = {
   NTPC: { securityId: '11630', segment: 'NSE_EQ', lotSize: 1500, strikeStep: 5 },
   ONGC: { securityId: '2475', segment: 'NSE_EQ', lotSize: 3850, strikeStep: 2.5 },
   POWERGRID: { securityId: '14977', segment: 'NSE_EQ', lotSize: 1800, strikeStep: 5 },
-  RELIANCE: { securityId: '1330', segment: 'NSE_EQ', lotSize: 250, strikeStep: 50 },
+  RELIANCE: { securityId: '2885', segment: 'NSE_EQ', lotSize: 250, strikeStep: 50 },
   SBILIFE: { securityId: '21808', segment: 'NSE_EQ', lotSize: 750, strikeStep: 20 },
   SBIN: { securityId: '3045', segment: 'NSE_EQ', lotSize: 750, strikeStep: 10 },
   SHRIRAMFIN: { securityId: '4306', segment: 'NSE_EQ', lotSize: 150, strikeStep: 50 },

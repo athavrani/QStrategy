@@ -65,11 +65,10 @@ export function OptionChainScreen(): React.JSX.Element {
       }
 
       try {
-        const todayIso = new Date().toISOString().split('T')[0];
         const result = await optionChainService.getOptionChain(
           selectedPreset.scripId,
           selectedPreset.segment,
-          todayIso,
+          '',
           selectedPreset.strikeStep
         );
         setChainData(result);
@@ -263,6 +262,9 @@ export function OptionChainScreen(): React.JSX.Element {
               colorize={false}
               style={styles.spotPriceText}
             />
+            {chainData?.expiry ? (
+              <Text style={styles.expiryTag}>📅 {chainData.expiry}</Text>
+            ) : null}
           </View>
         </View>
 
@@ -426,6 +428,17 @@ const styles = StyleSheet.create({
   },
   spotPriceText: {
     color: theme.colors.textPrimary,
+  },
+  expiryTag: {
+    color: theme.colors.cyan,
+    fontSize: theme.typography.sizes.micro,
+    fontFamily: theme.typography.fontMono,
+    fontWeight: theme.typography.weights.bold,
+    backgroundColor: 'rgba(6, 182, 212, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 6,
   },
   headerRightGroup: {
     alignItems: 'flex-end',

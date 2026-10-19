@@ -13,6 +13,7 @@ import { useRadarStore } from '../store/useRadarStore';
 import { StockRadarItem } from '../types/mobile';
 import { TacticalStrikeModal } from '../components/radar/TacticalStrikeModal';
 import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal';
+import { dhanDirectService } from '../services/dhanDirectService';
 import * as Haptics from 'expo-haptics';
 
 type FilterType = 'ALL' | 'NIFTY50' | 'SENSEX' | 'GREEN' | 'RED' | 'NEAR';
@@ -38,8 +39,11 @@ interface StockCardProps {
 const StockCard = React.memo(
   function StockCard({ item, onSelect }: StockCardProps) {
     const ratioPercent = Math.min(150, Math.round(item.volumeRatio * 100));
-    const priceChangePct = (item.prevClose && item.prevClose > 0 && item.spotPrice > 0)
-      ? +(((item.spotPrice - item.prevClose) / item.prevClose) * 100).toFixed(2)
+    const effectivePrevClose = (item.prevClose && item.prevClose > 0)
+      ? item.prevClose
+      : (dhanDirectService.getPrevClose(item.ticker) || 0);
+    const priceChangePct = (effectivePrevClose > 0 && item.spotPrice > 0)
+      ? +(((item.spotPrice - effectivePrevClose) / effectivePrevClose) * 100).toFixed(2)
       : item.percentChange;
     const isBullish = priceChangePct >= 0;
     const isPositive = priceChangePct > 0;
@@ -169,6 +173,7 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
   const selectedStock = useRadarStore((s) => s.selectedStock);
   const tacticalStrike = useRadarStore((s) => s.tacticalStrike);
   const feedStatus = useRadarStore((s) => s.feedStatus);
+  const marketStatus = useRadarStore((s) => s.marketStatus);
   const lastTickTime = useRadarStore((s) => s.lastTickTime);
   const isRefreshing = useRadarStore((s) => s.isRefreshing);
   const refreshAll = useRadarStore((s) => s.refreshAll);
@@ -268,6 +273,8 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
                 backgroundColor:
                   feedStatus === 'ONLINE'
                     ? colors.bullish
+                    : marketStatus === 'CLOSED' || marketStatus === 'POST_MARKET'
+                    ? colors.cyan
                     : feedStatus === 'ERROR'
                     ? colors.bearish
                     : colors.warning,
@@ -275,7 +282,9 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
             ]}
           />
           <Text style={styles.feedStatusText}>
-            {feedStatus === 'ONLINE'
+            {marketStatus === 'CLOSED' || marketStatus === 'POST_MARKET'
+              ? `🌙 MARKET CLOSED • DHAN EOD ACTIVE (${lastTickTime || '15:30 IST'})`
+              : feedStatus === 'ONLINE'
               ? `🟢 DHAN LIVE STREAM (${lastTickTime || 'Streaming'})`
               : feedStatus === 'ERROR'
               ? '⚠️ DHAN STREAM RECONNECTING (Check Settings)'

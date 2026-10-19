@@ -51,10 +51,20 @@ export class DhanOptionChainService {
     expiry: string,
     strikeStep = 50
   ): Promise<OptionChainResult | null> {
+    let targetExpiry = expiry;
+    try {
+      const expList = await this.restClient.fetchExpiryList(underlyingScrip, underlyingSeg);
+      if (expList && expList.length > 0) {
+        if (!targetExpiry || !expList.includes(targetExpiry)) {
+          targetExpiry = expList[0];
+        }
+      }
+    } catch {}
+
     const raw: DhanOptionChainRawResponse | null = await this.restClient.fetchOptionChain(
       underlyingScrip,
       underlyingSeg,
-      expiry
+      targetExpiry
     );
 
     if (!raw || !raw.data || !raw.data.oc || Object.keys(raw.data.oc).length === 0) {
@@ -147,7 +157,7 @@ export class DhanOptionChainService {
     return {
       underlyingScrip,
       underlyingSeg,
-      expiry,
+      expiry: targetExpiry,
       spotPrice,
       atmStrike,
       pcr,
