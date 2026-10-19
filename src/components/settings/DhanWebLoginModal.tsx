@@ -16,7 +16,7 @@ import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import CryptoJS from 'crypto-js';
 import { colors } from '../../theme/colors';
-import { dhanPlainStorage } from '../../services/dhanPlainStorage';
+import { secureVault } from '../../services/SecureCredentialVault';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { dhanWebStreamer } from '../../services/dhanWebStreamer';
 import { useRadarStore } from '../../store/useRadarStore';
@@ -591,7 +591,7 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
         let clientId = creds.clientId?.trim();
         if (!clientId) {
           try {
-            const existing = await dhanPlainStorage.load();
+            const existing = await secureVault.getCredentials();
             if (existing.clientId) {
               clientId = existing.clientId.trim();
             }
@@ -601,8 +601,8 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
         const token = creds.token;
         const traderName = creds.name || 'Dhan Trader';
 
-        // 1. Immediately save plain-text credentials in storage
-        await dhanPlainStorage.save(clientId, token);
+        // 1. Save credentials in hardware Keystore
+        await secureVault.saveCredentials(clientId, token);
         await dhanDirectService.saveCredentials(clientId, token);
 
         // 2. Notify parent Settings screen

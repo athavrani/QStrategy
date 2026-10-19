@@ -9,10 +9,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { DHAN_BASE_URL, getDhanSecurityId, DHAN_NIFTY_INDEX_ID, DHAN_SENSEX_INDEX_ID } from '../constants/dhanSecurityMaster';
-import { dhanPlainStorage } from './dhanPlainStorage';
-
-const STORAGE_KEY_CLIENT_ID = 'QM_DHAN_CLIENT_ID';
-const STORAGE_KEY_ACCESS_TOKEN = 'QM_DHAN_ACCESS_TOKEN';
+import { secureVault } from './SecureCredentialVault';
 
 export interface DhanDirectQuote {
   securityId: string;
@@ -59,8 +56,7 @@ class DhanDirectService {
   };
 
   /**
-   * Initializes stored credentials from secure hardware storage (Singleton Promise)
-   * Falls back to unencrypted dhanPlainStorage if hardware storage has not been populated
+   * Initializes stored credentials from hardware Keystore via secureVault (Singleton Promise)
    */
   public async initialize(): Promise<void> {
     if (this.isInitialized) return;
@@ -68,22 +64,9 @@ class DhanDirectService {
 
     this.initPromise = (async () => {
       try {
-        const [clientId, accessToken] = await Promise.all([
-          SecureStore.getItemAsync(STORAGE_KEY_CLIENT_ID),
-          SecureStore.getItemAsync(STORAGE_KEY_ACCESS_TOKEN),
-        ]);
-        let resolvedId = clientId?.trim() || null;
-        let resolvedToken = accessToken?.trim() || null;
-
-        if (!resolvedId || !resolvedToken) {
-          try {
-            const plain = await dhanPlainStorage.load();
-            if (plain.clientId && plain.token) {
-              resolvedId = plain.clientId.trim();
-              resolvedToken = plain.token.trim();
-            }
-          } catch {}
-        }
+        const creds = await secureVault.getCredentials();
+        const resolvedId = creds.clientId || null;
+        const resolvedToken = creds.token || null;
 
         this.cachedClientId = resolvedId;
         this.cachedAccessToken = resolvedToken;
@@ -128,16 +111,12 @@ class DhanDirectService {
   }
 
   /**
-   * Saves credentials directly to hardware Keystore / Keychain
+   * Saves credentials directly to hardware Keystore / Keychain via secureVault
    */
   public async saveCredentials(clientId: string, accessToken: string): Promise<void> {
     const cleanId = clientId.trim();
     const cleanToken = accessToken.trim();
-    await Promise.all([
-      SecureStore.setItemAsync(STORAGE_KEY_CLIENT_ID, cleanId),
-      SecureStore.setItemAsync(STORAGE_KEY_ACCESS_TOKEN, cleanToken),
-      dhanPlainStorage.save(cleanId, cleanToken),
-    ]);
+    await secureVault.saveCredentials(cleanId, cleanToken);
     this.cachedClientId = cleanId;
     this.cachedAccessToken = cleanToken;
     this.feedTelemetry.clientId = cleanId;
@@ -147,14 +126,10 @@ class DhanDirectService {
   }
 
   /**
-   * Clears saved credentials
+   * Clears saved credentials from hardware Keystore and memory
    */
   public async clearCredentials(): Promise<void> {
-    await Promise.all([
-      SecureStore.deleteItemAsync(STORAGE_KEY_CLIENT_ID),
-      SecureStore.deleteItemAsync(STORAGE_KEY_ACCESS_TOKEN),
-      dhanPlainStorage.clear(),
-    ]);
+    await secureVault.clearCredentials();
     this.cachedClientId = null;
     this.cachedAccessToken = null;
     this.feedTelemetry.clientId = null;

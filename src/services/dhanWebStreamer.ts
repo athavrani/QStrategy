@@ -14,7 +14,7 @@ import {
   decodeDhanWebBinaryFeed,
   DhanLiveTickData,
 } from './dhanWebBinaryProtocol';
-import { dhanPlainStorage, DhanStreamerTelemetry } from './dhanPlainStorage';
+import { secureVault, StreamerTelemetry as DhanStreamerTelemetry, DhanCredentials } from './SecureCredentialVault';
 import { getDhanSecurityId, DHAN_NIFTY_INDEX_ID } from '../constants/dhanSecurityMaster';
 
 export type TickListener = (ticks: Record<string, DhanLiveTickData>) => void;
@@ -28,6 +28,12 @@ interface SubscribedInstrument {
 }
 
 class DhanWebStreamer {
+  private cachedCreds: DhanCredentials = {
+    clientId: '',
+    token: '',
+    tabId: '1',
+    isStreamerEnabled: true,
+  };
   private socket: WebSocket | null = null;
   private state: 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATED' | 'STREAMING' | 'RECONNECTING' = 'DISCONNECTED';
   
@@ -70,7 +76,8 @@ class DhanWebStreamer {
    */
   public async start(): Promise<void> {
     this.isExplicitlyStopped = false;
-    const creds = await dhanPlainStorage.load();
+    const creds = await secureVault.getCredentials();
+    this.cachedCreds = creds;
 
     if (!creds.isStreamerEnabled || !creds.clientId || !creds.token) {
       this.updateStatus('DISCONNECTED', 'Credentials missing or streamer disabled');
@@ -161,7 +168,7 @@ class DhanWebStreamer {
     const key = `${securityId}-${segment}-${exchange}`;
     this.registeredInstruments.set(key, { securityId, exchange, segment, mode });
 
-    const creds = dhanPlainStorage.getCredentials();
+    const creds = this.cachedCreds;
     if (this.socket && this.socket.readyState === WebSocket.OPEN && creds.clientId && creds.token) {
       const packet = buildDhanWebSubscribePacket(
         creds.clientId,
@@ -199,7 +206,7 @@ class DhanWebStreamer {
     const key = `${securityId}-${segment}-${exchange}`;
     this.registeredInstruments.delete(key);
 
-    const creds = dhanPlainStorage.getCredentials();
+    const creds = this.cachedCreds;
     if (this.socket && this.socket.readyState === WebSocket.OPEN && creds.clientId && creds.token) {
       const packet = buildDhanWebUnsubscribePacket(
         creds.clientId,
@@ -261,7 +268,7 @@ class DhanWebStreamer {
         this.pendingTickBatch.clear();
 
         const nowStr = new Date().toLocaleTimeString('en-IN');
-        dhanPlainStorage.updateTelemetry({
+        secureVault.updateTelemetry({
           lastTickTime: nowStr,
           packetsReceived: this.packetsCount,
         });
@@ -287,7 +294,7 @@ class DhanWebStreamer {
    * Sends subscription packets for all registered instruments
    */
   private flushSubscriptions(): void {
-    const creds = dhanPlainStorage.getCredentials();
+    const creds = this.cachedCreds;
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !creds.clientId || !creds.token) {
       return;
     }
@@ -349,13 +356,13 @@ class DhanWebStreamer {
         : status;
 
     this.state = status as any;
-    dhanPlainStorage.updateTelemetry({
+    secureVault.updateTelemetry({
       status: mappedStatus as any,
       lastError,
       latencyMs: latencyMs !== null ? latencyMs : undefined,
     });
 
-    const telem = dhanPlainStorage.getTelemetry();
+    const telem = secureVault.getTelemetry();
     this.telemetryListeners.forEach((l) => {
       try {
         l(telem);

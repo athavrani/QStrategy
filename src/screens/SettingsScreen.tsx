@@ -12,8 +12,8 @@ import {
 } from 'react-native';
 import { colors } from '../theme/colors';
 import { notificationService } from '../services/notificationService';
-import { dhanPlainStorage } from '../services/dhanPlainStorage';
 import { dhanDirectService } from '../services/dhanDirectService';
+import { secureVault } from '../services/SecureCredentialVault';
 import { dhanWebStreamer, testDhanWebStreamerConnection } from '../services/dhanWebStreamer';
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { useRadarStore } from '../store/useRadarStore';
@@ -37,8 +37,8 @@ export function SettingsScreen() {
   const [isLoginModalVisible, setIsLoginModalVisible] = useState(false);
 
   useEffect(() => {
-    // Load persisted plain-text credentials on mount
-    dhanPlainStorage.load().then((creds) => {
+    // Load hardware Keystore credentials on mount
+    secureVault.getCredentials().then((creds) => {
       if (creds.clientId) setDhanClientId(creds.clientId);
       if (creds.token) {
         setDhanAccessToken(creds.token);
@@ -99,8 +99,14 @@ export function SettingsScreen() {
       return;
     }
 
+    const authed = await secureVault.authenticateWithBiometrics('Authenticate to update Dhan credentials');
+    if (!authed) {
+      Alert.alert('Authentication Failed', 'Biometric verification required to update credentials.');
+      return;
+    }
+
     setIsSaving(true);
-    await dhanPlainStorage.save(dhanClientId, dhanAccessToken);
+    await secureVault.saveCredentials(dhanClientId, dhanAccessToken);
     await dhanDirectService.saveCredentials(dhanClientId, dhanAccessToken);
     dhanWebStreamer.start();
     useRadarStore.getState().initStreamer();
@@ -108,12 +114,12 @@ export function SettingsScreen() {
     setIsSaving(false);
     setIsConnected(true);
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert('⚡ Live Data Active!', 'Dhan credentials saved. Live market feed and Option Chain are now streaming directly to all screens.');
+    Alert.alert('⚡ Live Data Active!', 'Dhan credentials saved to hardware Keystore. Live market feed is now streaming.');
   };
 
   const handleDisconnectDhan = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    await dhanPlainStorage.clear();
+    await secureVault.clearCredentials();
     await dhanDirectService.clearCredentials();
     dhanWebStreamer.stop();
     setDhanClientId('');
@@ -121,7 +127,7 @@ export function SettingsScreen() {
     setIsConnected(false);
     setLatencyMs(null);
     await useRadarStore.getState().refreshAll();
-    Alert.alert('Disconnected', 'Dhan credentials wiped from device storage.');
+    Alert.alert('Disconnected', 'Dhan credentials wiped from hardware Keystore.');
   };
 
   const handleTestLaunchDhanApp = async () => {
@@ -373,7 +379,7 @@ export function SettingsScreen() {
           setDhanClientId(id);
           setDhanAccessToken(token);
           setIsConnected(true);
-          await dhanPlainStorage.save(id, token);
+          await secureVault.saveCredentials(id, token);
           await dhanDirectService.saveCredentials(id, token);
           dhanWebStreamer.start();
           useRadarStore.getState().initStreamer();
