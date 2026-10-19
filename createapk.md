@@ -8,13 +8,14 @@ This guide provides step-by-step instructions to compile, build, download, and i
 
 Your local standalone APK has been compiled and is ready right in your project root:
 - **File location**: [`c:\Project\QStrategy\QStrategy.apk`](file:///c:/Project/QStrategy/QStrategy.apk)
-- **Original Gradle output**: `c:\Project\QStrategy\android\app\build\outputs\apk\debug\app-debug.apk`
-- **Size**: ~147 MB (includes 64-bit and 32-bit ARM/x86 architectures, SQLite C engine, encryption vault, and Hermes JS bundle)
+- **Original Gradle output**: `c:\Project\QStrategy\android\app\build\outputs\apk\release\app-release.apk`
+- **Size**: ~75 MB (standalone release APK with offline Hermes bundle and native binaries)
 
 ### Quickest way to install on your phone right now:
-1. **Option A (USB Cable)**: Connect your Android phone to your PC via USB, copy `QStrategy.apk` into your phone's `Downloads` folder, and tap to install.
-2. **Option B (Google Drive / WhatsApp Web)**: Upload `QStrategy.apk` to Google Drive or send it to yourself on WhatsApp Web / Telegram, download it on your phone, and tap to install.
-3. **Option C (ADB if developer mode is enabled)**:
+1. **Uninstall the old app** from your phone first (to avoid debug/release signature conflicts).
+2. **Option A (USB Cable)**: Connect your Android phone to your PC via USB, copy `QStrategy.apk` into your phone's `Downloads` folder, and tap to install.
+3. **Option B (Google Drive / WhatsApp Web)**: Upload `QStrategy.apk` to Google Drive or send it to yourself on WhatsApp Web / Telegram, download it on your phone, and tap to install.
+4. **Option C (ADB if developer mode is enabled)**:
    ```powershell
    adb install -r c:\Project\QStrategy\QStrategy.apk
    ```
@@ -36,9 +37,9 @@ npm run build:local
 Or directly:
 ```powershell
 cd c:\Project\QStrategy\android
-.\gradlew.bat assembleDebug
+.\gradlew.bat assembleRelease
 ```
-The new APK will update at `c:\Project\QStrategy\android\app\build\outputs\apk\debug\app-debug.apk`.
+The new standalone release APK will update at `c:\Project\QStrategy\android\app\build\outputs\apk\release\app-release.apk`.
 
 ---
 
