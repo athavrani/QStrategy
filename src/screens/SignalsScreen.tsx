@@ -16,9 +16,14 @@ import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal
 import { OobtstDetailModal } from '../components/strategies/OobtstDetailModal';
 import { BreakoutDetailModal } from '../components/strategies/BreakoutDetailModal';
 import { dhanDirectService } from '../services/dhanDirectService';
+import { FinancialValue } from '../components/common/FinancialValue';
 import * as Haptics from 'expo-haptics';
 
-export function SignalsScreen() {
+interface SignalsScreenProps {
+  onNavigateToOptions?: () => void;
+}
+
+export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) {
   const {
     stocks,
     marketStatus,
@@ -76,9 +81,14 @@ export function SignalsScreen() {
         </View>
         <View style={styles.kpiCard}>
           <Text style={styles.kpiLabel}>NET PTS CAPTURED</Text>
-          <Text style={[styles.kpiValue, { color: colors.cyan }]}>
-            {netPointsCaptured >= 0 ? `+${netPointsCaptured.toFixed(1)}` : netPointsCaptured.toFixed(1)}
-          </Text>
+          <FinancialValue
+            value={netPointsCaptured}
+            format="points"
+            size="md"
+            weight="extrabold"
+            showSign={true}
+            colorize={true}
+          />
         </View>
       </View>
 
@@ -92,7 +102,11 @@ export function SignalsScreen() {
           style={styles.openChainBtn}
           onPress={() => {
             Haptics.selectionAsync();
-            setOptionChainVisible(true);
+            if (onNavigateToOptions) {
+              onNavigateToOptions();
+            } else {
+              setOptionChainVisible(true);
+            }
           }}
         >
           <Text style={styles.openChainBtnText}>📊 View Chain</Text>

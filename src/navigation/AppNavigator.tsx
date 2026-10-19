@@ -7,9 +7,10 @@ import { SignalsScreen } from '../screens/SignalsScreen';
 import { RadarScreen } from '../screens/RadarScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { OptionChainScreen } from '../screens/OptionChainScreen';
 import * as Haptics from 'expo-haptics';
 
-type Tab = 'SIGNALS' | 'RADAR' | 'JOURNAL' | 'SETTINGS';
+type Tab = 'SIGNALS' | 'RADAR' | 'OPTIONS' | 'JOURNAL' | 'SETTINGS';
 
 export function AppNavigator() {
   const [activeTab, setActiveTab] = useState<Tab>('SIGNALS');
@@ -23,9 +24,11 @@ export function AppNavigator() {
   const renderContent = () => {
     switch (activeTab) {
       case 'SIGNALS':
-        return <SignalsScreen />;
+        return <SignalsScreen onNavigateToOptions={() => setActiveTab('OPTIONS')} />;
       case 'RADAR':
         return <RadarScreen onNavigateToSignals={() => setActiveTab('SIGNALS')} />;
+      case 'OPTIONS':
+        return <OptionChainScreen />;
       case 'JOURNAL':
         return <JournalScreen />;
       case 'SETTINGS':
@@ -64,6 +67,14 @@ export function AppNavigator() {
         >
           <Text style={[styles.tabIcon, activeTab === 'RADAR' && styles.tabIconActive]}>📡</Text>
           <Text style={[styles.tabLabel, activeTab === 'RADAR' && styles.tabLabelActive]}>Radar</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'OPTIONS' && styles.tabItemActive]}
+          onPress={() => handleTabPress('OPTIONS')}
+        >
+          <Text style={[styles.tabIcon, activeTab === 'OPTIONS' && styles.tabIconActive]}>📊</Text>
+          <Text style={[styles.tabLabel, activeTab === 'OPTIONS' && styles.tabLabelActive]}>Options</Text>
         </TouchableOpacity>
 
         <TouchableOpacity

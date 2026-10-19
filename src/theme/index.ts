@@ -6,6 +6,7 @@ export const typography = {
   fontMono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   sizes: {
     micro: 10,
+    xs: 11,
     sm: 12,
     md: 14,
     lg: 16,
