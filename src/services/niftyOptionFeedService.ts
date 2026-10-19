@@ -7,7 +7,7 @@
 import { OobtstLiveState, OobtstLegDetail } from '../strategies/types';
 import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
-import { dhanWebStreamer } from './dhanWebStreamer';
+import { dhanHqFeedSocket } from './dhan/DhanHqFeedSocket';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 
 const NIFTY_LOT_SIZE = 25;
@@ -213,10 +213,16 @@ class NiftyOptionFeedService {
           const ceItem = ocData.oc[anchor.ceStrike];
           const peItem = ocData.oc[anchor.peStrike];
           if (ceItem?.ceSecId) {
-            dhanWebStreamer.subscribe(ceItem.ceSecId, 'NSE', 'D', 'price');
+            dhanHqFeedSocket.subscribe({
+              exchangeSegment: 'NSE_FNO',
+              securityId: String(ceItem.ceSecId),
+            });
           }
           if (peItem?.peSecId) {
-            dhanWebStreamer.subscribe(peItem.peSecId, 'NSE', 'D', 'price');
+            dhanHqFeedSocket.subscribe({
+              exchangeSegment: 'NSE_FNO',
+              securityId: String(peItem.peSecId),
+            });
           }
         } catch {}
 

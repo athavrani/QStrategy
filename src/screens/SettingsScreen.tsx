@@ -14,7 +14,7 @@ import { colors } from '../theme/colors';
 import { notificationService } from '../services/notificationService';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { secureVault } from '../services/SecureCredentialVault';
-import { dhanWebStreamer, testDhanWebStreamerConnection } from '../services/dhanWebStreamer';
+import { dhanHqFeedSocket, testDhanFeedConnection } from '../services/dhan/DhanHqFeedSocket';
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { useRadarStore } from '../store/useRadarStore';
 import { API_CONFIG } from '../config/apiConfig';
@@ -60,7 +60,7 @@ export function SettingsScreen() {
     const restResult = await dhanDirectService.testDirectConnection(dhanClientId, dhanAccessToken);
 
     // 2. Direct Live WebSocket Streamer verification (TLS handshake & auth)
-    const wsResult = await testDhanWebStreamerConnection(dhanClientId, dhanAccessToken);
+    const wsResult = await testDhanFeedConnection(dhanClientId, dhanAccessToken);
 
     setIsTesting(false);
 
@@ -108,7 +108,7 @@ export function SettingsScreen() {
     setIsSaving(true);
     await secureVault.saveCredentials(dhanClientId, dhanAccessToken);
     await dhanDirectService.saveCredentials(dhanClientId, dhanAccessToken);
-    dhanWebStreamer.start();
+    dhanHqFeedSocket.start();
     useRadarStore.getState().initStreamer();
     await useRadarStore.getState().refreshAll();
     setIsSaving(false);
@@ -121,7 +121,7 @@ export function SettingsScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     await secureVault.clearCredentials();
     await dhanDirectService.clearCredentials();
-    dhanWebStreamer.stop();
+    dhanHqFeedSocket.stop();
     setDhanClientId('');
     setDhanAccessToken('');
     setIsConnected(false);
@@ -131,7 +131,7 @@ export function SettingsScreen() {
   };
 
   const handleTestLaunchDhanApp = async () => {
-    await dhanWebStreamer.launchDhanApp('NIFTY 25100 CE');
+    await dhanHqFeedSocket.launchDhanApp('NIFTY 25100 CE');
   };
 
   const handleTestNotification = async () => {
@@ -381,7 +381,7 @@ export function SettingsScreen() {
           setIsConnected(true);
           await secureVault.saveCredentials(id, token);
           await dhanDirectService.saveCredentials(id, token);
-          dhanWebStreamer.start();
+          dhanHqFeedSocket.start();
           useRadarStore.getState().initStreamer();
           await useRadarStore.getState().refreshAll();
         }}

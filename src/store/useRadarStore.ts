@@ -11,7 +11,8 @@ import { apiService } from '../services/apiService';
 import { alertLatchService } from '../services/alertLatchService';
 import { notificationService } from '../services/notificationService';
 import { dhanDirectService } from '../services/dhanDirectService';
-import { dhanWebStreamer } from '../services/dhanWebStreamer';
+import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
+import { InstrumentSubscription, DhanFeedResponseCode } from '../services/dhan/DhanBinaryCodec';
 import { DHAN_SECURITY_MAP, DHAN_NIFTY_INDEX_ID, getDhanSecurityId } from '../constants/dhanSecurityMaster';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import { OobtstLiveState } from '../strategies/types';
@@ -329,35 +330,40 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     if (get().isStreamerInitialized) return;
     set({ isStreamerInitialized: true });
 
-    // 1. Subscribe to all 60 constituent stocks
-    Object.values(DHAN_SECURITY_MAP).forEach((meta) => {
-      dhanWebStreamer.subscribe(meta.securityId, 'NSE', 'E', 'price');
+    // 1. Batch subscribe to all 60 constituent stocks
+    const subscriptions: InstrumentSubscription[] = Object.values(DHAN_SECURITY_MAP).map((meta) => ({
+      exchangeSegment: 'NSE_EQ',
+      securityId: meta.securityId,
+    }));
+
+    // 2. Add NIFTY 50 Spot Index
+    subscriptions.push({
+      exchangeSegment: 'IDX_I',
+      securityId: DHAN_NIFTY_INDEX_ID,
     });
 
-    // 2. Subscribe to NIFTY 50 Spot Index
-    dhanWebStreamer.subscribe(DHAN_NIFTY_INDEX_ID, 'IDX', 'I', 'price');
+    // 3. Batch subscribe & start feed
+    dhanHqFeedSocket.subscribeBatch(subscriptions);
+    dhanHqFeedSocket.start();
 
-    // 3. Start Streamer
-    dhanWebStreamer.start();
-
-    // 4. Register high-frequency 100ms micro-batch tick listener
-    dhanWebStreamer.addTickListener((tickBatch) => {
+    // 4. Register high-frequency 250ms micro-batch tick listener
+    dhanHqFeedSocket.addTickListener((tickBatch) => {
       let hasChanged = false;
       let spotChanged = false;
       let newNiftySpot = get().niftySpot;
 
       // Check if NIFTY spot tick arrived
-      const indexTick = tickBatch[DHAN_NIFTY_INDEX_ID] || tickBatch[`${DHAN_NIFTY_INDEX_ID}-I-IDX`];
-      if (indexTick && indexTick.ltp > 0 && indexTick.ltp !== newNiftySpot) {
+      const indexTick = tickBatch[DHAN_NIFTY_INDEX_ID];
+      if (indexTick && 'ltp' in indexTick && indexTick.ltp > 0 && indexTick.ltp !== newNiftySpot) {
         newNiftySpot = indexTick.ltp;
         spotChanged = true;
         hasChanged = true;
       }
 
-      // Check if derivative ticks arrived (NSE_FNO)
+      // Check if derivative ticks arrived (NSE_FNO, segment 2)
       for (const tick of Object.values(tickBatch)) {
-        if (tick.segment === 'D' || tick.exchange === 'NSE_FNO') {
-          niftyOptionFeedService.updateOptionPriceFromTick(tick.securityId, tick.ltp);
+        if ('ltp' in tick && (tick.exchangeSegment === 2 || (tick as any).exchangeSegment === 'NSE_FNO')) {
+          niftyOptionFeedService.updateOptionPriceFromTick(String(tick.securityId), tick.ltp);
           hasChanged = true;
         }
       }
@@ -370,39 +376,41 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         let stockTickFound = false;
         const nextStocks = currentStocks.map((stock) => {
           const secId = getDhanSecurityId(stock.ticker);
-          const tick = tickBatch[secId] || tickBatch[`${secId}-E-NSE`];
+          const tick = tickBatch[secId];
           if (!tick) return stock;
 
           let stockUpdated = false;
 
-          // 1. Capture official PrevClose from Packet Type 32 or Type 3
+          // 1. Capture official PrevClose from Code 6 (PREV_CLOSE) or Quote dayClose
           let prevClose = stock.prevClose || 0;
-          if (tick.prevClose && tick.prevClose > 0) {
+          if ('prevClose' in tick && tick.prevClose && tick.prevClose > 0) {
             prevClose = tick.prevClose;
             stockUpdated = true;
-          } else if (tick.close && tick.close > 0 && prevClose <= 0) {
-            prevClose = tick.close;
+          } else if ('dayClose' in tick && tick.dayClose > 0 && prevClose <= 0) {
+            prevClose = tick.dayClose;
             stockUpdated = true;
           }
 
-          // 2. Capture day open, high, low from Packet Type 3
-          const dayOpen = tick.open && tick.open > 0 ? tick.open : stock.dayOpen;
-          if (tick.open && tick.open > 0 && dayOpen !== stock.dayOpen) stockUpdated = true;
+          // 2. Capture day open, high, low from Quote
+          const dayOpen = ('dayOpen' in tick && tick.dayOpen > 0) ? tick.dayOpen : stock.dayOpen;
+          if ('dayOpen' in tick && tick.dayOpen > 0 && dayOpen !== stock.dayOpen) stockUpdated = true;
 
-          // 3. Capture live LTP from Packet Type 1
-          const spotPrice = tick.ltp && tick.ltp > 0 ? tick.ltp : stock.spotPrice;
-          if (tick.ltp && tick.ltp > 0 && spotPrice !== stock.spotPrice) stockUpdated = true;
+          // 3. Capture live LTP
+          const spotPrice = ('ltp' in tick && tick.ltp > 0) ? tick.ltp : stock.spotPrice;
+          if ('ltp' in tick && tick.ltp > 0 && spotPrice !== stock.spotPrice) stockUpdated = true;
 
-          const dayHigh = Math.max(stock.dayHigh || 0, tick.high || 0, spotPrice);
+          const tickHigh = ('dayHigh' in tick && tick.dayHigh > 0) ? tick.dayHigh : 0;
+          const tickLow = ('dayLow' in tick && tick.dayLow > 0) ? tick.dayLow : 0;
+          const dayHigh = Math.max(stock.dayHigh || 0, tickHigh, spotPrice);
           const dayLow = Math.min(
             stock.dayLow > 0 ? stock.dayLow : spotPrice,
-            tick.low && tick.low > 0 ? tick.low : spotPrice,
+            tickLow > 0 ? tickLow : spotPrice,
             spotPrice
           );
 
-          // 4. Capture cumulative day volume from Packet Type 1 (never reset to 0)
-          const todayTradedShares = tick.volume && tick.volume > 0 ? tick.volume : stock.todayTradedShares;
-          if (tick.volume && tick.volume > 0 && todayTradedShares !== stock.todayTradedShares) stockUpdated = true;
+          // 4. Capture cumulative day volume (never reset to 0)
+          const todayTradedShares = ('volume' in tick && tick.volume > 0) ? tick.volume : stock.todayTradedShares;
+          if ('volume' in tick && tick.volume > 0 && todayTradedShares !== stock.todayTradedShares) stockUpdated = true;
 
           if (!stockUpdated) return stock;
 
@@ -439,7 +447,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
             avg20DTradedShares: avgShares,
             volumeRatio: ratio,
             hasCrossed20D: hasCrossed,
-            crossoverTime: hasCrossed ? (tick.lastUpdated || stock.crossoverTime || new Date().toLocaleTimeString('en-IN')) : stock.crossoverTime,
+            crossoverTime: hasCrossed ? (stock.crossoverTime || new Date().toLocaleTimeString('en-IN')) : stock.crossoverTime,
             crossoverDirection: (isBullish ? 'BULLISH' : 'BEARISH') as 'BULLISH' | 'BEARISH',
             circleIndicator,
           };
@@ -472,7 +480,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     });
 
     // 5. Register Telemetry Listener
-    dhanWebStreamer.addTelemetryListener((telem) => {
+    dhanHqFeedSocket.addTelemetryListener((telem) => {
       if (telem.status === 'STREAMING') {
         set({
           feedStatus: 'ONLINE',

@@ -18,7 +18,7 @@ import CryptoJS from 'crypto-js';
 import { colors } from '../../theme/colors';
 import { secureVault } from '../../services/SecureCredentialVault';
 import { dhanDirectService } from '../../services/dhanDirectService';
-import { dhanWebStreamer } from '../../services/dhanWebStreamer';
+import { dhanHqFeedSocket } from '../../services/dhan/DhanHqFeedSocket';
 import { useRadarStore } from '../../store/useRadarStore';
 
 interface DhanWebLoginModalProps {
@@ -613,7 +613,7 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
         onClose();
 
         // 4. In background, start live Dhan streamer and refresh store silently
-        dhanWebStreamer.start();
+        dhanHqFeedSocket.start();
         useRadarStore.getState().initStreamer();
         useRadarStore.getState().refreshAll(false);
 
