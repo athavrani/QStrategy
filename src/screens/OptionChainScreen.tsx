@@ -36,6 +36,7 @@ export const UNDERLYING_PRESETS: UnderlyingPreset[] = [
 ];
 
 type ViewMode = 'QUOTES_OI' | 'GREEKS';
+export type StrikeRange = '6' | '10' | 'ALL';
 
 function formatExpiryDate(dateStr: string): string {
   if (!dateStr) return '';
@@ -48,10 +49,24 @@ function formatExpiryDate(dateStr: string): string {
   return `${day} ${monthName}`;
 }
 
+export function formatOi(oi: number | undefined | null): string {
+  if (!oi || oi <= 0) return '—';
+  if (oi >= 10000000) {
+    return `${(oi / 10000000).toFixed(2)}Cr`;
+  }
+  if (oi >= 100000) {
+    return `${(oi / 100000).toFixed(1)}L`;
+  }
+  if (oi >= 1000) {
+    return `${(oi / 1000).toFixed(0)}k`;
+  }
+  return oi.toLocaleString('en-IN');
+}
+
 export function OptionChainScreen(): React.JSX.Element {
   const [selectedPreset, setSelectedPreset] = useState<UnderlyingPreset>(UNDERLYING_PRESETS[0]);
   const [selectedExpiry, setSelectedExpiry] = useState<string>('');
-  const [strikeRange, setStrikeRange] = useState<'15' | '30' | 'ALL'>('15');
+  const [strikeRange, setStrikeRange] = useState<StrikeRange>('6');
   const [viewMode, setViewMode] = useState<ViewMode>('QUOTES_OI');
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -105,9 +120,9 @@ export function OptionChainScreen(): React.JSX.Element {
   const activeSpot = chainData?.spotPrice ?? (selectedPreset.symbol === 'NIFTY' ? niftySpotFromStore : null);
   const atmStrike = chainData?.atmStrike ?? (activeSpot ? Math.round(activeSpot / selectedPreset.strikeStep) * selectedPreset.strikeStep : null);
 
-  // Filter strikes around ATM for responsive, high-density mobile viewing
+  // Filter strikes around ATM for responsive, high-density mobile viewing (6 ITM + 1 ATM + 6 OTM)
   const displayedStrikes = useMemo(() => {
-    if (!chainData || !chainData.strikes) return [];
+    if (!chainData || !chainData.strikes || chainData.strikes.length === 0) return [];
     if (strikeRange === 'ALL' || !atmStrike) return chainData.strikes;
 
     const count = parseInt(strikeRange, 10);
@@ -123,6 +138,8 @@ export function OptionChainScreen(): React.JSX.Element {
         }
       });
     }
+
+    if (centerIndex === -1) return chainData.strikes;
 
     const start = Math.max(0, centerIndex - count);
     const end = Math.min(chainData.strikes.length, centerIndex + count + 1);
@@ -165,9 +182,9 @@ export function OptionChainScreen(): React.JSX.Element {
   };
 
   const renderStrikeRow = ({ item }: { item: OptionStrikeData }) => {
-    const isATM = item.strikePrice === atmStrike;
-    const isCallITM = activeSpot !== null && item.strikePrice < activeSpot;
-    const isPutITM = activeSpot !== null && item.strikePrice > activeSpot;
+    const isATM = atmStrike !== null && item.strikePrice === atmStrike;
+    const isCallITM = atmStrike !== null ? item.strikePrice < atmStrike : (activeSpot !== null && item.strikePrice < activeSpot);
+    const isPutITM = atmStrike !== null ? item.strikePrice > atmStrike : (activeSpot !== null && item.strikePrice > activeSpot);
 
     // On-Device Greeks calculations
     let ceGreeks: OptionGreeks | null = null;
@@ -200,40 +217,53 @@ export function OptionChainScreen(): React.JSX.Element {
           onPress={() => handleLegPress(`${selectedPreset.symbol}${item.strikePrice}CE`)}
         >
           {viewMode === 'QUOTES_OI' ? (
-            <>
-              <FinancialValue
-                value={item.ce.ltp}
-                format="currency"
-                size="sm"
-                colorize={false}
-                style={styles.cellLtp}
-              />
-              <Text style={styles.cellSubText}>
-                OI: {item.ce.oi ? `${(item.ce.oi / 1000).toFixed(0)}k` : '—'}
+            <View style={styles.cellContentLeft}>
+              <View style={styles.cellTopRow}>
+                <FinancialValue
+                  value={item.ce.ltp}
+                  format="currency"
+                  size="sm"
+                  colorize={false}
+                  style={styles.cellLtp}
+                />
+                {isCallITM && (
+                  <View style={styles.itmTag}>
+                    <Text style={styles.itmTagText}>ITM</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.cellSubText} numberOfLines={1}>
+                OI: {formatOi(item.ce.oi)}
+                {item.ce.iv ? ` · ${item.ce.iv}%` : ''}
               </Text>
-            </>
+            </View>
           ) : (
-            <>
+            <View style={styles.cellContentLeft}>
               <Text style={styles.greekDeltaText}>
                 Δ {ceGreeks ? ceGreeks.delta.toFixed(2) : (item.ce.iv ? `${item.ce.iv}%` : '—')}
               </Text>
-              <Text style={styles.greekSubText}>
+              <Text style={styles.greekSubText} numberOfLines={1}>
                 θ {ceGreeks ? ceGreeks.theta.toFixed(1) : '—'}
+                {ceGreeks ? ` · ν ${ceGreeks.vega.toFixed(1)}` : ''}
               </Text>
-            </>
+            </View>
           )}
         </TouchableOpacity>
 
         {/* STRIKE CENTER */}
         <View style={[styles.strikeCenter, isATM && styles.strikeCenterATM]}>
           <Text style={[styles.strikeText, isATM && styles.strikeTextATM]}>
-            {item.strikePrice}
+            {item.strikePrice.toLocaleString('en-IN')}
           </Text>
-          {isATM && (
+          {isATM ? (
             <View style={styles.atmBadge}>
               <Text style={styles.atmBadgeText}>ATM</Text>
             </View>
-          )}
+          ) : isCallITM ? (
+            <Text style={styles.moneynessText}>CE ITM</Text>
+          ) : isPutITM ? (
+            <Text style={styles.moneynessText}>PE ITM</Text>
+          ) : null}
         </View>
 
         {/* PUT SIDE (RIGHT) */}
@@ -247,27 +277,36 @@ export function OptionChainScreen(): React.JSX.Element {
           onPress={() => handleLegPress(`${selectedPreset.symbol}${item.strikePrice}PE`)}
         >
           {viewMode === 'QUOTES_OI' ? (
-            <>
-              <FinancialValue
-                value={item.pe.ltp}
-                format="currency"
-                size="sm"
-                colorize={false}
-                style={styles.cellLtp}
-              />
-              <Text style={styles.cellSubText}>
-                OI: {item.pe.oi ? `${(item.pe.oi / 1000).toFixed(0)}k` : '—'}
+            <View style={styles.cellContentRight}>
+              <View style={styles.cellTopRowRight}>
+                {isPutITM && (
+                  <View style={styles.itmTag}>
+                    <Text style={styles.itmTagText}>ITM</Text>
+                  </View>
+                )}
+                <FinancialValue
+                  value={item.pe.ltp}
+                  format="currency"
+                  size="sm"
+                  colorize={false}
+                  style={styles.cellLtp}
+                />
+              </View>
+              <Text style={styles.cellSubText} numberOfLines={1}>
+                {item.pe.iv ? `${item.pe.iv}% · ` : ''}
+                OI: {formatOi(item.pe.oi)}
               </Text>
-            </>
+            </View>
           ) : (
-            <>
+            <View style={styles.cellContentRight}>
               <Text style={styles.greekDeltaText}>
                 Δ {peGreeks ? peGreeks.delta.toFixed(2) : (item.pe.iv ? `${item.pe.iv}%` : '—')}
               </Text>
-              <Text style={styles.greekSubText}>
+              <Text style={styles.greekSubText} numberOfLines={1}>
+                {peGreeks ? `ν ${peGreeks.vega.toFixed(1)} · ` : ''}
                 θ {peGreeks ? peGreeks.theta.toFixed(1) : '—'}
               </Text>
-            </>
+            </View>
           )}
         </TouchableOpacity>
       </View>
@@ -352,7 +391,7 @@ export function OptionChainScreen(): React.JSX.Element {
           <View style={styles.controlsRow}>
             {/* Strike Range Selector */}
             <View style={styles.rangeToggleGroup}>
-              {(['15', '30', 'ALL'] as const).map((r) => (
+              {(['6', '10', 'ALL'] as const).map((r) => (
                 <TouchableOpacity
                   key={r}
                   style={[styles.rangeBtn, strikeRange === r && styles.rangeBtnActive]}
@@ -362,7 +401,7 @@ export function OptionChainScreen(): React.JSX.Element {
                   }}
                 >
                   <Text style={[styles.rangeBtnText, strikeRange === r && styles.rangeBtnTextActive]}>
-                    {r === 'ALL' ? 'ALL' : `±${r}`}
+                    {r === '6' ? '±6 (13)' : r === 'ALL' ? 'ALL' : `±${r}`}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -415,12 +454,18 @@ export function OptionChainScreen(): React.JSX.Element {
         </View>
       ) : chainData && displayedStrikes.length > 0 ? (
         <FlatList
+          style={styles.flatList}
           data={displayedStrikes}
           keyExtractor={(item) => `strike-${item.strikePrice}`}
           renderItem={renderStrikeRow}
           contentContainerStyle={styles.listContent}
-          initialNumToRender={30}
-          maxToRenderPerBatch={30}
+          getItemLayout={(_data, index) => ({
+            length: 54,
+            offset: 54 * index,
+            index,
+          })}
+          initialNumToRender={15}
+          maxToRenderPerBatch={15}
           windowSize={5}
           refreshControl={
             <RefreshControl
@@ -653,23 +698,22 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceSubtle,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
-    paddingVertical: 6,
+    paddingVertical: 8,
   },
   columnHeaderCell: {
     flex: 1,
-    alignItems: 'center',
     justifyContent: 'center',
   },
   callHeader: {
     alignItems: 'flex-start',
-    paddingLeft: theme.spacing.md,
+    paddingLeft: 12,
   },
   putHeader: {
     alignItems: 'flex-end',
-    paddingRight: theme.spacing.md,
+    paddingRight: 12,
   },
   strikeHeaderCell: {
-    width: 80,
+    width: 84,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -685,6 +729,9 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.extrabold,
     letterSpacing: 0.5,
   },
+  flatList: {
+    flex: 1,
+  },
   listContent: {
     paddingBottom: 24,
   },
@@ -692,20 +739,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
-    minHeight: 46,
-    alignItems: 'center',
+    height: 54,
+    alignItems: 'stretch',
   },
   strikeRowATM: {
     backgroundColor: 'rgba(59, 130, 246, 0.08)',
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.borderActive,
-    borderBottomColor: theme.colors.borderActive,
+    borderTopWidth: 1.5,
+    borderTopColor: '#3B82F6',
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#3B82F6',
   },
   legCell: {
     flex: 1,
-    height: '100%',
     justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
+    paddingHorizontal: 12,
   },
   callCell: {
     alignItems: 'flex-start',
@@ -714,7 +761,26 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   cellITM: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
+  cellContentLeft: {
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  cellContentRight: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  cellTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  cellTopRowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    justifyContent: 'flex-end',
   },
   cellLtp: {
     fontWeight: theme.typography.weights.bold,
@@ -723,7 +789,21 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: theme.typography.sizes.micro,
     fontFamily: theme.typography.fontMono,
-    marginTop: 1,
+    marginTop: 2,
+  },
+  itmTag: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 0.5,
+    borderColor: 'rgba(245, 158, 11, 0.45)',
+  },
+  itmTagText: {
+    color: '#F59E0B',
+    fontSize: 8,
+    fontWeight: theme.typography.weights.extrabold,
+    letterSpacing: 0.5,
   },
   greekDeltaText: {
     color: theme.colors.cyan,
@@ -735,10 +815,10 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: theme.typography.sizes.micro,
     fontFamily: theme.typography.fontMono,
+    marginTop: 2,
   },
   strikeCenter: {
-    width: 80,
-    height: '100%',
+    width: 84,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceSubtle,
@@ -747,8 +827,8 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   strikeCenterATM: {
-    backgroundColor: 'rgba(59, 130, 246, 0.16)',
-    borderColor: theme.colors.borderActive,
+    backgroundColor: 'rgba(59, 130, 246, 0.18)',
+    borderColor: '#3B82F6',
   },
   strikeText: {
     color: theme.colors.textPrimary,
@@ -761,16 +841,25 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.extrabold,
   },
   atmBadge: {
-    backgroundColor: theme.colors.borderActive,
+    backgroundColor: '#2563EB',
     borderRadius: 3,
     paddingHorizontal: 4,
     paddingVertical: 1,
     marginTop: 2,
   },
   atmBadgeText: {
-    color: theme.colors.textPrimary,
+    color: '#FFFFFF',
     fontSize: 8,
     fontWeight: theme.typography.weights.extrabold,
+    letterSpacing: 0.5,
+  },
+  moneynessText: {
+    color: theme.colors.textMuted,
+    fontSize: 8,
+    fontFamily: theme.typography.fontMono,
+    fontWeight: theme.typography.weights.semibold,
+    marginTop: 2,
+    opacity: 0.7,
   },
   loadingContainer: {
     padding: theme.spacing.md,
