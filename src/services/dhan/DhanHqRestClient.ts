@@ -207,6 +207,46 @@ export class DhanHqRestClient {
     });
     return Array.isArray(res?.data) ? res.data : [];
   }
+
+  /**
+   * Fetches intraday 1-minute OHLC candle data
+   * POST /v2/charts/intraday
+   */
+  public async fetchHistoricalIntraday(
+    securityId: string | number,
+    exchangeSegment: string,
+    instrument: string,
+    fromDate: string,
+    toDate: string,
+    interval = '1'
+  ): Promise<{
+    open?: number[];
+    high?: number[];
+    low?: number[];
+    close?: number[];
+    volume?: number[];
+    start_Time?: number[];
+  } | null> {
+    const res = await this.post<{
+      data?: {
+        open?: number[];
+        high?: number[];
+        low?: number[];
+        close?: number[];
+        volume?: number[];
+        start_Time?: number[];
+      };
+    }>('/charts/intraday', {
+      securityId: String(securityId),
+      exchangeSegment,
+      instrument,
+      interval,
+      fromDate,
+      toDate,
+    });
+    return res?.data ?? null;
+  }
 }
 
 export const dhanHqRestClient = new DhanHqRestClient();
+

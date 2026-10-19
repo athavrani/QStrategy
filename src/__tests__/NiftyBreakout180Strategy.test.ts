@@ -163,4 +163,134 @@ describe('Strategy 3 Engine: NIFTY 09:25 ₹180 Breakout Suite', () => {
       expect(state.tradeCountToday).toBe(0);
     });
   });
+
+  describe('Dhan API Integration & 09:25 Strike Selection Specification', () => {
+    test('ranks top 2 CE and top 2 PE candidates strictly below threshold', () => {
+      const extendedChain: OptionChainResult = {
+        ...mockChain,
+        strikes: [
+          ...mockChain.strikes,
+          {
+            strikePrice: 24950,
+            moneyness: 'OTM',
+            ce: { ltp: 165.0, oi: 50, volume: 20, iv: 13, bid: 164, ask: 166 },
+            pe: { ltp: 90.0, oi: 50, volume: 20, iv: 13, bid: 89, ask: 91 },
+          },
+          {
+            strikePrice: 24750,
+            moneyness: 'OTM',
+            ce: { ltp: 220.0, oi: 50, volume: 20, iv: 13, bid: 219, ask: 221 },
+            pe: { ltp: 168.0, oi: 50, volume: 20, iv: 13, bid: 167, ask: 169 },
+          },
+        ],
+      };
+
+      const candidates = strategy.select0925Candidates(extendedChain, undefined, 180.0);
+      expect(candidates.ceCandidates.length).toBe(2);
+      expect(candidates.peCandidates.length).toBe(2);
+
+      // CE Rank 1 = 24850 (176.4), Rank 2 = 24950 (165.0)
+      expect(candidates.ceCandidates[0].strike).toBe(24850);
+      expect(candidates.ceCandidates[0].rank).toBe(1);
+      expect(candidates.ceCandidates[1].strike).toBe(24950);
+      expect(candidates.ceCandidates[1].rank).toBe(2);
+
+      // PE Rank 1 = 24850 (172.1), Rank 2 = 24750 (168.0)
+      expect(candidates.peCandidates[0].strike).toBe(24850);
+      expect(candidates.peCandidates[0].rank).toBe(1);
+      expect(candidates.peCandidates[1].strike).toBe(24750);
+      expect(candidates.peCandidates[1].rank).toBe(2);
+    });
+
+    test('supports configurable threshold and filters strictly below it', () => {
+      // With threshold ₹170.00, 176.4 CE is excluded, next eligible is 140.0 CE
+      const candidates = strategy.select0925Candidates(mockChain, undefined, 170.0);
+      expect(candidates.ceCandidate?.strike).toBe(24900);
+      expect(candidates.ceCandidate?.price0925).toBe(140.0);
+      expect(candidates.ceCandidate?.distanceTo180).toBe(30.0); // 170 - 140
+    });
+
+    test('locks threshold and candidate strikes at 09:25:00 so later changes do not alter active session', () => {
+      let state = strategy.evaluate(
+        null,
+        { ceLtp: 176.4, peLtp: 172.1 },
+        '09:25:00',
+        mockChain,
+        undefined,
+        180.0
+      );
+      expect(state.status).toBe('MONITORING_BREAKOUT');
+      expect(state.lockedThreshold).toBe(180.0);
+      expect(state.ceCandidate?.strike).toBe(24850);
+
+      // If user later alters threshold to 190.0, lockedThreshold remains 180.0
+      state = strategy.evaluate(
+        state,
+        { ceLtp: 178.0, peLtp: 174.0 },
+        '09:28:00',
+        mockChain,
+        undefined,
+        190.0
+      );
+      expect(state.lockedThreshold).toBe(180.0);
+      expect(state.ceCandidate?.strike).toBe(24850);
+    });
+
+    test('reports LOCK_FAILED when reliable market data is completely unavailable at 09:25', () => {
+      const emptyChain: OptionChainResult = {
+        ...mockChain,
+        strikes: [],
+      };
+      const state = strategy.evaluate(
+        null,
+        {},
+        '09:25:00',
+        emptyChain,
+        undefined,
+        180.0
+      );
+      expect(state.status).toBe('LOCK_FAILED');
+      expect(state.isLockFailed).toBe(true);
+      expect(state.lockFailureReason).toBe('LOCK FAILED — DATA UNAVAILABLE');
+    });
+
+    test('reports NO_ELIGIBLE_STRIKE when all strikes on a side exceed threshold', () => {
+      const highPremiumChain: OptionChainResult = {
+        ...mockChain,
+        strikes: [
+          {
+            strikePrice: 24850,
+            moneyness: 'ATM',
+            ce: { ltp: 195.0, oi: 100, volume: 50, iv: 13, bid: 194, ask: 196 }, // Exceeds 180
+            pe: { ltp: 172.1, oi: 100, volume: 50, iv: 13, bid: 171, ask: 173 }, // Eligible
+          },
+        ],
+      };
+      const state = strategy.evaluate(
+        null,
+        {},
+        '09:25:00',
+        highPremiumChain,
+        undefined,
+        180.0
+      );
+      expect(state.status).toBe('NO_ELIGIBLE_STRIKE');
+      expect(state.noEligibleSide).toBe('CE');
+    });
+
+    test('operates in PROVISIONAL_MONITORING during 09:15:00 - 09:24:59 window without triggering orders', () => {
+      const state = strategy.evaluate(
+        null,
+        { ceLtp: 185.0, peLtp: 170.0 }, // Even if LTP is 185.0 before 09:25
+        '09:20:00',
+        mockChain,
+        undefined,
+        180.0
+      );
+      expect(state.status).toBe('PROVISIONAL_MONITORING');
+      expect(state.tradeCountToday).toBe(0);
+      expect(state.activeContract).toBeNull();
+    });
+  });
 });
+

@@ -85,10 +85,14 @@ export interface Candidate180Contract {
   strike: number;
   expiry: string;
   price0925: number;
-  distanceTo180: number;        // |price0925 - 180|
+  distanceTo180: number;        // difference from threshold: |price - threshold|
   currentLtp: number;
   isTriggered: boolean;
   isDisabled: boolean;
+  rank?: 1 | 2;
+  securityId?: string;
+  lastTradeTimestamp?: string;
+  quoteFreshness?: 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED';
 }
 
 export interface NiftyBreakout180State {
@@ -97,15 +101,22 @@ export interface NiftyBreakout180State {
   currentStep: 1 | 2 | 3;
   status: 
     | 'WAITING_0925'            // Prior to 09:25:00
-    | 'CANDIDATES_LOCKED'       // 09:25:00 Locked (< 180)
+    | 'PROVISIONAL_MONITORING'  // 09:15:00 - 09:24:59 Provisional Monitoring
+    | 'CANDIDATES_LOCKED'       // 09:25:00 Locked (< threshold)
     | 'MONITORING_BREAKOUT'     // 09:25:00 - 09:45:00
-    | 'IN_TRADE'                // 1st leg broke > 180 (ACTIVE)
+    | 'IN_TRADE'                // 1st leg broke > threshold (ACTIVE)
     | 'TARGET_HIT'              // ₹220 Hit (TARGET BOOKED)
     | 'SL_HIT'                  // ₹160 Hit (STOP LOSS HIT)
     | 'TIME_EXIT'               // 09:45:00 Force Exit
-    | 'NO_TRADE_TODAY';
-  ceCandidate: Candidate180Contract | null;
-  peCandidate: Candidate180Contract | null;
+    | 'NO_TRADE_TODAY'
+    | 'LOCK_FAILED'
+    | 'NO_ELIGIBLE_STRIKE';
+  threshold: number;            // Configurable threshold (default ₹180.00)
+  lockedThreshold?: number;     // Session immutable threshold locked at 09:25:00
+  ceCandidate: Candidate180Contract | null; // Top selected CE
+  peCandidate: Candidate180Contract | null; // Top selected PE
+  ceCandidates: Candidate180Contract[];    // Two CE candidates (Rank 1 & 2)
+  peCandidates: Candidate180Contract[];    // Two PE candidates (Rank 1 & 2)
   activeContract: 'CE' | 'PE' | null;
   entryPrice: number | null;
   entryTime: string | null;
@@ -115,6 +126,12 @@ export interface NiftyBreakout180State {
   pnlPoints: number;
   timeRemainingSec: number;
   outcomeText?: string;
+  isHistoricalSession?: boolean;
+  historicalDate?: string;
+  historicalStatus?: 'HISTORICAL SESSION RESULTS' | 'HISTORICAL DATA UNAVAILABLE';
+  isLockFailed?: boolean;
+  lockFailureReason?: string;
+  noEligibleSide?: 'CE' | 'PE' | 'BOTH' | null;
 }
 
 // ==========================================

@@ -19,13 +19,16 @@ export const SCAN_END_TIME = '09:45:00';
 
 export type BreakoutStatus =
   | 'WAITING_0925'
+  | 'PROVISIONAL_MONITORING'
   | 'CANDIDATES_LOCKED'
   | 'MONITORING_BREAKOUT'
   | 'IN_TRADE'
   | 'TARGET_HIT'
   | 'SL_HIT'
   | 'TIME_EXIT'
-  | 'NO_TRADE_WINDOW_CLOSED';
+  | 'NO_TRADE_WINDOW_CLOSED'
+  | 'LOCK_FAILED'
+  | 'NO_ELIGIBLE_STRIKE';
 
 export interface BreakoutCandidateLeg {
   type: 'CE' | 'PE';
@@ -36,7 +39,10 @@ export interface BreakoutCandidateLeg {
   distanceTo180: number;
   isTriggered: boolean;
   isDisabled: boolean;
+  rank?: 1 | 2;
   securityId?: string;
+  quoteTimestamp?: string;
+  quoteFreshness?: 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED';
 }
 
 export interface BreakoutStrategyState {
@@ -47,89 +53,112 @@ export interface BreakoutStrategyState {
   entryPrice?: number;
   exitPrice?: number;
   activeContract: 'CE' | 'PE' | null;
+  threshold: number;
+  lockedThreshold?: number;
   fixedTarget: number;
   fixedStopLoss: number;
   pnlPoints: number;
   ceCandidate: BreakoutCandidateLeg | null;
   peCandidate: BreakoutCandidateLeg | null;
+  ceCandidates?: BreakoutCandidateLeg[];
+  peCandidates?: BreakoutCandidateLeg[];
   tradeCountToday: number;
   headline: string;
   statusBadgeText: string;
+  isLockFailed?: boolean;
+  lockFailureReason?: string;
+  noEligibleSide?: 'CE' | 'PE' | 'BOTH' | null;
+  isHistoricalSession?: boolean;
+  historicalDate?: string;
+  historicalStatus?: 'HISTORICAL SESSION RESULTS' | 'HISTORICAL DATA UNAVAILABLE';
 }
 
 export class NiftyBreakout180Strategy {
   /**
-   * Filters option chain at 09:25:00 AM IST to pick CE and PE closest under ₹180.00
-   * Invariant 1: 09:25 Candle Open < ₹180.00
+   * Filters option chain at 09:25:00 AM IST to pick CE and PE closest under threshold (default: ₹180.00)
+   * Invariant 1: 09:25 Candle Open < threshold
    */
   public select0925Candidates(
     chain: OptionChainResult,
-    candleOpens?: Record<string, number>
+    candleOpens?: Record<string, number>,
+    threshold: number = BREAKOUT_TRIGGER_LEVEL
   ): {
     ceCandidate: BreakoutCandidateLeg | null;
     peCandidate: BreakoutCandidateLeg | null;
+    ceCandidates: BreakoutCandidateLeg[];
+    peCandidates: BreakoutCandidateLeg[];
   } {
     if (!chain || chain.strikes.length === 0 || chain.spotPrice === null) {
-      return { ceCandidate: null, peCandidate: null };
+      return { ceCandidate: null, peCandidate: null, ceCandidates: [], peCandidates: [] };
     }
 
     const atm = chain.atmStrike ?? chain.spotPrice;
 
-    let bestCe: BreakoutCandidateLeg | null = null;
-    let maxCePrice = -Infinity;
-
-    let bestPe: BreakoutCandidateLeg | null = null;
-    let maxPePrice = -Infinity;
+    const ceCandidatesList: BreakoutCandidateLeg[] = [];
+    const peCandidatesList: BreakoutCandidateLeg[] = [];
 
     for (const strike of chain.strikes) {
-      // CE: strike >= ATM, LTP < 180, and Open < 180
+      // CE: strike >= ATM, LTP < threshold, and Open < threshold
       if (strike.strikePrice >= atm && strike.ce.ltp !== null) {
         const ltp = strike.ce.ltp;
         const openPrice = candleOpens?.[`CE_${strike.strikePrice}`] ?? ltp;
 
-        if (ltp < BREAKOUT_TRIGGER_LEVEL && openPrice < BREAKOUT_TRIGGER_LEVEL) {
-          if (ltp > maxCePrice) {
-            maxCePrice = ltp;
-            bestCe = {
-              type: 'CE',
-              strike: strike.strikePrice,
-              symbol: `NIFTY ${strike.strikePrice} CE`,
-              price0925: ltp,
-              currentLtp: ltp,
-              distanceTo180: Number((BREAKOUT_TRIGGER_LEVEL - ltp).toFixed(2)),
-              isTriggered: false,
-              isDisabled: false,
-              securityId: strike.ce.securityId,
-            };
-          }
+        if (ltp < threshold && openPrice < threshold && ltp > 0) {
+          ceCandidatesList.push({
+            type: 'CE',
+            strike: strike.strikePrice,
+            symbol: `NIFTY ${strike.strikePrice} CE`,
+            price0925: openPrice,
+            currentLtp: ltp,
+            distanceTo180: Number((threshold - openPrice).toFixed(2)),
+            isTriggered: false,
+            isDisabled: false,
+            securityId: strike.ce.securityId,
+          });
         }
       }
 
-      // PE: strike <= ATM, LTP < 180, and Open < 180
+      // PE: strike <= ATM, LTP < threshold, and Open < threshold
       if (strike.strikePrice <= atm && strike.pe.ltp !== null) {
         const ltp = strike.pe.ltp;
         const openPrice = candleOpens?.[`PE_${strike.strikePrice}`] ?? ltp;
 
-        if (ltp < BREAKOUT_TRIGGER_LEVEL && openPrice < BREAKOUT_TRIGGER_LEVEL) {
-          if (ltp > maxPePrice) {
-            maxPePrice = ltp;
-            bestPe = {
-              type: 'PE',
-              strike: strike.strikePrice,
-              symbol: `NIFTY ${strike.strikePrice} PE`,
-              price0925: ltp,
-              currentLtp: ltp,
-              distanceTo180: Number((BREAKOUT_TRIGGER_LEVEL - ltp).toFixed(2)),
-              isTriggered: false,
-              isDisabled: false,
-              securityId: strike.pe.securityId,
-            };
-          }
+        if (ltp < threshold && openPrice < threshold && ltp > 0) {
+          peCandidatesList.push({
+            type: 'PE',
+            strike: strike.strikePrice,
+            symbol: `NIFTY ${strike.strikePrice} PE`,
+            price0925: openPrice,
+            currentLtp: ltp,
+            distanceTo180: Number((threshold - openPrice).toFixed(2)),
+            isTriggered: false,
+            isDisabled: false,
+            securityId: strike.pe.securityId,
+          });
         }
       }
     }
 
-    return { ceCandidate: bestCe, peCandidate: bestPe };
+    // Rank descending by openPrice (closest to threshold from below)
+    ceCandidatesList.sort((a, b) => b.price0925 - a.price0925);
+    peCandidatesList.sort((a, b) => b.price0925 - a.price0925);
+
+    ceCandidatesList.forEach((c, idx) => {
+      c.rank = (idx + 1) as 1 | 2;
+    });
+    peCandidatesList.forEach((p, idx) => {
+      p.rank = (idx + 1) as 1 | 2;
+    });
+
+    const topCe = ceCandidatesList.slice(0, 2);
+    const topPe = peCandidatesList.slice(0, 2);
+
+    return {
+      ceCandidate: topCe[0] ?? null,
+      peCandidate: topPe[0] ?? null,
+      ceCandidates: topCe,
+      peCandidates: topPe,
+    };
   }
 
   /**
@@ -139,52 +168,137 @@ export class NiftyBreakout180Strategy {
     currentState: BreakoutStrategyState | null,
     ticks: { ceLtp?: number; peLtp?: number },
     currentTimeIST: string,
-    chain?: OptionChainResult
+    chain?: OptionChainResult,
+    candleOpens?: Record<string, number>,
+    customThreshold?: number
   ): BreakoutStrategyState {
+    const activeThreshold =
+      currentState?.lockedThreshold ?? customThreshold ?? currentState?.threshold ?? BREAKOUT_TRIGGER_LEVEL;
+    const isBefore0915 = currentTimeIST < '09:15:00';
+    const isProvisional = currentTimeIST >= '09:15:00' && currentTimeIST < SCAN_START_TIME;
     const isBefore0925 = currentTimeIST < SCAN_START_TIME;
     const isPast0945 = currentTimeIST >= SCAN_END_TIME;
 
-    // Phase A: Before 09:25:00 IST
-    if (isBefore0925) {
+    // Phase A1: Before 09:15:00 IST (Market Closed / Awaiting Open)
+    if (isBefore0915) {
       return {
         status: 'WAITING_0925',
         currentStep: 1,
         activeContract: null,
+        threshold: activeThreshold,
         fixedTarget: FIXED_TARGET,
         fixedStopLoss: FIXED_STOP_LOSS,
         pnlPoints: 0,
         ceCandidate: currentState?.ceCandidate ?? null,
         peCandidate: currentState?.peCandidate ?? null,
         tradeCountToday: 0,
-        headline: 'Waiting for 09:25:00 IST candle open to select contracts < ₹180',
-        statusBadgeText: 'STEP 1: WAITING 09:25',
+        headline: `Waiting for market open to monitor contracts < ₹${activeThreshold.toFixed(2)}`,
+        statusBadgeText: 'STEP 1: WAITING 09:15',
       };
     }
 
-    // Phase B: Locked / Monitoring (09:25:00 to 09:45:00 IST)
-    let state = currentState;
-    if (!state || state.status === 'WAITING_0925') {
-      let ceCand = state?.ceCandidate ?? null;
-      let peCand = state?.peCandidate ?? null;
+    // Phase A2: Pre-Lock Candidate Monitoring (09:15:00 to 09:24:59 IST)
+    if (isProvisional) {
+      let ceCand = currentState?.ceCandidate ?? null;
+      let peCand = currentState?.peCandidate ?? null;
+      let ceCands = currentState?.ceCandidates ?? [];
+      let peCands = currentState?.peCandidates ?? [];
 
-      if ((!ceCand || !peCand) && chain) {
-        const selected = this.select0925Candidates(chain);
+      if (chain) {
+        const selected = this.select0925Candidates(chain, candleOpens, activeThreshold);
         ceCand = selected.ceCandidate;
         peCand = selected.peCandidate;
+        ceCands = selected.ceCandidates;
+        peCands = selected.peCandidates;
+      }
+
+      return {
+        status: 'PROVISIONAL_MONITORING',
+        currentStep: 1,
+        activeContract: null,
+        threshold: activeThreshold,
+        fixedTarget: FIXED_TARGET,
+        fixedStopLoss: FIXED_STOP_LOSS,
+        pnlPoints: 0,
+        ceCandidate: ceCand,
+        peCandidate: peCand,
+        ceCandidates: ceCands,
+        peCandidates: peCands,
+        tradeCountToday: 0,
+        headline: 'PROVISIONAL — NOT LOCKED • Monitoring Top 2 CE & PE',
+        statusBadgeText: 'PROVISIONAL MONITORING',
+      };
+    }
+
+    // Phase B: Exact 09:25:00 Candle Open Strike Lock
+    let state = currentState;
+    if (!state || state.status === 'WAITING_0925' || state.status === 'PROVISIONAL_MONITORING') {
+      let ceCand = state?.ceCandidate ?? null;
+      let peCand = state?.peCandidate ?? null;
+      let ceCands = state?.ceCandidates ?? [];
+      let peCands = state?.peCandidates ?? [];
+
+      if (chain) {
+        const selected = this.select0925Candidates(chain, candleOpens, activeThreshold);
+        ceCand = selected.ceCandidate;
+        peCand = selected.peCandidate;
+        ceCands = selected.ceCandidates;
+        peCands = selected.peCandidates;
+      }
+
+      if (!ceCand && !peCand) {
+        return {
+          status: 'LOCK_FAILED',
+          currentStep: 1,
+          activeContract: null,
+          threshold: activeThreshold,
+          fixedTarget: FIXED_TARGET,
+          fixedStopLoss: FIXED_STOP_LOSS,
+          pnlPoints: 0,
+          ceCandidate: null,
+          peCandidate: null,
+          tradeCountToday: 0,
+          headline: 'LOCK FAILED — DATA UNAVAILABLE',
+          statusBadgeText: 'LOCK FAILED',
+          isLockFailed: true,
+          lockFailureReason: 'LOCK FAILED — DATA UNAVAILABLE',
+        };
+      }
+
+      if (!ceCand || !peCand) {
+        return {
+          status: 'NO_ELIGIBLE_STRIKE',
+          currentStep: 1,
+          activeContract: null,
+          threshold: activeThreshold,
+          fixedTarget: FIXED_TARGET,
+          fixedStopLoss: FIXED_STOP_LOSS,
+          pnlPoints: 0,
+          ceCandidate: ceCand,
+          peCandidate: peCand,
+          tradeCountToday: 0,
+          headline: `NO_ELIGIBLE_STRIKE for ${!ceCand ? 'CE' : 'PE'} below ₹${activeThreshold.toFixed(2)}`,
+          statusBadgeText: 'NO ELIGIBLE STRIKE',
+          noEligibleSide: !ceCand && !peCand ? 'BOTH' : !ceCand ? 'CE' : 'PE',
+        };
       }
 
       state = {
         status: 'MONITORING_BREAKOUT',
         currentStep: 1,
         activeContract: null,
+        threshold: activeThreshold,
+        lockedThreshold: activeThreshold, // Stored upon locking
         fixedTarget: FIXED_TARGET,
         fixedStopLoss: FIXED_STOP_LOSS,
         pnlPoints: 0,
         ceCandidate: ceCand,
         peCandidate: peCand,
+        ceCandidates: ceCands,
+        peCandidates: peCands,
         tradeCountToday: 0,
-        headline: `Locked candidates: ${ceCand?.strike || '---'} CE & ${peCand?.strike || '---'} PE (< ₹180)`,
-        statusBadgeText: 'STEP 1: MONITORING > 180',
+        headline: `Locked candidates: ${ceCand.strike} CE & ${peCand.strike} PE (< ₹${activeThreshold.toFixed(2)})`,
+        statusBadgeText: 'LOCKED',
       };
     }
 
@@ -287,10 +401,10 @@ export class NiftyBreakout180Strategy {
     const cePrice = ticks.ceLtp ?? state.ceCandidate?.currentLtp ?? 0;
     const pePrice = ticks.peLtp ?? state.peCandidate?.currentLtp ?? 0;
 
-    const ceCrossed = cePrice >= BREAKOUT_TRIGGER_LEVEL && !state.ceCandidate?.isDisabled;
-    const peCrossed = pePrice >= BREAKOUT_TRIGGER_LEVEL && !state.peCandidate?.isDisabled;
+    const ceCrossed = cePrice >= activeThreshold && !state.ceCandidate?.isDisabled;
+    const peCrossed = pePrice >= activeThreshold && !state.peCandidate?.isDisabled;
 
-    // Trigger BUY on first contract crossing 180 and OCO opposite leg
+    // Trigger BUY on first contract crossing activeThreshold and OCO opposite leg
     if (ceCrossed || peCrossed) {
       const activeContract: 'CE' | 'PE' = ceCrossed ? 'CE' : 'PE';
       const entryPrice = ceCrossed ? cePrice : pePrice;
@@ -334,7 +448,7 @@ export class NiftyBreakout180Strategy {
       ? {
           ...state.ceCandidate,
           currentLtp: cePrice,
-          distanceTo180: Number(Math.max(0, BREAKOUT_TRIGGER_LEVEL - cePrice).toFixed(2)),
+          distanceTo180: Number(Math.max(0, activeThreshold - cePrice).toFixed(2)),
         }
       : null;
 
@@ -342,7 +456,7 @@ export class NiftyBreakout180Strategy {
       ? {
           ...state.peCandidate,
           currentLtp: pePrice,
-          distanceTo180: Number(Math.max(0, BREAKOUT_TRIGGER_LEVEL - pePrice).toFixed(2)),
+          distanceTo180: Number(Math.max(0, activeThreshold - pePrice).toFixed(2)),
         }
       : null;
 
@@ -350,8 +464,8 @@ export class NiftyBreakout180Strategy {
       ...state,
       ceCandidate: updatedCe,
       peCandidate: updatedPe,
-      headline: `Watching CE (₹${cePrice.toFixed(1)}) & PE (₹${pePrice.toFixed(1)}) [< ₹180]`,
-      statusBadgeText: 'STEP 1: MONITORING > 180',
+      headline: `Watching CE (₹${cePrice.toFixed(1)}) & PE (₹${pePrice.toFixed(1)}) [< ₹${activeThreshold.toFixed(2)}]`,
+      statusBadgeText: 'STEP 1: MONITORING > ' + Math.round(activeThreshold),
     };
   }
 }

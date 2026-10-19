@@ -19,6 +19,7 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
 
   evaluate: (ctx: StrategyContext): StrategySignalOutput => {
     const live = ctx.breakout180LiveState;
+    const threshold = live?.lockedThreshold ?? live?.threshold ?? 180.0;
     const ce = live?.ceCandidate;
     const pe = live?.peCandidate;
     const activeContract = live?.activeContract;
@@ -29,20 +30,32 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
 
     let badgeTone: StrategySignalOutput['badgeTone'] = 'cyan';
     let statusBadgeText = `STEP ${currentStep}/3`;
-    let headline = `${activeSymbol} Crossed ₹180 • Opposite Leg Disabled`;
+    let headline = `${activeSymbol} Crossed ₹${threshold.toFixed(2)} • Opposite Leg Disabled`;
 
     if (status === 'WAITING_0925') {
       badgeTone = 'purple';
       statusBadgeText = 'STEP 1: WAITING 09:25';
-      headline = 'Selecting CE & PE contracts with 09:25 Open < ₹180';
+      headline = `Selecting CE & PE contracts with 09:25 Open < ₹${threshold.toFixed(2)}`;
+    } else if (status === 'PROVISIONAL_MONITORING') {
+      badgeTone = 'purple';
+      statusBadgeText = 'PROVISIONAL — NOT LOCKED';
+      headline = `Provisional Candidates (< ₹${threshold.toFixed(2)}) • No Orders Triggered`;
+    } else if (status === 'LOCK_FAILED') {
+      badgeTone = 'bearish';
+      statusBadgeText = 'LOCK FAILED';
+      headline = 'LOCK FAILED — DATA UNAVAILABLE';
+    } else if (status === 'NO_ELIGIBLE_STRIKE') {
+      badgeTone = 'bearish';
+      statusBadgeText = 'NO ELIGIBLE STRIKE';
+      headline = `No eligible strike with 09:25 Open < ₹${threshold.toFixed(2)}`;
     } else if (status === 'MONITORING_BREAKOUT' || status === 'CANDIDATES_LOCKED') {
       badgeTone = 'warning';
-      statusBadgeText = 'STEP 1: NOT ACTIVE';
-      headline = `Watching ${ce?.strike} CE (₹${ce?.price0925.toFixed(1)}) & ${pe?.strike} PE (₹${pe?.price0925.toFixed(1)}) [< ₹180]`;
+      statusBadgeText = 'STEP 1: LOCKED (< ' + Math.round(threshold) + ')';
+      headline = `Watching ${ce?.strike} CE (₹${ce?.price0925.toFixed(1)}) & ${pe?.strike} PE (₹${pe?.price0925.toFixed(1)}) [< ₹${threshold.toFixed(2)}]`;
     } else if (status === 'IN_TRADE') {
       badgeTone = 'cyan';
       statusBadgeText = 'STEP 2: ACTIVE 🚀';
-      headline = `${activeSymbol} Activated > ₹180 • Opposite Leg Canceled`;
+      headline = `${activeSymbol} Activated > ₹${threshold.toFixed(2)} • Opposite Leg Canceled`;
     } else if (status === 'TARGET_HIT') {
       badgeTone = 'bullish';
       statusBadgeText = 'STEP 3: TARGET BOOKED 🎯';
@@ -58,7 +71,7 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
     } else if (status === 'NO_TRADE_TODAY') {
       badgeTone = 'bearish';
       statusBadgeText = 'STEP 3: NO TRADE ⛔';
-      headline = 'Neither contract broke ₹180 before 09:45 AM cutoff.';
+      headline = `Neither contract broke ₹${threshold.toFixed(2)} before 09:45 AM cutoff.`;
     }
 
     const ceLtp = ce?.currentLtp || 176.40;
@@ -73,7 +86,7 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
       primaryMetricValue: '₹220.00 / ₹160.00',
       target: '₹220.00 (+40 pts)',
       stopLoss: '₹160.00 (-20 pts)',
-      invariantNotice: '⛔ 09:25 Open < ₹180 Rule. 1st break > ₹180 activates trade & disables opposite leg.',
+      invariantNotice: `⛔ 09:25 Open < ₹${threshold.toFixed(2)} Rule. 1st break > ₹${threshold.toFixed(2)} activates trade & disables opposite leg.`,
       lastUpdated: ctx.istTime,
       legs: [
         {

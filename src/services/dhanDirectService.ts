@@ -623,6 +623,16 @@ class DhanDirectService {
       } else {
         targetExpiry = list[0];
       }
+    } else if (!targetExpiry) {
+      // Fallback to active weekly expiry
+      const now = new Date();
+      const currentDay = now.getDay();
+      const daysUntilTuesday = (2 - currentDay + 7) % 7;
+      const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntilTuesday);
+      const yyyy = candidate.getFullYear();
+      const mm = String(candidate.getMonth() + 1).padStart(2, '0');
+      const dd = String(candidate.getDate()).padStart(2, '0');
+      targetExpiry = `${yyyy}-${mm}-${dd}`;
     }
 
     if (!targetExpiry) return null;
@@ -798,7 +808,56 @@ class DhanDirectService {
   }
 
   /**
+   * Fetches intraday 1-minute historical candles from Dhan API
+   * POST /v2/charts/intraday
+   */
+  public async fetchHistoricalIntraday(
+    securityId: string | number,
+    fromDate: string,
+    toDate: string,
+    exchangeSegment: string = 'NSE_FNO',
+    instrument: string = 'OPTIDX',
+    interval: string = '1'
+  ): Promise<{
+    open?: number[];
+    high?: number[];
+    low?: number[];
+    close?: number[];
+    volume?: number[];
+    start_Time?: number[];
+  } | null> {
+    await this.initialize();
+    if (!this.cachedClientId || !this.cachedAccessToken) return null;
+    try {
+      const res = await fetch(`${DHAN_BASE_URL}/charts/intraday`, {
+        method: 'POST',
+        headers: {
+          'access-token': this.cachedAccessToken,
+          'client-id': this.cachedClientId,
+          'dhanClientId': this.cachedClientId,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          securityId: String(securityId),
+          exchangeSegment,
+          instrument,
+          interval,
+          fromDate,
+          toDate,
+        }),
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json?.data ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Directly launches the Dhan Mobile Application installed on the phone
+
    * via Android Intent deep linking with graceful web fallback
    */
   public async launchDhanApp(

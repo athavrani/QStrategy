@@ -221,6 +221,46 @@ class NiftyOptionFeedService {
     return true;
   }
 
+  // Strategy 3: Configurable Breakout Threshold (Default: ₹180.00)
+  private breakoutThreshold = 180.00;
+  private isBreakoutThresholdLoaded = false;
+
+  public getBreakoutThreshold(): number {
+    return this.breakoutThreshold;
+  }
+
+  public async loadSavedBreakoutThreshold(): Promise<number> {
+    if (this.isBreakoutThresholdLoaded) return this.breakoutThreshold;
+    try {
+      const saved = await AsyncStorage.getItem('@qstrategy_breakout180_threshold');
+      if (saved) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed) && parsed > 0) {
+          this.breakoutThreshold = Number(parsed.toFixed(2));
+        }
+      }
+    } catch {}
+    this.isBreakoutThresholdLoaded = true;
+    return this.breakoutThreshold;
+  }
+
+  public async setBreakoutThreshold(val: number): Promise<boolean> {
+    if (typeof val !== 'number' || isNaN(val) || val <= 0) {
+      return false;
+    }
+    const clean = Number(val.toFixed(2));
+    this.breakoutThreshold = clean;
+    try {
+      await AsyncStorage.setItem('@qstrategy_breakout180_threshold', String(clean));
+    } catch {}
+
+    // If breakout candidates are not locked yet, reset cached provisional so it recalculates with new threshold
+    if (this.cachedBreakout180 && !this.cachedBreakout180.isLocked) {
+      this.cachedBreakout180 = null;
+    }
+    return true;
+  }
+
   public updateOptionPriceFromTick(securityId: string, ltp: number): void {
     if (!this.cachedLiveOptionChain || ltp <= 0) return;
     const now = Date.now();
@@ -1032,31 +1072,157 @@ class NiftyOptionFeedService {
     entryTime: string | null;
     peakPrice: number;
     troughPrice: number;
+    lockedThreshold?: number;
+    isLocked?: boolean;
+    isLockFailed?: boolean;
+    lockFailureReason?: string;
+    noEligibleSide?: 'CE' | 'PE' | 'BOTH' | null;
+    isHistoricalSession?: boolean;
+    historicalDate?: string;
+    historicalStatus?: 'HISTORICAL SESSION RESULTS' | 'HISTORICAL DATA UNAVAILABLE';
   } | null = null;
 
   /**
-   * Evaluates the 09:25 NIFTY ₹180 Breakout Strategy
+   * Selects top 2 CE and top 2 PE candidates strictly below the breakout threshold.
+   * CE: strike >= ATM, premium < threshold, ranked descending
+   * PE: strike <= ATM, premium < threshold, ranked descending
+   */
+  public selectTopTwoBreakoutCandidates(
+    spot: number,
+    threshold: number = this.breakoutThreshold
+  ): {
+    ceCandidates: Candidate180Contract[];
+    peCandidates: Candidate180Contract[];
+    hasValidQuotes: boolean;
+  } {
+    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
+    const now = Date.now();
+    const { expiryStr } = getActiveWeeklyExpiry(new Date(), false);
+    const isFeedOnline = dhanDirectService.isConfigured();
+
+    const ceList: {
+      strike: number;
+      ltp: number;
+      diff: number;
+      secId?: string;
+      lastUpdated: number;
+    }[] = [];
+
+    const peList: {
+      strike: number;
+      ltp: number;
+      diff: number;
+      secId?: string;
+      lastUpdated: number;
+    }[] = [];
+
+    if (this.cachedLiveOptionChain && Object.keys(this.cachedLiveOptionChain).length > 0) {
+      for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
+        const strike = Number(strikeStr);
+        // CE: strike >= atm, live premium strictly < threshold and > 0
+        if (strike >= atm && data.ceLtp > 0 && data.ceLtp < threshold) {
+          ceList.push({
+            strike,
+            ltp: data.ceLtp,
+            diff: Number((threshold - data.ceLtp).toFixed(2)),
+            secId: data.ceSecId,
+            lastUpdated: data.ceUpdatedTime || now,
+          });
+        }
+        // PE: strike <= atm, live premium strictly < threshold and > 0
+        if (strike <= atm && data.peLtp > 0 && data.peLtp < threshold) {
+          peList.push({
+            strike,
+            ltp: data.peLtp,
+            diff: Number((threshold - data.peLtp).toFixed(2)),
+            secId: data.peSecId,
+            lastUpdated: data.peUpdatedTime || now,
+          });
+        }
+      }
+    }
+
+    // Rank descending by premium (highest premium strictly under threshold comes first)
+    ceList.sort((a, b) => b.ltp - a.ltp);
+    peList.sort((a, b) => b.ltp - a.ltp);
+
+    const formatFreshness = (lastUpdated: number): 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED' => {
+      if (!isFeedOnline) return 'DISCONNECTED';
+      const age = now - lastUpdated;
+      if (age <= 3000) return 'FRESH';
+      if (age <= 10000) return 'AGING';
+      return 'STALE';
+    };
+
+    const topCe: Candidate180Contract[] = ceList.slice(0, 2).map((item, idx) => ({
+      type: 'CE',
+      strike: item.strike,
+      expiry: expiryStr,
+      price0925: item.ltp,
+      distanceTo180: item.diff,
+      currentLtp: item.ltp,
+      isTriggered: false,
+      isDisabled: false,
+      rank: (idx + 1) as 1 | 2,
+      securityId: item.secId,
+      lastTradeTimestamp: new Date(item.lastUpdated).toLocaleTimeString('en-IN'),
+      quoteFreshness: formatFreshness(item.lastUpdated),
+    }));
+
+    const topPe: Candidate180Contract[] = peList.slice(0, 2).map((item, idx) => ({
+      type: 'PE',
+      strike: item.strike,
+      expiry: expiryStr,
+      price0925: item.ltp,
+      distanceTo180: item.diff,
+      currentLtp: item.ltp,
+      isTriggered: false,
+      isDisabled: false,
+      rank: (idx + 1) as 1 | 2,
+      securityId: item.secId,
+      lastTradeTimestamp: new Date(item.lastUpdated).toLocaleTimeString('en-IN'),
+      quoteFreshness: formatFreshness(item.lastUpdated),
+    }));
+
+    return {
+      ceCandidates: topCe,
+      peCandidates: topPe,
+      hasValidQuotes: topCe.length > 0 || topPe.length > 0,
+    };
+  }
+
+  /**
+   * Evaluates the NIFTY 09:25 Breakout Strategy Engine
    *
    * Core Invariants:
-   * 1. 09:25 AM Strike Selection Rule:
-   *    Take nearest Option of Nifty 50 for which 09:25 AM Open price
-   *    for CE and PE is STRICTLY LESS THAN ₹180 (< 180).
-   *    Select the highest premium contract below 180 (closest to 180 from below).
-   * 2. Breakout Trigger:
-   *    Evaluated between 09:25:00 and 09:45:00 IST.
-   *    First contract (CE or PE) crossing above ₹180 confirms direction and triggers BUY.
-   *    The opposite leg is immediately disabled for the day (strictly 1 trade/day).
-   * 3. Target & Stop Loss:
-   *    Fixed Target: ₹220.00 (+40 pts / 1:2 R:R)
-   *    Fixed Stop Loss: ₹160.00 (-20 pts)
-   * 4. Hard Time Exit:
-   *    Mandatory exit at 09:45:00 AM IST if neither Target nor SL has hit.
+   * 1. 09:25 AM Candle Open < configuredThreshold (Default: ₹180.00).
+   * 2. Closest Option Candidate Selection:
+   *    Select highest 09:25 candle open strictly below threshold for CE (>= ATM) and PE (<= ATM).
+   * 3. Pre-Lock Window (09:15:00 - 09:24:59):
+   *    Displays 2 CE and 2 PE provisional candidates, ranked descending by premium < threshold.
+   *    Provisional candidates must never trigger orders.
+   * 4. Exact 09:25 Candle Open Strike Lock:
+   *    Captures actual 09:25 candle open (or first valid trade tick of 09:25 candle).
+   *    Once locked, strikes and lockedThreshold are immutable for the session.
+   * 5. Execution Rules:
+   *    First contract crossing >= threshold triggers directional BUY.
+   *    OCO: permanently disables opposite leg.
+   *    Target: ₹220.00 (+40 pts), Stop-Loss: ₹160.00 (-20 pts). 1:2 R:R.
+   *    09:45:00 AM IST Hard Cutoff: Square-off at market, strictly no overnight hold.
+   * 6. Market-Closed Historical Lookup:
+   *    Shows HISTORICAL SESSION RESULTS if historical 09:25 candles are available.
+   *    Shows HISTORICAL DATA UNAVAILABLE if unavailable. Never fabricate prices.
    */
-  public evaluateBreakout180(spot: number, istTimeStr?: string): NiftyBreakout180State {
+  public evaluateBreakout180(
+    spot: number,
+    istTimeStr?: string,
+    candleOpens?: Record<string, number>
+  ): NiftyBreakout180State {
     const now = new Date();
     const todayDateKey = formatDateKeyIST(now);
     const nowTime = istTimeStr || now.toLocaleTimeString('en-IN');
-    const { expiryStr, tYears } = getActiveWeeklyExpiry(now, false);
+    const { expiryStr } = getActiveWeeklyExpiry(now, false);
+    const threshold = this.breakoutThreshold;
 
     // Calculate current minutes from midnight IST to evaluate time gates
     let istMinutes = 572; // Default ~09:32 AM for offline preview
@@ -1083,85 +1249,195 @@ class NiftyOptionFeedService {
     }
 
     const totalSeconds = istMinutes * 60 + istSeconds;
-    const gate0925 = 9 * 60 + 25; // 565 mins (09:25 AM)
-    const gate0945 = 9 * 60 + 45; // 585 mins (09:45 AM)
+    const gate0915 = 9 * 60 + 15; // 555 mins (09:15:00 AM)
+    const gate0925 = 9 * 60 + 25; // 565 mins (09:25:00 AM)
+    const gate0945 = 9 * 60 + 45; // 585 mins (09:45:00 AM)
+    const gate1530 = 15 * 60 + 30; // 930 mins (15:30:00 PM)
 
-    // STEP 1: Lock or Retrieve Candidate Contracts (< ₹180 at 09:25 AM)
+    const isMarketClosed = istMinutes < gate0915 || istMinutes >= gate1530;
+    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
+
+    // Get live candidates
+    const liveCandidateLookup = this.selectTopTwoBreakoutCandidates(spot, threshold);
+    const topCeCandidates = liveCandidateLookup.ceCandidates;
+    const topPeCandidates = liveCandidateLookup.peCandidates;
+
+    // STEP 1: Initialize or Retrieve Daily Session State
     if (!this.cachedBreakout180 || this.cachedBreakout180.date !== todayDateKey) {
-      const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
-
-      let bestCeStrike = atm + 100;
-      let bestCePrice = 0;
-      let bestPeStrike = atm - 100;
-      let bestPePrice = 0;
-
-      // Scan actual live market feed quotes strictly from Dhan Option Chain
-      if (this.cachedLiveOptionChain && Object.keys(this.cachedLiveOptionChain).length > 0) {
-        for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
-          const k = Number(strikeStr);
-          if (k >= atm - 600 && k <= atm + 200 && data.ceLtp > 0 && data.ceLtp < 180.00 && data.ceLtp > bestCePrice) {
-            bestCePrice = data.ceLtp;
-            bestCeStrike = k;
-          }
-          if (k >= atm - 200 && k <= atm + 600 && data.peLtp > 0 && data.peLtp < 180.00 && data.peLtp > bestPePrice) {
-            bestPePrice = data.peLtp;
-            bestPeStrike = k;
-          }
-        }
-      }
-
       this.cachedBreakout180 = {
         date: todayDateKey,
-        ceStrike: bestCeStrike,
-        peStrike: bestPeStrike,
-        ceOpen0925: bestCePrice,
-        peOpen0925: bestPePrice,
+        ceStrike: topCeCandidates[0]?.strike || atm + 100,
+        peStrike: topPeCandidates[0]?.strike || atm - 100,
+        ceOpen0925: topCeCandidates[0]?.currentLtp || 0,
+        peOpen0925: topPeCandidates[0]?.currentLtp || 0,
         expiryStr,
         triggeredSide: null,
         entryPrice: null,
         entryTime: null,
         peakPrice: 0,
         troughPrice: 99999,
+        isLocked: false,
+        isLockFailed: false,
+        noEligibleSide: null,
       };
+
+      // Market-Closed Historical Lookup Handler
+      if (isMarketClosed) {
+        if (candleOpens && Object.keys(candleOpens).length > 0) {
+          this.cachedBreakout180.isHistoricalSession = true;
+          this.cachedBreakout180.historicalDate = todayDateKey;
+          this.cachedBreakout180.historicalStatus = 'HISTORICAL SESSION RESULTS';
+        } else {
+          this.cachedBreakout180.historicalStatus = 'HISTORICAL DATA UNAVAILABLE';
+        }
+      }
     }
 
     const cache = this.cachedBreakout180;
+    const effectiveThreshold = cache.lockedThreshold ?? threshold;
 
-    // Fetch actual live option prices strictly from market feed — NEVER derive from index
+    // STEP 2: Time Gate & Strike Locking Evaluation
+    let status: NiftyBreakout180State['status'] = 'WAITING_0925';
+    let timeRemainingSec = Math.max(0, gate0945 * 60 - totalSeconds);
+
+    if (istMinutes < gate0915) {
+      // Prior to 09:15:00 Market Open
+      status = 'WAITING_0925';
+    } else if (istMinutes < gate0925) {
+      // Pre-Lock Candidate Monitoring Window (09:15:00 - 09:24:59 IST)
+      status = 'PROVISIONAL_MONITORING';
+      cache.isLocked = false;
+      // Continuously update provisional candidates
+      if (topCeCandidates.length > 0) {
+        cache.ceStrike = topCeCandidates[0].strike;
+        cache.ceOpen0925 = topCeCandidates[0].currentLtp;
+      }
+      if (topPeCandidates.length > 0) {
+        cache.peStrike = topPeCandidates[0].strike;
+        cache.peOpen0925 = topPeCandidates[0].currentLtp;
+      }
+    } else {
+      // 09:25:00 or Later: Strike Lock & Breakout Execution
+      if (!cache.isLocked && !cache.isLockFailed) {
+        // Perform 09:25 Candle Open Lock
+        let bestCeStrike: number | null = null;
+        let bestCeOpen = -Infinity;
+        let bestCeSecId: string | undefined = undefined;
+
+        let bestPeStrike: number | null = null;
+        let bestPeOpen = -Infinity;
+        let bestPeSecId: string | undefined = undefined;
+
+        if (this.cachedLiveOptionChain && Object.keys(this.cachedLiveOptionChain).length > 0) {
+          for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
+            const k = Number(strikeStr);
+            const ceOpen = candleOpens?.[`CE_${k}`] ?? data.ceLtp;
+            const peOpen = candleOpens?.[`PE_${k}`] ?? data.peLtp;
+
+            // CE: strike >= atm, 09:25 Open < threshold, select highest Open
+            if (k >= atm && ceOpen > 0 && ceOpen < threshold && ceOpen > bestCeOpen) {
+              bestCeOpen = ceOpen;
+              bestCeStrike = k;
+              bestCeSecId = data.ceSecId;
+            }
+
+            // PE: strike <= atm, 09:25 Open < threshold, select highest Open
+            if (k <= atm && peOpen > 0 && peOpen < threshold && peOpen > bestPeOpen) {
+              bestPeOpen = peOpen;
+              bestPeStrike = k;
+              bestPeSecId = data.peSecId;
+            }
+          }
+        }
+
+        if (candleOpens && Object.keys(candleOpens).length > 0) {
+          for (const [key, openPrice] of Object.entries(candleOpens)) {
+            if (key.startsWith('CE_') && openPrice < threshold) {
+              const k = parseInt(key.replace('CE_', ''), 10);
+              if (k >= atm && openPrice > bestCeOpen) {
+                bestCeOpen = openPrice;
+                bestCeStrike = k;
+              }
+            } else if (key.startsWith('PE_') && openPrice < threshold) {
+              const k = parseInt(key.replace('PE_', ''), 10);
+              if (k <= atm && openPrice > bestPeOpen) {
+                bestPeOpen = openPrice;
+                bestPeStrike = k;
+              }
+            }
+          }
+        }
+
+        // Validate Lock Eligibility
+        if (bestCeStrike === null && bestPeStrike === null) {
+          cache.isLockFailed = true;
+          cache.lockFailureReason = 'LOCK FAILED — DATA UNAVAILABLE';
+          cache.noEligibleSide = 'BOTH';
+          status = 'LOCK_FAILED';
+        } else if (bestCeStrike === null) {
+          cache.noEligibleSide = 'CE';
+          status = 'NO_ELIGIBLE_STRIKE';
+        } else if (bestPeStrike === null) {
+          cache.noEligibleSide = 'PE';
+          status = 'NO_ELIGIBLE_STRIKE';
+        } else {
+          // Successfully lock strikes and threshold for the session
+          cache.isLocked = true;
+          cache.lockedThreshold = threshold;
+          cache.ceStrike = bestCeStrike;
+          cache.ceOpen0925 = bestCeOpen;
+          cache.peStrike = bestPeStrike;
+          cache.peOpen0925 = bestPeOpen;
+          status = 'CANDIDATES_LOCKED';
+
+          // Subscribe selected contracts to WebSocket feed without duplicate connections
+          if (bestCeSecId) {
+            dhanHqFeedSocket.subscribe({ exchangeSegment: 'NSE_FNO', securityId: bestCeSecId });
+          }
+          if (bestPeSecId) {
+            dhanHqFeedSocket.subscribe({ exchangeSegment: 'NSE_FNO', securityId: bestPeSecId });
+          }
+        }
+      }
+
+      // If already locked, proceed to breakout monitoring or trade progression
+      if (cache.isLocked) {
+        status = 'MONITORING_BREAKOUT';
+      } else if (cache.isLockFailed) {
+        status = 'LOCK_FAILED';
+      } else if (cache.noEligibleSide) {
+        status = 'NO_ELIGIBLE_STRIKE';
+      }
+    }
+
+    // STEP 3: Breakout Execution, OCO, and Time Exit Cutoff
     const currentCeLtp = this.getLiveOptionPrice(cache.ceStrike, 'CE');
     const currentPeLtp = this.getLiveOptionPrice(cache.peStrike, 'PE');
 
-    // STEP 2: Evaluate Breakout Trigger & Time Window
-    let status: NiftyBreakout180State['status'] = 'MONITORING_BREAKOUT';
-    let timeRemainingSec = Math.max(0, gate0945 * 60 - totalSeconds);
-
-    if (istMinutes < gate0925) {
-      status = 'WAITING_0925';
-    } else if (istMinutes >= gate0945) {
+    if (istMinutes >= gate0945) {
       if (cache.triggeredSide) {
         status = 'TIME_EXIT';
       } else {
         status = 'NO_TRADE_TODAY';
       }
       timeRemainingSec = 0;
-    } else {
-      // Between 09:25:00 and 09:45:00
+    } else if (cache.isLocked && istMinutes >= gate0925 && istMinutes < gate0945) {
       if (!cache.triggeredSide) {
-        // Look for first cross above 180
-        if (currentCeLtp >= 180.00 && currentPeLtp < 180.00) {
+        // Trigger directional buy on first cross above effective threshold
+        if (currentCeLtp >= effectiveThreshold && currentPeLtp < effectiveThreshold) {
           cache.triggeredSide = 'CE';
-          cache.entryPrice = +(Math.max(180.00, currentCeLtp)).toFixed(2);
+          cache.entryPrice = +(Math.max(effectiveThreshold, currentCeLtp)).toFixed(2);
           cache.entryTime = nowTime;
           cache.peakPrice = cache.entryPrice;
           cache.troughPrice = cache.entryPrice;
-        } else if (currentPeLtp >= 180.00 && currentCeLtp < 180.00) {
+        } else if (currentPeLtp >= effectiveThreshold && currentCeLtp < effectiveThreshold) {
           cache.triggeredSide = 'PE';
-          cache.entryPrice = +(Math.max(180.00, currentPeLtp)).toFixed(2);
+          cache.entryPrice = +(Math.max(effectiveThreshold, currentPeLtp)).toFixed(2);
           cache.entryTime = nowTime;
           cache.peakPrice = cache.entryPrice;
           cache.troughPrice = cache.entryPrice;
-        } else if (currentCeLtp >= 180.00 && currentPeLtp >= 180.00) {
-          // Tie-break: highest percentage momentum
+        } else if (currentCeLtp >= effectiveThreshold && currentPeLtp >= effectiveThreshold) {
+          // Simultaneous crossing: relative percentage momentum tie-breaker
           const cePct = (currentCeLtp - cache.ceOpen0925) / cache.ceOpen0925;
           const pePct = (currentPeLtp - cache.peOpen0925) / cache.peOpen0925;
           const side = cePct >= pePct ? 'CE' : 'PE';
@@ -1190,15 +1466,21 @@ class NiftyOptionFeedService {
       }
     }
 
+    const primaryCeLtp = currentCeLtp > 0 ? currentCeLtp : cache.ceOpen0925;
+    const primaryPeLtp = currentPeLtp > 0 ? currentPeLtp : cache.peOpen0925;
+
     const ceCandidate: Candidate180Contract = {
       type: 'CE',
       strike: cache.ceStrike,
       expiry: cache.expiryStr,
       price0925: cache.ceOpen0925,
-      distanceTo180: +(180.00 - cache.ceOpen0925).toFixed(2),
-      currentLtp: currentCeLtp,
+      distanceTo180: +Math.max(0, effectiveThreshold - primaryCeLtp).toFixed(2),
+      currentLtp: primaryCeLtp,
       isTriggered: cache.triggeredSide === 'CE',
       isDisabled: cache.triggeredSide === 'PE',
+      rank: 1,
+      quoteFreshness: this.getQuoteFreshness(),
+      lastTradeTimestamp: nowTime,
     };
 
     const peCandidate: Candidate180Contract = {
@@ -1206,16 +1488,19 @@ class NiftyOptionFeedService {
       strike: cache.peStrike,
       expiry: cache.expiryStr,
       price0925: cache.peOpen0925,
-      distanceTo180: +(180.00 - cache.peOpen0925).toFixed(2),
-      currentLtp: currentPeLtp,
+      distanceTo180: +Math.max(0, effectiveThreshold - primaryPeLtp).toFixed(2),
+      currentLtp: primaryPeLtp,
       isTriggered: cache.triggeredSide === 'PE',
       isDisabled: cache.triggeredSide === 'CE',
+      rank: 1,
+      quoteFreshness: this.getQuoteFreshness(),
+      lastTradeTimestamp: nowTime,
     };
 
     const currentPrice = cache.triggeredSide === 'CE'
-      ? currentCeLtp
+      ? primaryCeLtp
       : cache.triggeredSide === 'PE'
-      ? currentPeLtp
+      ? primaryPeLtp
       : null;
 
     const pnlPoints = cache.entryPrice && currentPrice
@@ -1248,8 +1533,12 @@ class NiftyOptionFeedService {
       tradeDate: todayDateKey,
       currentStep,
       status,
+      threshold,
+      lockedThreshold: cache.lockedThreshold,
       ceCandidate,
       peCandidate,
+      ceCandidates: topCeCandidates.length > 0 ? topCeCandidates : [ceCandidate],
+      peCandidates: topPeCandidates.length > 0 ? topPeCandidates : [peCandidate],
       activeContract: cache.triggeredSide,
       entryPrice: cache.entryPrice,
       entryTime: cache.entryTime,
@@ -1259,6 +1548,12 @@ class NiftyOptionFeedService {
       pnlPoints,
       timeRemainingSec,
       outcomeText,
+      isHistoricalSession: cache.isHistoricalSession,
+      historicalDate: cache.historicalDate,
+      historicalStatus: cache.historicalStatus,
+      isLockFailed: cache.isLockFailed,
+      lockFailureReason: cache.lockFailureReason,
+      noEligibleSide: cache.noEligibleSide,
     };
   }
 
@@ -1282,3 +1577,4 @@ class NiftyOptionFeedService {
 }
 
 export const niftyOptionFeedService = new NiftyOptionFeedService();
+

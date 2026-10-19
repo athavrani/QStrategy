@@ -18,6 +18,7 @@ import { FinancialValue } from '../components/common/FinancialValue';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { SkeletonLoader } from '../components/common/SkeletonLoader';
 import { dhanDirectService } from '../services/dhanDirectService';
+import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import * as Haptics from 'expo-haptics';
 
 export interface UnderlyingPreset {
@@ -95,15 +96,29 @@ export function OptionChainScreen(): React.JSX.Element {
       }
 
       try {
-        const result = await optionChainService.getOptionChain(
+        await dhanDirectService.initialize();
+        let result = await optionChainService.getOptionChain(
           selectedPreset.scripId,
           selectedPreset.segment,
           selectedExpiry,
           selectedPreset.strikeStep
         );
-        setChainData(result);
-        if (result?.expiry && !selectedExpiry) {
-          setSelectedExpiry(result.expiry);
+
+        if (!result || !result.strikes || result.strikes.length === 0) {
+          await niftyOptionFeedService.syncLiveOptionChain(selectedPreset.symbol);
+          result = await optionChainService.getOptionChain(
+            selectedPreset.scripId,
+            selectedPreset.segment,
+            selectedExpiry,
+            selectedPreset.strikeStep
+          );
+        }
+
+        if (result) {
+          setChainData(result);
+          if (result.expiry && !selectedExpiry) {
+            setSelectedExpiry(result.expiry);
+          }
         }
       } catch (err) {
         // Handled silently
@@ -491,16 +506,18 @@ export function OptionChainScreen(): React.JSX.Element {
         >
           <Text style={styles.emptyIcon}>📊</Text>
           <Text style={styles.emptyTitle}>
-            {feedStatus === 'ONLINE' ? 'Connecting to Option Chain' : 'Live Option Chain Ready'}
+            {dhanDirectService.isConfigured() || feedStatus === 'ONLINE'
+              ? 'Connecting to Option Chain'
+              : 'Live Option Chain Ready'}
           </Text>
           <Text style={styles.emptySubtitle}>
-            {feedStatus === 'ONLINE'
+            {dhanDirectService.isConfigured() || feedStatus === 'ONLINE'
               ? 'Retrieving live DhanHQ v2 institutional strike data & Greeks...'
               : 'Configure your Dhan Client ID & Token in Settings to stream institutional DhanHQ v2 Option Chain & Greeks.'}
           </Text>
           <StatusBadge
-            label={feedStatus === 'ONLINE' ? 'FEED CONNECTED' : 'AWAITING DHAN CREDENTIALS'}
-            variant={feedStatus === 'ONLINE' ? 'bullish' : 'neutral'}
+            label={dhanDirectService.isConfigured() || feedStatus === 'ONLINE' ? 'FEED CONNECTED' : 'AWAITING DHAN CREDENTIALS'}
+            variant={dhanDirectService.isConfigured() || feedStatus === 'ONLINE' ? 'bullish' : 'neutral'}
             showDot={true}
             style={{ marginTop: 12 }}
           />

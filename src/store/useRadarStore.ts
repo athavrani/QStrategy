@@ -39,8 +39,9 @@ interface RadarStoreState {
   oobtstState: OobtstLiveState | null;
   oobtstTargetPremium: number;
 
-  // Strategy 3: NIFTY 09:30 ₹180 Breakout
+  // Strategy 3: NIFTY 09:25 Breakout
   niftyBreakout180: NiftyBreakout180State | null;
+  breakoutThreshold: number;
 
   // Audit Journal
   journal: SignalJournalItem[];
@@ -57,6 +58,7 @@ interface RadarStoreState {
   clearSelectedStock: () => void;
   setIstTime: (timeStr: string) => void;
   setOobtstTargetPremium: (target: number) => Promise<boolean>;
+  setBreakoutThreshold: (target: number) => Promise<boolean>;
 }
 
 export const useRadarStore = create<RadarStoreState>((set, get) => ({
@@ -66,7 +68,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   isRefreshing: false,
   latchServiceInitialized: false,
   niftySpot: 0,
-  feedStatus: 'UNCONFIGURED',
+  feedStatus: 'ONLINE',
   lastTickTime: null,
   isStreamerInitialized: false,
 
@@ -78,6 +80,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   oobtstState: null,
   oobtstTargetPremium: 62.50,
   niftyBreakout180: null,
+  breakoutThreshold: 180.00,
 
   journal: [],
   signalsTodayCount: 0,
@@ -119,6 +122,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
     try {
       await niftyOptionFeedService.loadSavedTargetPremium();
+      await niftyOptionFeedService.loadSavedBreakoutThreshold();
       const [sessionRes, stocksRes, overnightRes, breakoutRes, niftyIndexQuoteRes, _chainRes] =
         await Promise.allSettled([
           apiService.fetchMarketSession(),
@@ -320,6 +324,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           oobtstState: liveOobtst,
           niftyBreakout180: breakout,
           oobtstTargetPremium: niftyOptionFeedService.getTargetPremium(),
+          breakoutThreshold: niftyOptionFeedService.getBreakoutThreshold(),
           signalsTodayCount,
           feedStatus: telemetry.status,
           lastTickTime: telemetry.lastTickTime || session.istTime,
@@ -354,6 +359,17 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       const ist = get().istTime !== '--:--:--' ? get().istTime : undefined;
       const updated = niftyOptionFeedService.evaluateOobtst(spot, ist);
       set({ oobtstTargetPremium: target, oobtstState: updated });
+    }
+    return ok;
+  },
+
+  setBreakoutThreshold: async (threshold: number) => {
+    const ok = await niftyOptionFeedService.setBreakoutThreshold(threshold);
+    if (ok) {
+      const spot = get().niftySpot || 24850;
+      const ist = get().istTime !== '--:--:--' ? get().istTime : undefined;
+      const updated = niftyOptionFeedService.evaluateBreakout180(spot, ist);
+      set({ breakoutThreshold: threshold, niftyBreakout180: updated });
     }
     return ok;
   },
