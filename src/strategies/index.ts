@@ -12,3 +12,4 @@ strategyRegistry.register(Orb15MinPlugin);
 export { strategyRegistry };
 export * from './VolumeCrossoverStrategy';
 export * from './TrailingSLStateMachine';
+export * from './NiftyOvernightStrategy';
