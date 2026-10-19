@@ -37,6 +37,7 @@ interface RadarStoreState {
   // Strategy 2: NIFTY 09:20 Overnight (62.5)
   niftyOvernight: NiftyOvernightState | null;
   oobtstState: OobtstLiveState | null;
+  oobtstTargetPremium: number;
 
   // Strategy 3: NIFTY 09:30 ₹180 Breakout
   niftyBreakout180: NiftyBreakout180State | null;
@@ -55,6 +56,7 @@ interface RadarStoreState {
   selectStock: (ticker: string) => void;
   clearSelectedStock: () => void;
   setIstTime: (timeStr: string) => void;
+  setOobtstTargetPremium: (target: number) => Promise<boolean>;
 }
 
 export const useRadarStore = create<RadarStoreState>((set, get) => ({
@@ -74,6 +76,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
   niftyOvernight: null,
   oobtstState: null,
+  oobtstTargetPremium: 62.50,
   niftyBreakout180: null,
 
   journal: [],
@@ -115,6 +118,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     }
 
     try {
+      await niftyOptionFeedService.loadSavedTargetPremium();
       const [sessionRes, stocksRes, overnightRes, breakoutRes, niftyIndexQuoteRes, _chainRes] =
         await Promise.allSettled([
           apiService.fetchMarketSession(),
@@ -315,6 +319,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           niftyOvernight: overnight,
           oobtstState: liveOobtst,
           niftyBreakout180: breakout,
+          oobtstTargetPremium: niftyOptionFeedService.getTargetPremium(),
           signalsTodayCount,
           feedStatus: telemetry.status,
           lastTickTime: telemetry.lastTickTime || session.istTime,
@@ -340,6 +345,17 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
   setIstTime: (timeStr: string) => {
     set({ istTime: timeStr });
+  },
+
+  setOobtstTargetPremium: async (target: number) => {
+    const ok = await niftyOptionFeedService.setTargetPremium(target);
+    if (ok) {
+      const spot = get().niftySpot || 24850;
+      const ist = get().istTime !== '--:--:--' ? get().istTime : undefined;
+      const updated = niftyOptionFeedService.evaluateOobtst(spot, ist);
+      set({ oobtstTargetPremium: target, oobtstState: updated });
+    }
+    return ok;
   },
 
   initStreamer: () => {
@@ -376,11 +392,13 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         hasChanged = true;
       }
 
+      let derivativeTickArrived = false;
       // Check if derivative ticks arrived (NSE_FNO, segment 2)
       for (const tick of Object.values(tickBatch)) {
         if ('ltp' in tick && (tick.exchangeSegment === 2 || (tick as any).exchangeSegment === 'NSE_FNO')) {
           niftyOptionFeedService.updateOptionPriceFromTick(String(tick.securityId), tick.ltp);
           hasChanged = true;
+          derivativeTickArrived = true;
         }
       }
 
@@ -487,10 +505,13 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           stateUpdates.stocks = updatedStocks;
         }
 
-        if (spotChanged) {
-          stateUpdates.niftySpot = newNiftySpot;
-          stateUpdates.oobtstState = niftyOptionFeedService.evaluateOobtst(newNiftySpot, get().istTime || nowTime);
-          stateUpdates.niftyBreakout180 = niftyOptionFeedService.evaluateBreakout180(newNiftySpot, get().istTime || nowTime);
+        if (spotChanged || derivativeTickArrived) {
+          if (spotChanged) {
+            stateUpdates.niftySpot = newNiftySpot;
+            stateUpdates.niftyBreakout180 = niftyOptionFeedService.evaluateBreakout180(newNiftySpot, get().istTime || nowTime);
+          }
+          const spot = spotChanged ? newNiftySpot : get().niftySpot;
+          stateUpdates.oobtstState = niftyOptionFeedService.evaluateOobtst(spot, get().istTime || nowTime);
         }
 
         set(stateUpdates);

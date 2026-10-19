@@ -221,6 +221,10 @@ export class DhanHqFeedSocket {
     };
   }
 
+  public isConnected(): boolean {
+    return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  }
+
   /**
    * Decodes incoming WebSocket frames and buffers them
    */

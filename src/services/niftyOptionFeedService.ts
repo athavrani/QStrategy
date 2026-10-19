@@ -4,7 +4,8 @@
 // Mathematical invariants: Anchor ~62.50, 1.5x Dual Breakout, 50% SL, OCO
 // =====================================================================
 
-import { OobtstLiveState, OobtstLegDetail } from '../strategies/types';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { OobtstLiveState, OobtstLegDetail, OobtstCandidateStrike } from '../strategies/types';
 import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
 import { dhanHqFeedSocket } from './dhan/DhanHqFeedSocket';
@@ -125,7 +126,12 @@ interface OobtstDayAnchor {
   isConfirmed: boolean;
   isProvisional: boolean;
   isMarketClosed: boolean;
+  isLockFailed?: boolean;
+  lockFailureReason?: string;
   confirmedAt?: string;
+  targetPremium: number;
+  ceCandidates: OobtstCandidateStrike[];
+  peCandidates: OobtstCandidateStrike[];
 }
 
 export function parseIstSeconds(istTimeStr?: string): { totalMinutes: number; totalSeconds: number } {
@@ -155,6 +161,8 @@ class NiftyOptionFeedService {
   private cachedAnchor: OobtstDayAnchor | null = null;
   private peakCeLtp: number = 0;
   private peakPeLtp: number = 0;
+  private targetPremium: number = ANCHOR_TARGET_PREMIUM;
+  private isTargetPremiumLoaded: boolean = false;
   private cachedLiveOptionChain: Record<
     number,
     {
@@ -170,20 +178,61 @@ class NiftyOptionFeedService {
       peAsk?: number;
       ceSecId?: string;
       peSecId?: string;
+      ceUpdatedTime?: number;
+      peUpdatedTime?: number;
     }
   > | null = null;
   private lastLiveSpot: number | null = null;
   private lastOptionChainSyncTime = 0;
 
+  public getTargetPremium(): number {
+    return this.targetPremium;
+  }
+
+  public async loadSavedTargetPremium(): Promise<number> {
+    if (this.isTargetPremiumLoaded) return this.targetPremium;
+    try {
+      const saved = await AsyncStorage.getItem('@qstrategy_oobtst_target_premium');
+      if (saved) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed) && parsed > 0) {
+          this.targetPremium = Number(parsed.toFixed(2));
+        }
+      }
+    } catch {}
+    this.isTargetPremiumLoaded = true;
+    return this.targetPremium;
+  }
+
+  public async setTargetPremium(val: number): Promise<boolean> {
+    if (typeof val !== 'number' || isNaN(val) || val <= 0) {
+      return false;
+    }
+    const clean = Number(val.toFixed(2));
+    this.targetPremium = clean;
+    try {
+      await AsyncStorage.setItem('@qstrategy_oobtst_target_premium', String(clean));
+    } catch {}
+
+    // If anchor is not confirmed/locked yet, reset cached provisional anchor so it recalculates with new target
+    if (this.cachedAnchor && !this.cachedAnchor.isConfirmed) {
+      this.cachedAnchor = null;
+    }
+    return true;
+  }
+
   public updateOptionPriceFromTick(securityId: string, ltp: number): void {
     if (!this.cachedLiveOptionChain || ltp <= 0) return;
+    const now = Date.now();
     for (const item of Object.values(this.cachedLiveOptionChain)) {
       if (item.ceSecId && item.ceSecId === securityId) {
         item.ceLtp = ltp;
+        item.ceUpdatedTime = now;
         break;
       }
       if (item.peSecId && item.peSecId === securityId) {
         item.peLtp = ltp;
+        item.peUpdatedTime = now;
         break;
       }
     }
@@ -201,29 +250,36 @@ class NiftyOptionFeedService {
     try {
       const ocData = await dhanDirectService.fetchOptionChain(expiryDateYMD, ticker);
       if (ocData && ocData.oc && Object.keys(ocData.oc).length > 0) {
+        const now = Date.now();
+        for (const item of Object.values(ocData.oc)) {
+          item.ceUpdatedTime = now;
+          item.peUpdatedTime = now;
+        }
         this.cachedLiveOptionChain = ocData.oc;
         if (ocData.spotPrice && ocData.spotPrice > 0) {
           this.lastLiveSpot = ocData.spotPrice;
         }
-        this.lastOptionChainSyncTime = Date.now();
+        this.lastOptionChainSyncTime = now;
 
-        // Register active option contracts to WebSocket streamer for live tick updates
+        // Register candidate option contracts to WebSocket streamer for live tick updates
         try {
-          const anchor = this.getOrCreateDayAnchor(this.lastLiveSpot || 24850);
-          const ceItem = ocData.oc[anchor.ceStrike];
-          const peItem = ocData.oc[anchor.peStrike];
-          if (ceItem?.ceSecId) {
-            dhanHqFeedSocket.subscribe({
-              exchangeSegment: 'NSE_FNO',
-              securityId: String(ceItem.ceSecId),
-            });
-          }
-          if (peItem?.peSecId) {
-            dhanHqFeedSocket.subscribe({
-              exchangeSegment: 'NSE_FNO',
-              securityId: String(peItem.peSecId),
-            });
-          }
+          const { ceCandidates, peCandidates } = this.selectTopTwoCandidates(this.lastLiveSpot || 24850);
+          ceCandidates.forEach((c) => {
+            if (c.securityId) {
+              dhanHqFeedSocket.subscribe({
+                exchangeSegment: 'NSE_FNO',
+                securityId: String(c.securityId),
+              });
+            }
+          });
+          peCandidates.forEach((c) => {
+            if (c.securityId) {
+              dhanHqFeedSocket.subscribe({
+                exchangeSegment: 'NSE_FNO',
+                securityId: String(c.securityId),
+              });
+            }
+          });
         } catch {}
 
         return true;
@@ -242,62 +298,160 @@ class NiftyOptionFeedService {
   }
 
   /**
-   * Selects Call and Put strikes whose live price is closest to ₹62.50
-   * Uses LIVE option market data only.
+   * Evaluates the quote freshness of the option chain feed.
+   */
+  public getQuoteFreshness(): 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED' {
+    if (!dhanHqFeedSocket.isConnected()) {
+      return 'DISCONNECTED';
+    }
+    if (!this.lastOptionChainSyncTime || this.lastOptionChainSyncTime === 0) {
+      return 'STALE';
+    }
+    const ageMs = Date.now() - this.lastOptionChainSyncTime;
+    if (ageMs < 5000) return 'FRESH';
+    if (ageMs < 15000) return 'AGING';
+    return 'STALE';
+  }
+
+  /**
+   * Evaluates the two CE and two PE strikes closest to target premium.
+   * Calculates absolute difference and quote freshness. Never fabricates prices.
+   */
+  public selectTopTwoCandidates(
+    spot: number,
+    targetPremium: number = this.targetPremium
+  ): {
+    ceCandidates: OobtstCandidateStrike[];
+    peCandidates: OobtstCandidateStrike[];
+    previewAvailable: boolean;
+  } {
+    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
+
+    if (!this.cachedLiveOptionChain || Object.keys(this.cachedLiveOptionChain).length === 0) {
+      return { ceCandidates: [], peCandidates: [], previewAvailable: false };
+    }
+
+    const now = Date.now();
+    const ceList: { strike: number; ltp: number; diff: number; secId?: string; lastUpdated: number }[] = [];
+    const peList: { strike: number; ltp: number; diff: number; secId?: string; lastUpdated: number }[] = [];
+
+    for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
+      const strike = Number(strikeStr);
+      // CE Candidates: OTM or near-ATM (strike >= atm) with valid price > 0
+      if (strike >= atm && data.ceLtp > 0) {
+        ceList.push({
+          strike,
+          ltp: data.ceLtp,
+          diff: Math.abs(data.ceLtp - targetPremium),
+          secId: data.ceSecId,
+          lastUpdated: data.ceUpdatedTime || this.lastOptionChainSyncTime || now,
+        });
+      }
+      // PE Candidates: OTM or near-ATM (strike <= atm) with valid price > 0
+      if (strike <= atm && data.peLtp > 0) {
+        peList.push({
+          strike,
+          ltp: data.peLtp,
+          diff: Math.abs(data.peLtp - targetPremium),
+          secId: data.peSecId,
+          lastUpdated: data.peUpdatedTime || this.lastOptionChainSyncTime || now,
+        });
+      }
+    }
+
+    // Fallback if not enough strikes on OTM side: search all strikes with price > 0
+    if (ceList.length < 2) {
+      for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
+        const strike = Number(strikeStr);
+        if (data.ceLtp > 0 && !ceList.some((c) => c.strike === strike)) {
+          ceList.push({
+            strike,
+            ltp: data.ceLtp,
+            diff: Math.abs(data.ceLtp - targetPremium),
+            secId: data.ceSecId,
+            lastUpdated: data.ceUpdatedTime || this.lastOptionChainSyncTime || now,
+          });
+        }
+      }
+    }
+    if (peList.length < 2) {
+      for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
+        const strike = Number(strikeStr);
+        if (data.peLtp > 0 && !peList.some((p) => p.strike === strike)) {
+          peList.push({
+            strike,
+            ltp: data.peLtp,
+            diff: Math.abs(data.peLtp - targetPremium),
+            secId: data.peSecId,
+            lastUpdated: data.peUpdatedTime || this.lastOptionChainSyncTime || now,
+          });
+        }
+      }
+    }
+
+    ceList.sort((a, b) => a.diff - b.diff);
+    peList.sort((a, b) => a.diff - b.diff);
+
+    const formatCandidate = (
+      item: { strike: number; ltp: number; diff: number; secId?: string; lastUpdated: number },
+      type: 'CE' | 'PE',
+      rank: 1 | 2
+    ): OobtstCandidateStrike => {
+      const ageMs = Math.max(0, now - item.lastUpdated);
+      const isStale = ageMs > 15000;
+      const quoteTime = item.lastUpdated > 0 ? new Date(item.lastUpdated).toLocaleTimeString('en-IN') : '--:--:--';
+      return {
+        rank,
+        type,
+        strike: item.strike,
+        symbol: `NIFTY ${item.strike} ${type}`,
+        ltp: item.ltp,
+        diffFromTarget: Number(item.diff.toFixed(2)),
+        quoteTimestamp: quoteTime,
+        quoteAgeMs: ageMs,
+        isStale,
+        securityId: item.secId,
+      };
+    };
+
+    const ceCandidates: OobtstCandidateStrike[] = [];
+    if (ceList.length > 0) ceCandidates.push(formatCandidate(ceList[0], 'CE', 1));
+    if (ceList.length > 1) ceCandidates.push(formatCandidate(ceList[1], 'CE', 2));
+
+    const peCandidates: OobtstCandidateStrike[] = [];
+    if (peList.length > 0) peCandidates.push(formatCandidate(peList[0], 'PE', 1));
+    if (peList.length > 1) peCandidates.push(formatCandidate(peList[1], 'PE', 2));
+
+    return {
+      ceCandidates,
+      peCandidates,
+      previewAvailable: ceCandidates.length > 0 && peCandidates.length > 0,
+    };
+  }
+
+  /**
+   * Backward-compatible helper for single anchor strike selection
    */
   public selectAnchorStrikes(
     spot: number,
     tYears?: number,
-    targetPremium = ANCHOR_TARGET_PREMIUM
+    targetPremium = this.targetPremium
   ): {
     ceStrike: number;
     ceOpen: number;
     peStrike: number;
     peOpen: number;
   } {
-    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
-
-    // Priority 1: Check live option chain if available
-    if (this.cachedLiveOptionChain && Object.keys(this.cachedLiveOptionChain).length > 0) {
-      let bestCeStrike = 0;
-      let minCeDiff = Infinity;
-      let bestCePrice = 0;
-
-      let bestPeStrike = 0;
-      let minPeDiff = Infinity;
-      let bestPePrice = 0;
-
-      for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
-        const strike = Number(strikeStr);
-        if (strike >= atm && data.ceLtp > 0) {
-          const diff = Math.abs(data.ceLtp - targetPremium);
-          if (diff < minCeDiff) {
-            minCeDiff = diff;
-            bestCeStrike = strike;
-            bestCePrice = data.ceLtp;
-          }
-        }
-        if (strike <= atm && data.peLtp > 0) {
-          const diff = Math.abs(data.peLtp - targetPremium);
-          if (diff < minPeDiff) {
-            minPeDiff = diff;
-            bestPeStrike = strike;
-            bestPePrice = data.peLtp;
-          }
-        }
-      }
-
-      if (bestCeStrike > 0 && bestPeStrike > 0) {
-        return {
-          ceStrike: bestCeStrike,
-          ceOpen: bestCePrice,
-          peStrike: bestPeStrike,
-          peOpen: bestPePrice,
-        };
-      }
+    const { ceCandidates, peCandidates } = this.selectTopTwoCandidates(spot, targetPremium);
+    if (ceCandidates.length > 0 && peCandidates.length > 0) {
+      return {
+        ceStrike: ceCandidates[0].strike,
+        ceOpen: ceCandidates[0].ltp,
+        peStrike: peCandidates[0].strike,
+        peOpen: peCandidates[0].ltp,
+      };
     }
-
-    // Default to nearest valid OTM strikes around live ATM (5 strikes = 250 pts)
+    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
     return {
       ceStrike: atm + 250,
       ceOpen: 0,
@@ -308,10 +462,11 @@ class NiftyOptionFeedService {
 
   /**
    * Retrieves or initializes the 09:20 day anchor.
-   * Invariant:
-   * 1. Before 09:15 AM (Market Closed): strikes are not locked.
-   * 2. 09:15 to 09:20 AM (Pre-Confirmation): strikes are provisional candidates and update dynamically if target strike changes.
-   * 3. At or after 09:20 AM: target strikes confirmed and locked for the day.
+   * Invariants:
+   * 1. Market Closed (< 09:15): Strikes unlocked, labeled PREVIEW — NOT CONFIRMED (or PREVIEW UNAVAILABLE).
+   * 2. Provisional (09:15 - 09:19:59): Top two CE and PE candidates update dynamically from live ticks.
+   * 3. 09:20:00 Lock: Selects single closest CE and PE, captures 09:20 opening prices, and locks permanently for session.
+   *    Never replaces a locked strike. If quotes are invalid/unavailable, marks LOCK FAILED — DATA UNAVAILABLE.
    */
   public getOrCreateDayAnchor(spot: number, istTimeStr?: string): OobtstDayAnchor {
     const today = formatDateKeyIST();
@@ -325,22 +480,54 @@ class NiftyOptionFeedService {
     const isProvisional = totalSeconds >= gate0915 && totalSeconds < gate0920;
     const isConfirmationTime = totalSeconds >= gate0920;
 
-    // If anchor was already confirmed today at or after 09:20:00, it is permanently locked for today's session
+    // Rule 4: If anchor was already confirmed today at or after 09:20:00, it is permanently locked for today's session
     if (
       this.cachedAnchor &&
       this.cachedAnchor.tradeDate === today &&
       this.cachedAnchor.expiryStr === expiryStr &&
-      this.cachedAnchor.isConfirmed
+      this.cachedAnchor.isConfirmed &&
+      !this.cachedAnchor.isLockFailed
     ) {
       return this.cachedAnchor;
     }
 
-    // On a new trading day, or before 09:20 confirmation:
-    // Select nearest valid option strikes dynamically!
-    // "Lock future strikes provisionally, but update them if the target strike changes before confirmation."
-    const { ceStrike, ceOpen, peStrike, peOpen } = this.selectAnchorStrikes(spot);
-    const ceTrigger = ceOpen > 0 ? +(ceOpen * 1.5).toFixed(2) : 0;
-    const peTrigger = peOpen > 0 ? +(peOpen * 1.5).toFixed(2) : 0;
+    const { ceCandidates, peCandidates, previewAvailable } = this.selectTopTwoCandidates(spot, this.targetPremium);
+
+    const rank1Ce = ceCandidates.length > 0 ? ceCandidates[0] : null;
+    const rank1Pe = peCandidates.length > 0 ? peCandidates[0] : null;
+
+    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
+    const ceStrike = rank1Ce ? rank1Ce.strike : atm + 250;
+    const peStrike = rank1Pe ? rank1Pe.strike : atm - 250;
+
+    let isConfirmed = false;
+    let isLockFailed = false;
+    let lockFailureReason: string | undefined = undefined;
+
+    if (isConfirmationTime) {
+      // Validate that valid quotes exist for both selected contracts
+      const ceValid = rank1Ce !== null && rank1Ce.ltp > 0;
+      const peValid = rank1Pe !== null && rank1Pe.ltp > 0;
+
+      if (ceValid && peValid) {
+        isConfirmed = true;
+        isLockFailed = false;
+      } else {
+        // Rule 4: If quotes unavailable, show LOCK FAILED — DATA UNAVAILABLE and disarm until validated
+        isConfirmed = false;
+        isLockFailed = true;
+        lockFailureReason = !rank1Ce || rank1Ce.ltp <= 0
+          ? 'CE quote unavailable at 09:20'
+          : !rank1Pe || rank1Pe.ltp <= 0
+          ? 'PE quote unavailable at 09:20'
+          : 'Stale quote data at 09:20 lock point';
+      }
+    }
+
+    const ceOpen = isConfirmed && rank1Ce ? rank1Ce.ltp : 0;
+    const peOpen = isConfirmed && rank1Pe ? rank1Pe.ltp : 0;
+    const ceTrigger = isConfirmed && ceOpen > 0 ? +(ceOpen * 1.5).toFixed(2) : 0;
+    const peTrigger = isConfirmed && peOpen > 0 ? +(peOpen * 1.5).toFixed(2) : 0;
 
     const newAnchor: OobtstDayAnchor = {
       tradeDate: today,
@@ -352,18 +539,22 @@ class NiftyOptionFeedService {
       peOpen,
       peTrigger,
       expiryStr,
-      isConfirmed: isConfirmationTime,
-      isProvisional: isProvisional,
-      isMarketClosed: isMarketClosed,
-      confirmedAt: isConfirmationTime ? '09:20:00 IST' : undefined,
+      isConfirmed,
+      isProvisional,
+      isMarketClosed,
+      isLockFailed,
+      lockFailureReason,
+      confirmedAt: isConfirmed ? '09:20:00 IST' : undefined,
+      targetPremium: this.targetPremium,
+      ceCandidates,
+      peCandidates,
     };
 
-    if (isConfirmationTime) {
+    if (isConfirmed) {
       this.cachedAnchor = newAnchor;
       this.peakCeLtp = ceOpen;
       this.peakPeLtp = peOpen;
     } else {
-      // Provisional candidate (not permanently locked)
       this.cachedAnchor = newAnchor;
     }
 
@@ -527,6 +718,9 @@ class NiftyOptionFeedService {
     // Case 1: Market Closed (Before 09:15 IST)
     // Invariant: Do NOT display locked strikes when the market is closed.
     if (isMarketClosed) {
+      const previewAvailable = anchor.ceCandidates.length > 0 && anchor.peCandidates.length > 0;
+      const statusBadgeText = previewAvailable ? 'PREVIEW — NOT CONFIRMED' : 'PREVIEW UNAVAILABLE';
+
       const ceLeg: OobtstLegDetail = {
         type: 'CE',
         strike: anchor.ceStrike,
@@ -554,7 +748,7 @@ class NiftyOptionFeedService {
       return {
         currentStep: 1,
         status: 'SCANNING',
-        statusBadgeText: 'MARKET_CLOSED',
+        statusBadgeText,
         expiryDate: expiryStr,
         daysToExpiry,
         niftySpot: spot,
@@ -562,10 +756,15 @@ class NiftyOptionFeedService {
         isLocked: false,
         isProvisional: false,
         isMarketClosed: true,
+        previewAvailable,
+        targetPremium: this.targetPremium,
+        ceCandidates: anchor.ceCandidates,
+        peCandidates: anchor.peCandidates,
         ceLeg,
         peLeg,
         activeLeg: null,
         lastUpdated: nowTime,
+        quoteFreshness: this.getQuoteFreshness(),
       };
     }
 
@@ -610,10 +809,66 @@ class NiftyOptionFeedService {
         isLocked: false,
         isProvisional: true,
         isMarketClosed: false,
+        previewAvailable: false,
+        targetPremium: this.targetPremium,
+        ceCandidates: anchor.ceCandidates,
+        peCandidates: anchor.peCandidates,
         ceLeg,
         peLeg,
         activeLeg: null,
         lastUpdated: nowTime,
+        quoteFreshness: this.getQuoteFreshness(),
+      };
+    }
+
+    // Case 2.5: Lock Failure at 09:20:00 (Missing or invalid quote data prevents arming)
+    if (anchor.isLockFailed) {
+      const ceLeg: OobtstLegDetail = {
+        type: 'CE',
+        strike: anchor.ceStrike,
+        symbol: `NIFTY ${anchor.ceStrike} CE`,
+        openPrice: 0,
+        triggerPrice: 0,
+        currentLtp: ceLtp,
+        progressPct: 0,
+        status: 'SCANNING',
+        isProvisional: false,
+      };
+
+      const peLeg: OobtstLegDetail = {
+        type: 'PE',
+        strike: anchor.peStrike,
+        symbol: `NIFTY ${anchor.peStrike} PE`,
+        openPrice: 0,
+        triggerPrice: 0,
+        currentLtp: peLtp,
+        progressPct: 0,
+        status: 'SCANNING',
+        isProvisional: false,
+      };
+
+      return {
+        currentStep: 1,
+        status: 'LOCK_FAILED',
+        statusBadgeText: 'LOCK FAILED — DATA UNAVAILABLE',
+        expiryDate: expiryStr,
+        daysToExpiry,
+        niftySpot: spot,
+        anchorTime: '09:20:00 IST',
+        isLocked: false,
+        isProvisional: false,
+        isMarketClosed: false,
+        isLockFailed: true,
+        lockFailureReason: anchor.lockFailureReason || 'Exact opening price or valid quote unavailable at 09:20 lock point',
+        previewAvailable: false,
+        targetPremium: this.targetPremium,
+        ceCandidates: anchor.ceCandidates,
+        peCandidates: anchor.peCandidates,
+        ceLeg,
+        peLeg,
+        activeLeg: null,
+        lastUpdated: nowTime,
+        quoteFreshness: this.getQuoteFreshness(),
       };
     }
 
@@ -647,7 +902,7 @@ class NiftyOptionFeedService {
     // Initial state: Step 2 ARMED
     let currentStep: 1 | 2 | 3 = 2;
     let status: 'SCANNING' | 'ARMED' | 'ACTIVE' | 'SL_HIT' | 'BTST_HOLD' = 'ARMED';
-    let statusBadgeText = 'ARMED_1.5X';
+    let statusBadgeText = 'LOCKED / ARMED_1.5X';
     let activeLeg: 'CE' | 'PE' | null = null;
     let executedSymbol: string | undefined;
     let executedPrice: number | undefined;
@@ -745,6 +1000,11 @@ class NiftyOptionFeedService {
       isLocked: true,
       isProvisional: false,
       isMarketClosed: false,
+      isLockFailed: false,
+      previewAvailable: false,
+      targetPremium: this.targetPremium,
+      ceCandidates: anchor.ceCandidates,
+      peCandidates: anchor.peCandidates,
       ceLeg,
       peLeg,
       activeLeg,
@@ -755,6 +1015,7 @@ class NiftyOptionFeedService {
       pnlPerShare,
       pnlPerLot,
       lastUpdated: nowTime,
+      quoteFreshness: this.getQuoteFreshness(),
     };
   }
 

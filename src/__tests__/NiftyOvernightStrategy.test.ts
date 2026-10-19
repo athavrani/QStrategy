@@ -1,6 +1,8 @@
 import { NiftyOvernightStrategy, TARGET_PREMIUM_ANCHOR } from '../strategies/NiftyOvernightStrategy';
 import { TradingCalendarService } from '../services/TradingCalendarService';
 import { OptionChainResult } from '../services/dhan/DhanOptionChainService';
+import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
+import { dhanDirectService } from '../services/dhanDirectService';
 
 describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
   let strategy: NiftyOvernightStrategy;
@@ -250,6 +252,198 @@ describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
       expect(exitEval.status).toBe('COMPLETED');
       expect(exitEval.ceLeg?.status).toBe('SQUARED_OFF');
       expect(exitEval.peLeg?.status).toBe('SQUARED_OFF');
+    });
+  });
+
+  describe('09:20 OOBTST Enhanced Strike Selection Engine (Dhan Feed & Lock Invariants)', () => {
+    const mockOptionChain = {
+      25100: { ceLtp: 62.80, peLtp: 35.00, ceOi: 50000, peOi: 20000, ceSecId: 'SEC_25100_CE', peSecId: 'SEC_25100_PE' },
+      25150: { ceLtp: 58.50, peLtp: 42.00, ceOi: 40000, peOi: 30000, ceSecId: 'SEC_25150_CE', peSecId: 'SEC_25150_PE' },
+      25200: { ceLtp: 48.00, peLtp: 50.00, ceOi: 30000, peOi: 40000, ceSecId: 'SEC_25200_CE', peSecId: 'SEC_25200_PE' },
+      24600: { ceLtp: 120.00, peLtp: 61.90, ceOi: 20000, peOi: 55000, ceSecId: 'SEC_24600_CE', peSecId: 'SEC_24600_PE' },
+      24550: { ceLtp: 135.00, peLtp: 64.20, ceOi: 15000, peOi: 45000, ceSecId: 'SEC_24550_CE', peSecId: 'SEC_24550_PE' },
+      24500: { ceLtp: 150.00, peLtp: 68.00, ceOi: 10000, peOi: 35000, ceSecId: 'SEC_24500_CE', peSecId: 'SEC_24500_PE' },
+    };
+
+    beforeEach(async () => {
+      niftyOptionFeedService.resetAnchor();
+      await niftyOptionFeedService.setTargetPremium(62.50);
+      jest.spyOn(dhanDirectService, 'fetchOptionChain').mockResolvedValue({
+        spotPrice: 24850,
+        oc: JSON.parse(JSON.stringify(mockOptionChain)),
+      });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    test('Requirement 1 & 5: Configurable target premium validation and updates', async () => {
+      expect(niftyOptionFeedService.getTargetPremium()).toBe(62.50);
+
+      // Positive value is accepted and saved
+      const ok1 = await niftyOptionFeedService.setTargetPremium(70.00);
+      expect(ok1).toBe(true);
+      expect(niftyOptionFeedService.getTargetPremium()).toBe(70.00);
+
+      // Non-positive values (<= 0 or NaN) are rejected
+      const ok2 = await niftyOptionFeedService.setTargetPremium(-5.00);
+      expect(ok2).toBe(false);
+      expect(niftyOptionFeedService.getTargetPremium()).toBe(70.00);
+
+      const ok3 = await niftyOptionFeedService.setTargetPremium(0);
+      expect(ok3).toBe(false);
+      expect(niftyOptionFeedService.getTargetPremium()).toBe(70.00);
+
+      const ok4 = await niftyOptionFeedService.setTargetPremium(NaN);
+      expect(ok4).toBe(false);
+      expect(niftyOptionFeedService.getTargetPremium()).toBe(70.00);
+
+      // Restore default 62.50
+      await niftyOptionFeedService.setTargetPremium(62.50);
+      expect(niftyOptionFeedService.getTargetPremium()).toBe(62.50);
+    });
+
+    test('Requirement 2: Market-Closed Preview displays 2 CE and 2 PE candidates labeled PREVIEW — NOT CONFIRMED', async () => {
+      await niftyOptionFeedService.syncLiveOptionChain();
+
+      const evalResult = niftyOptionFeedService.evaluateOobtst(24850, '09:05:00 AM');
+
+      expect(evalResult.isMarketClosed).toBe(true);
+      expect(evalResult.isProvisional).toBe(false);
+      expect(evalResult.isLocked).toBe(false);
+      expect(evalResult.statusBadgeText).toBe('PREVIEW — NOT CONFIRMED');
+      expect(evalResult.previewAvailable).toBe(true);
+
+      // Verify two CE candidates sorted by difference to 62.50
+      expect(evalResult.ceCandidates.length).toBe(2);
+      expect(evalResult.ceCandidates[0].rank).toBe(1);
+      expect(evalResult.ceCandidates[0].strike).toBe(25100);
+      expect(evalResult.ceCandidates[0].ltp).toBe(62.80);
+      expect(evalResult.ceCandidates[0].diffFromTarget).toBe(0.30); // |62.80 - 62.50|
+      expect(evalResult.ceCandidates[1].rank).toBe(2);
+      expect(evalResult.ceCandidates[1].strike).toBe(25150);
+      expect(evalResult.ceCandidates[1].ltp).toBe(58.50);
+
+      // Verify two PE candidates sorted by difference to 62.50
+      expect(evalResult.peCandidates.length).toBe(2);
+      expect(evalResult.peCandidates[0].rank).toBe(1);
+      expect(evalResult.peCandidates[0].strike).toBe(24600);
+      expect(evalResult.peCandidates[0].ltp).toBe(61.90);
+      expect(evalResult.peCandidates[0].diffFromTarget).toBe(0.60); // |61.90 - 62.50|
+      expect(evalResult.peCandidates[1].rank).toBe(2);
+      expect(evalResult.peCandidates[1].strike).toBe(24550);
+      expect(evalResult.peCandidates[1].ltp).toBe(64.20);
+    });
+
+    test('Requirement 2 (Fallback): PREVIEW UNAVAILABLE when option chain data is absent, never fabricates prices', () => {
+      niftyOptionFeedService.resetAnchor();
+
+      const evalResult = niftyOptionFeedService.evaluateOobtst(24850, '09:05:00 AM');
+
+      expect(evalResult.isMarketClosed).toBe(true);
+      expect(evalResult.statusBadgeText).toBe('PREVIEW UNAVAILABLE');
+      expect(evalResult.previewAvailable).toBe(false);
+      expect(evalResult.ceLeg.openPrice).toBe(0);
+      expect(evalResult.peLeg.openPrice).toBe(0);
+    });
+
+    test('Requirement 3: Live Provisional Monitoring (09:15-09:19:59 IST) updates candidates dynamically from ticks', async () => {
+      await niftyOptionFeedService.syncLiveOptionChain();
+
+      // At 09:18:00 AM: Provisional window
+      const provEval = niftyOptionFeedService.evaluateOobtst(24850, '09:18:00 AM');
+      expect(provEval.isProvisional).toBe(true);
+      expect(provEval.isLocked).toBe(false);
+      expect(provEval.statusBadgeText).toBe('PROVISIONAL_STRIKES');
+      expect(provEval.ceCandidates[0].strike).toBe(25100);
+
+      // Simulate live tick on 25150 CE making it closest to 62.50
+      niftyOptionFeedService.updateOptionPriceFromTick('SEC_25150_CE', 62.55);
+
+      const updatedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:18:30 AM');
+      expect(updatedEval.ceCandidates[0].strike).toBe(25150);
+      expect(updatedEval.ceCandidates[0].ltp).toBe(62.55);
+      expect(updatedEval.ceCandidates[0].diffFromTarget).toBe(0.05);
+    });
+
+    test('Requirement 4: Exact 09:20 AM Lock selects single CE/PE, captures open prices, and locks permanently for session', async () => {
+      await niftyOptionFeedService.syncLiveOptionChain();
+
+      // At exactly 09:20:00 AM
+      const lockedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+
+      expect(lockedEval.currentStep).toBe(2);
+      expect(lockedEval.status).toBe('ARMED');
+      expect(lockedEval.statusBadgeText).toBe('LOCKED / ARMED_1.5X');
+      expect(lockedEval.isLocked).toBe(true);
+      expect(lockedEval.isProvisional).toBe(false);
+      expect(lockedEval.isMarketClosed).toBe(false);
+
+      // Captured 09:20 opening prices
+      expect(lockedEval.ceLeg.strike).toBe(25100);
+      expect(lockedEval.ceLeg.openPrice).toBe(62.80);
+      expect(lockedEval.ceLeg.triggerPrice).toBe(+(62.80 * 1.5).toFixed(2)); // 94.20
+
+      expect(lockedEval.peLeg.strike).toBe(24600);
+      expect(lockedEval.peLeg.openPrice).toBe(61.90);
+      expect(lockedEval.peLeg.triggerPrice).toBe(+(61.90 * 1.5).toFixed(2)); // 92.85
+
+      // Immutable Lock Guarantee: Subsequent market moves never change locked strikes
+      niftyOptionFeedService.updateOptionPriceFromTick('SEC_25200_CE', 62.50); // Becomes closer to target
+
+      const subsequentEval = niftyOptionFeedService.evaluateOobtst(24850, '09:22:00 AM');
+      expect(subsequentEval.ceLeg.strike).toBe(25100); // Unchanged!
+      expect(subsequentEval.ceLeg.openPrice).toBe(62.80); // Unchanged!
+    });
+
+    test('Requirement 4 (Lock Failure): Missing quote data at 09:20:00 causes LOCK FAILED — DATA UNAVAILABLE and disarms strategy', () => {
+      niftyOptionFeedService.resetAnchor();
+
+      // At 09:20:00 with no live quotes available
+      const failedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+
+      expect(failedEval.currentStep).toBe(1);
+      expect(failedEval.status).toBe('LOCK_FAILED');
+      expect(failedEval.statusBadgeText).toBe('LOCK FAILED — DATA UNAVAILABLE');
+      expect(failedEval.isLockFailed).toBe(true);
+      expect(failedEval.isLocked).toBe(false);
+      expect(failedEval.ceLeg.triggerPrice).toBe(0);
+      expect(failedEval.peLeg.triggerPrice).toBe(0);
+    });
+
+    test('Requirement 6: Downstream 1.5x trigger, OCO cancel opposing leg, 50% SL, and overnight carry rules preserved', async () => {
+      await niftyOptionFeedService.syncLiveOptionChain();
+
+      // Lock at 09:20:00
+      niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+
+      // CE trigger is 94.20. Simulate CE surging past 94.20 to 95.00
+      niftyOptionFeedService.updateOptionPriceFromTick('SEC_25100_CE', 95.00);
+
+      const activeEval = niftyOptionFeedService.evaluateOobtst(24850, '09:25:00 AM');
+      expect(activeEval.currentStep).toBe(3);
+      expect(activeEval.status).toBe('ACTIVE');
+      expect(activeEval.statusBadgeText).toBe('OOBTST_ACTIVE');
+      expect(activeEval.activeLeg).toBe('CE');
+      expect(activeEval.ceLeg.status).toBe('EXECUTED');
+      expect(activeEval.peLeg.status).toBe('DISABLED'); // OCO rule
+
+      // 50% Stop-loss: Buy level = 94.20, SL = 47.10
+      expect(activeEval.slPrice).toBe(47.10);
+
+      // Simulate price crash hitting SL (<= 47.10)
+      niftyOptionFeedService.updateOptionPriceFromTick('SEC_25100_CE', 46.50);
+      const slEval = niftyOptionFeedService.evaluateOobtst(24850, '10:00:00 AM');
+      expect(slEval.status).toBe('SL_HIT');
+      expect(slEval.statusBadgeText).toBe('SL_HIT');
+      expect(slEval.ceLeg.status).toBe('SL_HIT');
+
+      // Overnight carry: Surviving position past 15:30 IST transitions to BTST_HOLD
+      niftyOptionFeedService.updateOptionPriceFromTick('SEC_25100_CE', 110.00);
+      const eodEval = niftyOptionFeedService.evaluateOobtst(24850, '03:35:00 PM');
+      expect(eodEval.status).toBe('BTST_HOLD');
+      expect(eodEval.statusBadgeText).toBe('BTST_HOLD');
     });
   });
 });

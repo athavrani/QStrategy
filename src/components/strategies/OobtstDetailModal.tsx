@@ -6,45 +6,22 @@ import {
   Modal,
   ScrollView,
   TouchableOpacity,
+  TextInput,
   Linking,
   SafeAreaView,
   StatusBar,
 } from 'react-native';
 import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
+import { useRadarStore } from '../../store/useRadarStore';
+import { OobtstCandidateStrike, StrategySignalOutput } from '../../strategies/types';
 import * as Haptics from 'expo-haptics';
 
 interface OobtstDetailModalProps {
   visible: boolean;
   onClose: () => void;
   istTime: string;
-  stepDetails?: {
-    currentStep: 1 | 2 | 3;
-    step1?: {
-      ceStrike: string;
-      ceOpen: number;
-      peStrike: string;
-      peOpen: number;
-      timestamp: string;
-      isLocked?: boolean;
-      isProvisional?: boolean;
-      isMarketClosed?: boolean;
-    };
-    step2?: {
-      ceTrigger: number;
-      ceLtp: number;
-      peTrigger: number;
-      peLtp: number;
-      multiplier: number;
-    };
-    step3?: {
-      executedSymbol: string;
-      executedPrice: number;
-      slPrice: number;
-      status: string;
-      riskPerLot: number;
-    };
-  };
+  stepDetails?: StrategySignalOutput['stepDetails'];
 }
 
 export function OobtstDetailModal({
@@ -55,38 +32,99 @@ export function OobtstDetailModal({
 }: OobtstDetailModalProps) {
   const { colors, isDark } = useTheme();
   const styles = useThemedStyles();
-  const currentStep = stepDetails?.currentStep ?? 1;
 
-  const step1 = stepDetails?.step1 ?? {
-    ceStrike: '--',
-    ceOpen: 0,
-    peStrike: '--',
-    peOpen: 0,
-    timestamp: '09:20:00 IST',
-    isLocked: false,
-    isProvisional: false,
-    isMarketClosed: true,
+  // 300ms UI Refresh Loop per Requirement 3
+  const [refreshTick, setRefreshTick] = React.useState(0);
+  const [isEditingCustomTarget, setIsEditingCustomTarget] = React.useState(false);
+  const [customTargetText, setCustomTargetText] = React.useState('');
+  const [targetError, setTargetError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    const interval = setInterval(() => {
+      setRefreshTick((t) => t + 1);
+    }, 300);
+    return () => clearInterval(interval);
+  }, [visible]);
+
+  const oobtstLive = useRadarStore((s) => s.oobtstState);
+  const storeTarget = useRadarStore((s) => s.oobtstTargetPremium);
+  const setTargetPremium = useRadarStore((s) => s.setOobtstTargetPremium);
+  const feedStatus = useRadarStore((s) => s.feedStatus);
+
+  const targetPremium = storeTarget || oobtstLive?.targetPremium || stepDetails?.targetPremium || stepDetails?.step1?.targetPremium || 62.50;
+  const currentStep = oobtstLive?.currentStep ?? stepDetails?.currentStep ?? 1;
+
+  const isMarketClosed = oobtstLive?.isMarketClosed ?? stepDetails?.step1?.isMarketClosed ?? false;
+  const isProvisional = oobtstLive?.isProvisional ?? stepDetails?.step1?.isProvisional ?? false;
+  const isLocked = oobtstLive?.isLocked ?? stepDetails?.step1?.isLocked ?? false;
+  const isLockFailed = oobtstLive?.isLockFailed ?? stepDetails?.step1?.isLockFailed ?? false;
+  const lockFailureReason = oobtstLive?.lockFailureReason || stepDetails?.step1?.lockFailureReason;
+  const previewAvailable = oobtstLive?.previewAvailable ?? stepDetails?.step1?.previewAvailable ?? false;
+  const quoteFreshness = oobtstLive?.quoteFreshness || stepDetails?.quoteFreshness || stepDetails?.step1?.quoteFreshness || 'STALE';
+
+  const ceCandidates = oobtstLive?.ceCandidates || stepDetails?.ceCandidates || stepDetails?.step1?.ceCandidates || [];
+  const peCandidates = oobtstLive?.peCandidates || stepDetails?.peCandidates || stepDetails?.step1?.peCandidates || [];
+
+  const step1 = {
+    ceStrike: oobtstLive?.ceLeg.symbol || stepDetails?.step1?.ceStrike || '--',
+    ceOpen: oobtstLive?.ceLeg.openPrice || stepDetails?.step1?.ceOpen || 0,
+    peStrike: oobtstLive?.peLeg.symbol || stepDetails?.step1?.peStrike || '--',
+    peOpen: oobtstLive?.peLeg.openPrice || stepDetails?.step1?.peOpen || 0,
+    timestamp: oobtstLive?.anchorTime || stepDetails?.step1?.timestamp || '09:20:00 IST',
+    isLocked,
+    isProvisional,
+    isMarketClosed,
+    isLockFailed,
+    lockFailureReason,
+    previewAvailable,
+    targetPremium,
   };
 
-  const step2 = stepDetails?.step2 ?? {
-    ceTrigger: 0,
-    ceLtp: 0,
-    peTrigger: 0,
-    peLtp: 0,
+  const step2 = {
+    ceTrigger: oobtstLive?.ceLeg.triggerPrice || stepDetails?.step2?.ceTrigger || 0,
+    ceLtp: oobtstLive?.ceLeg.currentLtp || stepDetails?.step2?.ceLtp || 0,
+    peTrigger: oobtstLive?.peLeg.triggerPrice || stepDetails?.step2?.peTrigger || 0,
+    peLtp: oobtstLive?.peLeg.currentLtp || stepDetails?.step2?.peLtp || 0,
     multiplier: 1.5,
   };
 
-  const step3 = stepDetails?.step3 ?? {
-    executedSymbol: '--',
-    executedPrice: 0,
-    slPrice: 0,
-    status: 'SCANNING',
-    riskPerLot: 0,
+  const step3 = {
+    executedSymbol: oobtstLive?.executedSymbol || stepDetails?.step3?.executedSymbol || '--',
+    executedPrice: oobtstLive?.executedPrice || stepDetails?.step3?.executedPrice || 0,
+    slPrice: oobtstLive?.slPrice || stepDetails?.step3?.slPrice || 0,
+    status: oobtstLive?.status || stepDetails?.step3?.status || 'SCANNING',
+    riskPerLot: oobtstLive?.riskPerLot || stepDetails?.step3?.riskPerLot || 0,
   };
 
-  const isMarketClosed = step1.isMarketClosed ?? false;
-  const isProvisional = step1.isProvisional ?? false;
-  const isLocked = step1.isLocked ?? false;
+  let statusBadgeText = oobtstLive?.statusBadgeText;
+  if (!statusBadgeText) {
+    if (isLockFailed) statusBadgeText = 'LOCK FAILED — DATA UNAVAILABLE';
+    else if (isMarketClosed) statusBadgeText = previewAvailable ? 'PREVIEW — NOT CONFIRMED' : 'PREVIEW UNAVAILABLE';
+    else if (isProvisional) statusBadgeText = 'PROVISIONAL_STRIKES';
+    else if (isLocked) statusBadgeText = 'LOCKED / ARMED_1.5X';
+    else statusBadgeText = 'SCANNING';
+  }
+
+  const handleSelectTarget = async (val: number) => {
+    Haptics.selectionAsync();
+    setTargetError(null);
+    setIsEditingCustomTarget(false);
+    await setTargetPremium(val);
+  };
+
+  const handleApplyCustomTarget = async () => {
+    const num = parseFloat(customTargetText.trim());
+    if (isNaN(num) || num <= 0) {
+      setTargetError('Please enter a valid positive target premium (> 0)');
+      return;
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setTargetError(null);
+    await setTargetPremium(Number(num.toFixed(2)));
+    setIsEditingCustomTarget(false);
+    setCustomTargetText('');
+  };
 
   const isCeExecuted = currentStep === 3 && step3.executedSymbol.includes('CE');
   const isPeExecuted = currentStep === 3 && step3.executedSymbol.includes('PE');
@@ -162,13 +200,108 @@ export function OobtstDetailModal({
             </View>
           </View>
 
+          {/* Data Quality & Connectivity Warning Banner */}
+          {(feedStatus === 'ERROR' || quoteFreshness === 'DISCONNECTED' || quoteFreshness === 'STALE') && (
+            <View
+              style={[
+                styles.warningBanner,
+                {
+                  backgroundColor:
+                    quoteFreshness === 'STALE' ? 'rgba(234, 179, 8, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  borderColor:
+                    quoteFreshness === 'STALE' ? 'rgba(234, 179, 8, 0.4)' : 'rgba(239, 68, 68, 0.4)',
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.warningBannerText,
+                  { color: quoteFreshness === 'STALE' ? colors.warning : colors.bearish },
+                ]}
+              >
+                {quoteFreshness === 'DISCONNECTED' || feedStatus === 'ERROR'
+                  ? '⚠️ Dhan HQ Live Feed Disconnected • Showing cached/offline data. Reconnecting...'
+                  : '⚠️ Option quotes are aging or stale (> 15s) • Verify Dhan HQ market data connection'}
+              </Text>
+            </View>
+          )}
+
+          {/* Configurable Target Premium Bar */}
+          <View style={styles.targetConfigContainer}>
+            <View style={styles.targetConfigHeader}>
+              <Text style={styles.targetConfigTitle}>
+                TARGET PREMIUM: <Text style={{ color: colors.cyan, fontWeight: '800' }}>₹{targetPremium.toFixed(2)}</Text>
+              </Text>
+              {isLocked && (
+                <Text style={styles.lockedNoticeText}>🔒 LOCKED FOR TODAY'S SESSION</Text>
+              )}
+            </View>
+
+            <View style={styles.targetChipsRow}>
+              {[50.00, 60.00, 62.50, 75.00].map((val) => {
+                const isActive = Math.abs(targetPremium - val) < 0.01;
+                return (
+                  <TouchableOpacity
+                    key={val}
+                    style={[styles.targetChip, isActive && styles.targetChipActive]}
+                    onPress={() => handleSelectTarget(val)}
+                  >
+                    <Text style={[styles.targetChipText, isActive && styles.targetChipTextActive]}>
+                      ₹{val.toFixed(2)}{val === 62.50 ? ' (Default)' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              <TouchableOpacity
+                style={[styles.targetChip, isEditingCustomTarget && styles.targetChipActive]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setIsEditingCustomTarget(!isEditingCustomTarget);
+                }}
+              >
+                <Text style={[styles.targetChipText, isEditingCustomTarget && styles.targetChipTextActive]}>
+                  Custom...
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {isEditingCustomTarget && (
+              <View style={styles.customInputContainer}>
+                <TextInput
+                  style={styles.customTextInput}
+                  placeholder="e.g. 65.00"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="numeric"
+                  value={customTargetText}
+                  onChangeText={setCustomTargetText}
+                />
+                <TouchableOpacity style={styles.customApplyBtn} onPress={handleApplyCustomTarget}>
+                  <Text style={styles.customApplyBtnText}>Apply</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.customCancelBtn}
+                  onPress={() => {
+                    setIsEditingCustomTarget(false);
+                    setTargetError(null);
+                  }}
+                >
+                  <Text style={styles.customCancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {targetError && <Text style={styles.targetErrorText}>{targetError}</Text>}
+          </View>
+
           {/* STEP 1 CARD */}
           <View style={[styles.stepCard, currentStep >= 1 && styles.stepCardActive]}>
             <View style={styles.stepHeader}>
               <View
                 style={[
                   styles.stepNumberBadge,
-                  isMarketClosed
+                  isLockFailed
+                    ? { backgroundColor: colors.bearish }
+                    : isMarketClosed
                     ? { backgroundColor: colors.surfaceSubtle }
                     : isProvisional
                     ? { backgroundColor: colors.cyan }
@@ -178,26 +311,34 @@ export function OobtstDetailModal({
                 <Text
                   style={[
                     styles.stepNumberText,
-                    isProvisional || !isMarketClosed ? { color: colors.obsidian } : {},
+                    isProvisional || (!isMarketClosed && !isLockFailed) ? { color: colors.obsidian } : {},
                   ]}
                 >
                   STEP 1
                 </Text>
               </View>
               <View style={{ flex: 1, marginLeft: 8 }}>
-                <Text style={styles.stepTitle}>09:20 Candle Open Selection (~₹62.50)</Text>
+                <Text style={styles.stepTitle}>
+                  09:20 Candle Open Selection (~₹{targetPremium.toFixed(2)})
+                </Text>
                 <Text style={styles.stepSub}>
-                  {isMarketClosed
-                    ? 'Strikes unlocked. Nearest valid candidates tracked from live spot.'
+                  {isLockFailed
+                    ? 'Lock Failed: Missing or invalid quote data at 09:20 candle start'
+                    : isMarketClosed
+                    ? previewAvailable
+                      ? 'Market Closed: Prior-session preview candidates shown (Not Confirmed)'
+                      : 'Market Closed: Preview unavailable (Awaiting 09:15 open)'
                     : isProvisional
-                    ? 'Provisional candidates: dynamically updating live until 09:20:00 tick'
-                    : 'Locked precisely at 09:20:00 IST candle open tick'}
+                    ? 'Provisional Window (09:15–09:19:59): 300ms live monitoring from Dhan ticks'
+                    : 'Locked precisely at 09:20:00 IST candle opening tick'}
                 </Text>
               </View>
               <View
                 style={[
                   styles.stepLockBadge,
-                  isMarketClosed
+                  isLockFailed
+                    ? { backgroundColor: 'rgba(239, 68, 68, 0.15)' }
+                    : isMarketClosed
                     ? { backgroundColor: 'rgba(234, 179, 8, 0.15)' }
                     : isProvisional
                     ? { backgroundColor: 'rgba(6, 182, 212, 0.15)' }
@@ -210,7 +351,9 @@ export function OobtstDetailModal({
                   style={[
                     styles.stepLockText,
                     {
-                      color: isMarketClosed
+                      color: isLockFailed
+                        ? colors.bearish
+                        : isMarketClosed
                         ? colors.warning
                         : isProvisional
                         ? colors.cyan
@@ -220,58 +363,224 @@ export function OobtstDetailModal({
                     },
                   ]}
                 >
-                  {isMarketClosed
-                    ? '⚪ MARKET CLOSED'
-                    : isProvisional
-                    ? '⚡ PROVISIONAL'
-                    : isLocked
-                    ? '🔒 LOCKED AT 09:20'
-                    : '⏳ SCANNING'}
+                  {statusBadgeText}
                 </Text>
               </View>
             </View>
 
-            <View style={styles.selectionGrid}>
-              {/* CE Strike */}
-              <View style={styles.selectionBox}>
-                <View style={styles.boxTag}>
-                  <Text style={styles.boxTagText}>CALL (CE)</Text>
-                </View>
-                <Text style={styles.boxSymbol}>{step1.ceStrike}</Text>
-                <Text style={styles.boxOpenPrice}>
-                  {step1.ceOpen > 0
-                    ? `${isLocked ? '09:20 Open' : isProvisional ? 'Live Candidate' : 'Reference'}: ₹${step1.ceOpen.toFixed(2)}`
-                    : 'Price: ₹-- (Market Closed)'}
+            {/* Lock Failed Callout */}
+            {isLockFailed && (
+              <View style={[styles.calloutBox, { backgroundColor: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.3)' }]}>
+                <Text style={[styles.calloutTitle, { color: colors.bearish }]}>
+                  ❌ LOCK FAILED — DATA UNAVAILABLE
                 </Text>
-                <Text style={styles.boxDelta}>
-                  {step1.ceOpen > 0
-                    ? `Δ from ₹62.5: ${step1.ceOpen >= 62.5 ? `+₹${(step1.ceOpen - 62.5).toFixed(2)}` : `-₹${(62.5 - step1.ceOpen).toFixed(2)}`}`
-                    : 'Awaiting 09:15 open candle'}
+                <Text style={[styles.calloutDesc, { color: colors.textSecondary }]}>
+                  {lockFailureReason || 'Exact opening price or valid quotes were unavailable at 09:20:00 IST.'}
+                </Text>
+                <Text style={[styles.calloutDesc, { color: colors.textMuted, marginTop: 4 }]}>
+                  Strategy arming was prevented to protect capital. Stale or fabricated prices are never substituted silently.
                 </Text>
               </View>
+            )}
 
-              {/* PE Strike */}
-              <View style={styles.selectionBox}>
-                <View style={[styles.boxTag, { backgroundColor: 'rgba(239, 68, 68, 0.2)' }]}>
-                  <Text style={[styles.boxTagText, { color: colors.bearish }]}>PUT (PE)</Text>
-                </View>
-                <Text style={styles.boxSymbol}>{step1.peStrike}</Text>
-                <Text style={styles.boxOpenPrice}>
-                  {step1.peOpen > 0
-                    ? `${isLocked ? '09:20 Open' : isProvisional ? 'Live Candidate' : 'Reference'}: ₹${step1.peOpen.toFixed(2)}`
-                    : 'Price: ₹-- (Market Closed)'}
+            {/* Market Closed Preview Callout */}
+            {isMarketClosed && (
+              <View style={[styles.calloutBox, { backgroundColor: 'rgba(234, 179, 8, 0.08)', borderColor: 'rgba(234, 179, 8, 0.25)' }]}>
+                <Text style={[styles.calloutTitle, { color: colors.warning }]}>
+                  {previewAvailable ? '👁 PREVIEW — NOT CONFIRMED' : '⚠️ PREVIEW UNAVAILABLE'}
                 </Text>
-                <Text style={styles.boxDelta}>
-                  {step1.peOpen > 0
-                    ? `Δ from ₹62.5: ${step1.peOpen >= 62.5 ? `+₹${(step1.peOpen - 62.5).toFixed(2)}` : `-₹${(62.5 - step1.peOpen).toFixed(2)}`}`
-                    : 'Awaiting 09:15 open candle'}
+                <Text style={[styles.calloutDesc, { color: colors.textSecondary }]}>
+                  {previewAvailable
+                    ? 'Market is currently closed. Showing top 2 CE and 2 PE strikes closest to target premium from latest available Dhan option chain. These prices are NOT confirmed.'
+                    : 'Option chain data is currently unavailable. Awaiting market open at 09:15 IST.'}
                 </Text>
+              </View>
+            )}
+
+            {/* Provisional Monitoring Callout */}
+            {isProvisional && (
+              <View style={[styles.calloutBox, { backgroundColor: 'rgba(6, 182, 212, 0.08)', borderColor: 'rgba(6, 182, 212, 0.25)' }]}>
+                <Text style={[styles.calloutTitle, { color: colors.cyan }]}>
+                  ⚡ LIVE PROVISIONAL MONITORING (09:15 - 09:19:59 IST)
+                </Text>
+                <Text style={[styles.calloutDesc, { color: colors.textSecondary }]}>
+                  Recalculating top two candidates every 300ms from Dhan live ticks. At 09:20:00, the closest strike locks permanently for the day.
+                </Text>
+              </View>
+            )}
+
+            {/* Locked Notice Callout */}
+            {isLocked && !isLockFailed && (
+              <View style={[styles.calloutBox, { backgroundColor: 'rgba(16, 185, 129, 0.08)', borderColor: 'rgba(16, 185, 129, 0.25)' }]}>
+                <Text style={[styles.calloutTitle, { color: colors.bullish }]}>
+                  🔒 LOCKED AT 09:20:00 CANDLE OPEN
+                </Text>
+                <Text style={[styles.calloutDesc, { color: colors.textSecondary }]}>
+                  Selected CE ({step1.ceStrike} @ ₹{step1.ceOpen.toFixed(2)}) and PE ({step1.peStrike} @ ₹{step1.peOpen.toFixed(2)}) are permanently locked for today's session.
+                </Text>
+              </View>
+            )}
+
+            {/* 2 CE CANDIDATES */}
+            <View style={styles.candidateSection}>
+              <View style={styles.candidateSectionHeader}>
+                <Text style={[styles.candidateSectionTitle, { color: colors.bullish }]}>
+                  CALL (CE) CANDIDATES (Target ~₹{targetPremium.toFixed(2)})
+                </Text>
+              </View>
+              <View style={styles.candidateRow}>
+                {ceCandidates.length > 0 ? (
+                  ceCandidates.map((c) => {
+                    const isLockedItem = isLocked && step1.ceStrike.includes(String(c.strike));
+                    const isCe = true;
+                    const tagColor = colors.bullish;
+                    const tagBg = 'rgba(16, 185, 129, 0.15)';
+                    const rankLabel = c.rank === 1 ? '#1 PRIMARY' : '#2 RUNNER-UP';
+                    const freshnessColor =
+                      c.quoteAgeMs < 5000
+                        ? colors.bullish
+                        : c.quoteAgeMs < 15000
+                        ? colors.warning
+                        : colors.bearish;
+                    const freshnessText =
+                      c.quoteAgeMs < 5000 ? 'FRESH' : c.quoteAgeMs < 15000 ? 'AGING' : 'STALE';
+
+                    return (
+                      <View
+                        key={`CE-${c.strike}-${c.rank}`}
+                        style={[
+                          styles.candidateCard,
+                          c.rank === 1 && styles.primaryCandidateCard,
+                          isLockedItem && styles.lockedCandidateCard,
+                        ]}
+                      >
+                        <View style={styles.candidateHeader}>
+                          <View style={[styles.rankTag, { backgroundColor: tagBg }]}>
+                            <Text style={[styles.rankTagText, { color: tagColor }]}>{rankLabel}</Text>
+                          </View>
+                          <View style={[styles.freshnessTag, { borderColor: freshnessColor }]}>
+                            <Text style={[styles.freshnessText, { color: freshnessColor }]}>
+                              {c.isStale ? '⚠️ STALE' : freshnessText}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Text style={styles.candidateSymbol}>{c.symbol}</Text>
+
+                        <View style={styles.candidatePriceRow}>
+                          <Text style={styles.candidatePriceLabel}>LTP:</Text>
+                          <Text style={styles.candidatePriceValue}>
+                            {c.ltp > 0 ? `₹${c.ltp.toFixed(2)}` : '₹--'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.candidateDiffRow}>
+                          <Text style={styles.candidateDiffLabel}>Δ Target:</Text>
+                          <Text style={[styles.candidateDiffValue, { color: colors.cyan }]}>
+                            {c.ltp > 0 ? `|${(c.ltp - targetPremium).toFixed(2)}| = ₹${c.diffFromTarget.toFixed(2)}` : '--'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.candidateTimeRow}>
+                          <Text style={styles.candidateTimeText}>
+                            {c.quoteTimestamp} ({c.quoteAgeMs < 1000 ? '<1s' : `${(c.quoteAgeMs / 1000).toFixed(1)}s`} ago)
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                ) : (
+                  <View style={styles.selectionBox}>
+                    <Text style={styles.boxSymbol}>{step1.ceStrike}</Text>
+                    <Text style={styles.boxOpenPrice}>
+                      {step1.ceOpen > 0 ? `₹${step1.ceOpen.toFixed(2)}` : 'Awaiting option quotes...'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+
+            {/* 2 PE CANDIDATES */}
+            <View style={styles.candidateSection}>
+              <View style={styles.candidateSectionHeader}>
+                <Text style={[styles.candidateSectionTitle, { color: colors.bearish }]}>
+                  PUT (PE) CANDIDATES (Target ~₹{targetPremium.toFixed(2)})
+                </Text>
+              </View>
+              <View style={styles.candidateRow}>
+                {peCandidates.length > 0 ? (
+                  peCandidates.map((c) => {
+                    const isLockedItem = isLocked && step1.peStrike.includes(String(c.strike));
+                    const tagColor = colors.bearish;
+                    const tagBg = 'rgba(239, 68, 68, 0.15)';
+                    const rankLabel = c.rank === 1 ? '#1 PRIMARY' : '#2 RUNNER-UP';
+                    const freshnessColor =
+                      c.quoteAgeMs < 5000
+                        ? colors.bullish
+                        : c.quoteAgeMs < 15000
+                        ? colors.warning
+                        : colors.bearish;
+                    const freshnessText =
+                      c.quoteAgeMs < 5000 ? 'FRESH' : c.quoteAgeMs < 15000 ? 'AGING' : 'STALE';
+
+                    return (
+                      <View
+                        key={`PE-${c.strike}-${c.rank}`}
+                        style={[
+                          styles.candidateCard,
+                          c.rank === 1 && styles.primaryCandidateCard,
+                          isLockedItem && styles.lockedCandidateCard,
+                        ]}
+                      >
+                        <View style={styles.candidateHeader}>
+                          <View style={[styles.rankTag, { backgroundColor: tagBg }]}>
+                            <Text style={[styles.rankTagText, { color: tagColor }]}>{rankLabel}</Text>
+                          </View>
+                          <View style={[styles.freshnessTag, { borderColor: freshnessColor }]}>
+                            <Text style={[styles.freshnessText, { color: freshnessColor }]}>
+                              {c.isStale ? '⚠️ STALE' : freshnessText}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Text style={styles.candidateSymbol}>{c.symbol}</Text>
+
+                        <View style={styles.candidatePriceRow}>
+                          <Text style={styles.candidatePriceLabel}>LTP:</Text>
+                          <Text style={styles.candidatePriceValue}>
+                            {c.ltp > 0 ? `₹${c.ltp.toFixed(2)}` : '₹--'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.candidateDiffRow}>
+                          <Text style={styles.candidateDiffLabel}>Δ Target:</Text>
+                          <Text style={[styles.candidateDiffValue, { color: colors.cyan }]}>
+                            {c.ltp > 0 ? `|${(c.ltp - targetPremium).toFixed(2)}| = ₹${c.diffFromTarget.toFixed(2)}` : '--'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.candidateTimeRow}>
+                          <Text style={styles.candidateTimeText}>
+                            {c.quoteTimestamp} ({c.quoteAgeMs < 1000 ? '<1s' : `${(c.quoteAgeMs / 1000).toFixed(1)}s`} ago)
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                ) : (
+                  <View style={styles.selectionBox}>
+                    <Text style={styles.boxSymbol}>{step1.peStrike}</Text>
+                    <Text style={styles.boxOpenPrice}>
+                      {step1.peOpen > 0 ? `₹${step1.peOpen.toFixed(2)}` : 'Awaiting option quotes...'}
+                    </Text>
+                  </View>
+                )}
               </View>
             </View>
 
             <View style={styles.quantExplainer}>
               <Text style={styles.quantExplainerText}>
-                💡 <Text style={{ fontWeight: '700' }}>Quant Rationale:</Text> ₹62.50 open price identifies OTM strikes (~0.20-0.25 Delta) with low entry premium (~₹1,500/lot) and high gamma acceleration potential.
+                💡 <Text style={{ fontWeight: '700' }}>Quant Rationale:</Text> ₹{targetPremium.toFixed(2)} target premium identifies OTM strikes (~0.20-0.25 Delta) with low entry premium (~₹1,500/lot) and high gamma acceleration potential.
               </Text>
             </View>
           </View>
@@ -952,5 +1261,238 @@ const useThemedStyles = createThemedStyles((colors) => ({
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '800',
+  },
+  warningBanner: {
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+  },
+  warningBannerText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  targetConfigContainer: {
+    backgroundColor: colors.surfaceSubtle,
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    marginBottom: 14,
+  },
+  targetConfigHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  targetConfigTitle: {
+    color: colors.textPrimary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  lockedNoticeText: {
+    color: colors.bullish,
+    fontSize: 9,
+    fontWeight: '800',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  targetChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  targetChip: {
+    backgroundColor: colors.surface,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  targetChipActive: {
+    backgroundColor: colors.purpleGlow,
+    borderColor: colors.purple,
+  },
+  targetChipText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  targetChipTextActive: {
+    color: colors.purple,
+    fontWeight: '800',
+  },
+  customInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  customTextInput: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  customApplyBtn: {
+    backgroundColor: colors.purple,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 6,
+  },
+  customApplyBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  customCancelBtn: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 6,
+  },
+  customCancelBtnText: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  targetErrorText: {
+    color: colors.bearish,
+    fontSize: 10,
+    fontWeight: '600',
+    marginTop: 6,
+  },
+  calloutBox: {
+    padding: 10,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginBottom: 10,
+  },
+  calloutTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  calloutDesc: {
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  candidateSection: {
+    marginBottom: 10,
+  },
+  candidateSectionHeader: {
+    marginBottom: 6,
+  },
+  candidateSectionTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  candidateRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  candidateCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    padding: 10,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  primaryCandidateCard: {
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  lockedCandidateCard: {
+    borderColor: colors.bullish,
+    backgroundColor: 'rgba(16, 185, 129, 0.05)',
+  },
+  candidateHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  rankTag: {
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  rankTagText: {
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  freshnessTag: {
+    borderWidth: 1,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  freshnessText: {
+    fontSize: 8,
+    fontWeight: '700',
+  },
+  candidateSymbol: {
+    color: colors.textPrimary,
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  candidatePriceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  candidatePriceLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  candidatePriceValue: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  candidateDiffRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  candidateDiffLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  candidateDiffValue: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  candidateTimeRow: {
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: colors.cardBorder,
+    paddingTop: 3,
+  },
+  candidateTimeText: {
+    color: colors.textMuted,
+    fontSize: 8,
+    fontWeight: '500',
   },
 }));

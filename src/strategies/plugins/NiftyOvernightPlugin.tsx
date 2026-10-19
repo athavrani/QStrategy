@@ -42,23 +42,31 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
     const pnlLot = live.pnlPerLot ?? 0;
 
     let badgeTone: 'purple' | 'bullish' | 'bearish' | 'warning' | 'cyan' = 'cyan';
-    if (live.isMarketClosed) badgeTone = 'warning';
+    if (live.status === 'LOCK_FAILED' || live.isLockFailed) badgeTone = 'bearish';
+    else if (live.isMarketClosed) badgeTone = 'warning';
     else if (live.isProvisional) badgeTone = 'cyan';
     else if (live.status === 'ACTIVE') badgeTone = 'purple';
     else if (live.status === 'BTST_HOLD') badgeTone = 'bullish';
     else if (live.status === 'SL_HIT') badgeTone = 'bearish';
     else if (live.status === 'ARMED') badgeTone = 'cyan';
 
+    const targetLabel = live.targetPremium ? `₹${live.targetPremium.toFixed(2)}` : '₹62.50';
     let headline = `Step 2: 1.5x Breakout Armed (CE: ₹${ceTrigger} • PE: ₹${peTrigger})`;
     let primaryMetricLabel = '1.5x BREAKOUT TARGET';
     let primaryMetricValue = `CE ₹${ceTrigger} / PE ₹${peTrigger}`;
 
-    if (live.isMarketClosed) {
-      headline = 'Step 1: Market Closed • Opens at 09:15 IST (Strikes Unlocked)';
+    if (live.status === 'LOCK_FAILED' || live.isLockFailed) {
+      headline = 'Step 1: Lock Failed • Data Unavailable at 09:20 Lock Point';
+      primaryMetricLabel = 'LOCK STATUS';
+      primaryMetricValue = 'DATA UNAVAILABLE';
+    } else if (live.isMarketClosed) {
+      headline = live.previewAvailable
+        ? `Step 1: Market Closed • Preview Available (~${targetLabel})`
+        : 'Step 1: Market Closed • Opens at 09:15 IST (Strikes Unlocked)';
       primaryMetricLabel = 'MARKET STATUS';
-      primaryMetricValue = 'OPENS 09:15 IST';
+      primaryMetricValue = live.previewAvailable ? 'PREVIEW MODE' : 'OPENS 09:15 IST';
     } else if (live.isProvisional) {
-      headline = 'Step 1: Provisional Strikes (~₹62.50) • Locks at 09:20:00';
+      headline = `Step 1: Provisional Strikes (~${targetLabel}) • Locks at 09:20:00`;
       primaryMetricLabel = 'PROVISIONAL CANDIDATE';
       primaryMetricValue = ceOpen > 0 ? `CE ₹${ceOpen.toFixed(1)} / PE ₹${peOpen.toFixed(1)}` : 'UPDATING LIVE';
     } else if (isStep3) {
@@ -68,7 +76,7 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
     }
 
     let statusValue: 'IDLE' | 'PREPARING' | 'ARMED' | 'ACTIVE' | 'SL_HIT' = 'ARMED';
-    if (live.isMarketClosed) statusValue = 'IDLE';
+    if (live.status === 'LOCK_FAILED' || live.isLockFailed || live.isMarketClosed) statusValue = 'IDLE';
     else if (live.isProvisional) statusValue = 'PREPARING';
     else if (live.status === 'SL_HIT') statusValue = 'SL_HIT';
     else if (live.status === 'ACTIVE' || live.status === 'BTST_HOLD') statusValue = 'ACTIVE';
@@ -84,6 +92,10 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
       lastUpdated: live.lastUpdated || ctx.istTime,
       stepDetails: {
         currentStep: live.currentStep,
+        targetPremium: live.targetPremium,
+        ceCandidates: live.ceCandidates,
+        peCandidates: live.peCandidates,
+        quoteFreshness: live.quoteFreshness,
         step1: {
           ceStrike: ceSymbol,
           ceOpen,
@@ -93,6 +105,13 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
           isLocked: live.isLocked,
           isProvisional: live.isProvisional,
           isMarketClosed: live.isMarketClosed,
+          isLockFailed: live.isLockFailed,
+          lockFailureReason: live.lockFailureReason,
+          previewAvailable: live.previewAvailable,
+          targetPremium: live.targetPremium,
+          ceCandidates: live.ceCandidates,
+          peCandidates: live.peCandidates,
+          quoteFreshness: live.quoteFreshness,
         },
         step2: {
           ceTrigger,
@@ -222,7 +241,9 @@ function NiftyOvernightPluginCard({
           <View
             style={[
               styles.stepPill,
-              step1?.isLocked
+              step1?.isLockFailed
+                ? { backgroundColor: 'rgba(239, 68, 68, 0.15)', borderColor: 'rgba(239, 68, 68, 0.4)' }
+                : step1?.isLocked
                 ? styles.stepPillDone
                 : isProvisional
                 ? styles.stepPillActive
@@ -231,17 +252,23 @@ function NiftyOvernightPluginCard({
           >
             <Text
               style={
-                step1?.isLocked
+                step1?.isLockFailed
+                  ? { color: colors.bearish, fontWeight: '700' }
+                  : step1?.isLocked
                   ? styles.stepPillDoneText
                   : isProvisional
                   ? styles.stepPillActiveText
                   : styles.stepPillInactiveText
               }
             >
-              {step1?.isLocked
-                ? '✓ 1. Open ~62.5'
+              {step1?.isLockFailed
+                ? '❌ 1. Lock Failed'
+                : step1?.isLocked
+                ? `✓ 1. Open ~${(step1?.targetPremium || 62.5).toFixed(1)}`
                 : isProvisional
-                ? '⚡ 1. Prov. ~62.5'
+                ? `⚡ 1. Prov. ~${(step1?.targetPremium || 62.5).toFixed(1)}`
+                : step1?.previewAvailable
+                ? `👁 1. Preview ~${(step1?.targetPremium || 62.5).toFixed(1)}`
                 : '🕒 1. Market Closed'}
             </Text>
           </View>

@@ -13,6 +13,20 @@ export type StrategyExecutionStyle =
   | 'CONTINUOUS_SCREENER' // Continuous volume / price scanning
   | 'EOD_CLOSE';          // 15:10 - 15:30 EOD momentum
 
+export interface OobtstCandidateStrike {
+  rank: 1 | 2;
+  type: 'CE' | 'PE';
+  strike: number;
+  symbol: string;
+  ltp: number;
+  diffFromTarget: number;
+  quoteTimestamp: string;
+  quoteAgeMs: number;
+  isStale: boolean;
+  securityId?: string;
+  openPrice?: number;
+}
+
 export interface OobtstLegDetail {
   type: 'CE' | 'PE';
   strike: number;
@@ -27,7 +41,7 @@ export interface OobtstLegDetail {
 
 export interface OobtstLiveState {
   currentStep: 1 | 2 | 3;
-  status: 'SCANNING' | 'ARMED' | 'ACTIVE' | 'SL_HIT' | 'BTST_HOLD';
+  status: 'SCANNING' | 'ARMED' | 'ACTIVE' | 'SL_HIT' | 'BTST_HOLD' | 'LOCK_FAILED';
   statusBadgeText: string;
   expiryDate: string;
   daysToExpiry: number;
@@ -36,6 +50,12 @@ export interface OobtstLiveState {
   isLocked: boolean;
   isProvisional: boolean;
   isMarketClosed: boolean;
+  isLockFailed?: boolean;
+  lockFailureReason?: string;
+  previewAvailable?: boolean;
+  targetPremium: number;
+  ceCandidates: OobtstCandidateStrike[];
+  peCandidates: OobtstCandidateStrike[];
   ceLeg: OobtstLegDetail;
   peLeg: OobtstLegDetail;
   activeLeg?: 'CE' | 'PE' | null;
@@ -46,6 +66,7 @@ export interface OobtstLiveState {
   pnlPerShare?: number;
   pnlPerLot?: number;
   lastUpdated: string;
+  quoteFreshness?: 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED';
 }
 
 export interface StrategyContext {
@@ -80,6 +101,10 @@ export interface StrategySignalOutput {
   }[];
   stepDetails?: {
     currentStep: 1 | 2 | 3;
+    targetPremium?: number;
+    ceCandidates?: OobtstCandidateStrike[];
+    peCandidates?: OobtstCandidateStrike[];
+    quoteFreshness?: 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED';
     step1?: {
       ceStrike: string;
       ceOpen: number;
@@ -89,6 +114,13 @@ export interface StrategySignalOutput {
       isLocked?: boolean;
       isProvisional?: boolean;
       isMarketClosed?: boolean;
+      isLockFailed?: boolean;
+      lockFailureReason?: string;
+      previewAvailable?: boolean;
+      targetPremium?: number;
+      ceCandidates?: OobtstCandidateStrike[];
+      peCandidates?: OobtstCandidateStrike[];
+      quoteFreshness?: 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED';
     };
     step2?: {
       ceTrigger: number;

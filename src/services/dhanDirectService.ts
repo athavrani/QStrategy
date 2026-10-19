@@ -582,6 +582,8 @@ class DhanDirectService {
         peAsk?: number;
         ceSecId?: string;
         peSecId?: string;
+        ceUpdatedTime?: number;
+        peUpdatedTime?: number;
       }
     >;
   } | null> {
@@ -673,6 +675,8 @@ class DhanDirectService {
           peAsk?: number;
           ceSecId?: string;
           peSecId?: string;
+          ceUpdatedTime?: number;
+          peUpdatedTime?: number;
         }
       > = {};
       for (const [strikeStr, data] of Object.entries(oc as Record<string, any>)) {
