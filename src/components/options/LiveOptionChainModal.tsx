@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { liveMarketService, LiveOptionChainSummary } from '../../services/liveMarketService';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import * as Haptics from 'expo-haptics';
@@ -29,6 +29,8 @@ export function LiveOptionChainModal({
   strikeStep = 50,
   onClose,
 }: Props) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [chain, setChain] = useState<LiveOptionChainSummary | null>(null);
@@ -326,7 +328,7 @@ export function LiveOptionChainModal({
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   overlay: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -716,4 +718,5 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 0.3,
   },
-});
+}));
+

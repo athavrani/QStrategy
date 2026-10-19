@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../types';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 
 export const Orb15MinPlugin: BaseStrategyPlugin = {
   id: 'ORB_15MIN',
@@ -47,53 +47,58 @@ export const Orb15MinPlugin: BaseStrategyPlugin = {
     };
   },
 
-  renderCard: ({ state, onOpenBroker }) => {
-    return (
-      <View style={styles.card}>
-        <View style={styles.header}>
-          <View style={styles.titleRow}>
-            <Text style={styles.icon}>⏱️</Text>
-            <View>
-              <Text style={styles.title}>15-Min Opening Range Breakout (ORB)</Text>
-              <Text style={styles.sub}>High/Low Range: 09:15 – 09:30 IST</Text>
-            </View>
-          </View>
-          <View style={[styles.badge, { backgroundColor: colors.warningGlow }]}>
-            <Text style={[styles.badgeText, { color: colors.warning }]}>{state.statusBadgeText}</Text>
-          </View>
-        </View>
-
-        <View style={styles.rangeBox}>
-          <View style={styles.rangeItem}>
-            <Text style={styles.rangeLabel}>ORB HIGH (BUY CE TRIGGER)</Text>
-            <TouchableOpacity onPress={() => onOpenBroker('NIFTY 24900 CE')}>
-              <Text style={[styles.rangeVal, { color: colors.bullish }]}>₹24,890.00 ↗</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.rangeItem}>
-            <Text style={styles.rangeLabel}>ORB LOW (BUY PE TRIGGER)</Text>
-            <TouchableOpacity onPress={() => onOpenBroker('NIFTY 24800 PE')}>
-              <Text style={[styles.rangeVal, { color: colors.bearish }]}>₹24,810.00 ↗</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {state.invariantNotice && (
-          <View style={styles.noticeBox}>
-            <Text style={styles.noticeText}>{state.invariantNotice}</Text>
-          </View>
-        )}
-
-        <View style={styles.footer}>
-          <Text style={styles.footerNote}>SL: Range Mid (₹24,850) | Target: 1:2 R:R</Text>
-          <Text style={[styles.statusText, { color: colors.warning }]}>MONITORING</Text>
-        </View>
-      </View>
-    );
-  },
+  renderCard: (props) => <Orb15MinCard {...props} />,
 };
 
-const styles = StyleSheet.create({
+function Orb15MinCard({ state, onOpenBroker }: { state: StrategySignalOutput; onOpenBroker: (symbol: string) => void }) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.header}>
+        <View style={styles.titleRow}>
+          <Text style={styles.icon}>⏱️</Text>
+          <View>
+            <Text style={styles.title}>15-Min Opening Range Breakout (ORB)</Text>
+            <Text style={styles.sub}>High/Low Range: 09:15 – 09:30 IST</Text>
+          </View>
+        </View>
+        <View style={[styles.badge, { backgroundColor: colors.warningGlow }]}>
+          <Text style={[styles.badgeText, { color: colors.warning }]}>{state.statusBadgeText}</Text>
+        </View>
+      </View>
+
+      <View style={styles.rangeBox}>
+        <View style={styles.rangeItem}>
+          <Text style={styles.rangeLabel}>ORB HIGH (BUY CE TRIGGER)</Text>
+          <TouchableOpacity onPress={() => onOpenBroker('NIFTY 24900 CE')}>
+            <Text style={[styles.rangeVal, { color: colors.bullish }]}>₹24,890.00 ↗</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.rangeItem}>
+          <Text style={styles.rangeLabel}>ORB LOW (BUY PE TRIGGER)</Text>
+          <TouchableOpacity onPress={() => onOpenBroker('NIFTY 24800 PE')}>
+            <Text style={[styles.rangeVal, { color: colors.bearish }]}>₹24,810.00 ↗</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {state.invariantNotice && (
+        <View style={styles.noticeBox}>
+          <Text style={styles.noticeText}>{state.invariantNotice}</Text>
+        </View>
+      )}
+
+      <View style={styles.footer}>
+        <Text style={styles.footerNote}>SL: Range Mid (₹24,850) | Target: 1:2 R:R</Text>
+        <Text style={[styles.statusText, { color: colors.warning }]}>MONITORING</Text>
+      </View>
+    </View>
+  );
+}
+
+const useThemedStyles = createThemedStyles((colors) => ({
   card: {
     backgroundColor: colors.card,
     borderRadius: 10,
@@ -188,4 +193,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-});
+}));

@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../types';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { niftyOptionFeedService } from '../../services/niftyOptionFeedService';
 import * as Haptics from 'expo-haptics';
@@ -134,23 +134,37 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
     };
   },
 
-  renderCard: ({ state, onOpenBroker, onViewDetails }) => {
-    const handleCardPress = () => {
-      Haptics.selectionAsync();
-      if (onViewDetails) {
-        onViewDetails('NIFTY_OVERNIGHT');
-      }
-    };
+  renderCard: (props) => <NiftyOvernightPluginCard {...props} />,
+};
 
-    const currentStep = state.stepDetails?.currentStep ?? 1;
-    const step3 = state.stepDetails?.step3;
-    const step1 = state.stepDetails?.step1;
-    const step2 = state.stepDetails?.step2;
-    const isMarketClosed = step1?.isMarketClosed ?? (state.statusBadgeText === 'MARKET_CLOSED');
-    const isProvisional = step1?.isProvisional ?? (state.statusBadgeText === 'PROVISIONAL_STRIKES');
-    const isStep3 = currentStep === 3;
-    const isStep2 = currentStep === 2;
-    const activeSymbol = step3?.executedSymbol || step1?.ceStrike || (state.legs && state.legs[0]?.symbol) || 'NIFTY';
+function NiftyOvernightPluginCard({
+  state,
+  onOpenBroker,
+  onViewDetails,
+}: {
+  state: StrategySignalOutput;
+  onOpenBroker: (symbol: string) => void;
+  onViewDetails?: (id: string) => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
+
+  const handleCardPress = () => {
+    Haptics.selectionAsync();
+    if (onViewDetails) {
+      onViewDetails('NIFTY_OVERNIGHT');
+    }
+  };
+
+  const currentStep = state.stepDetails?.currentStep ?? 1;
+  const step3 = state.stepDetails?.step3;
+  const step1 = state.stepDetails?.step1;
+  const step2 = state.stepDetails?.step2;
+  const isMarketClosed = step1?.isMarketClosed ?? (state.statusBadgeText === 'MARKET_CLOSED');
+  const isProvisional = step1?.isProvisional ?? (state.statusBadgeText === 'PROVISIONAL_STRIKES');
+  const isStep3 = currentStep === 3;
+  const isStep2 = currentStep === 2;
+  const activeSymbol = step3?.executedSymbol || step1?.ceStrike || (state.legs && state.legs[0]?.symbol) || 'NIFTY';
 
     return (
       <TouchableOpacity
@@ -411,10 +425,9 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
         </View>
       </TouchableOpacity>
     );
-  },
-};
+}
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   card: {
     backgroundColor: colors.card,
     borderRadius: 10,
@@ -591,4 +604,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
   },
-});
+}));

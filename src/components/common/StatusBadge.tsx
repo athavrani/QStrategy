@@ -1,7 +1,7 @@
 // Toned Status Badge Component for Strategy States & Latch Indicators
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, ViewStyle, TextStyle, StyleProp } from 'react-native';
-import { theme } from '../../theme';
+import { theme, useTheme, ThemeColors } from '../../theme';
 
 export type StatusBadgeVariant = 'bullish' | 'bearish' | 'warning' | 'cyan' | 'purple' | 'neutral';
 export type StatusBadgeSize = 'sm' | 'md' | 'lg';
@@ -27,47 +27,49 @@ export interface StatusBadgeProps {
   testID?: string;
 }
 
-const VARIANT_CONFIG: Record<
+function getVariantConfig(colors: ThemeColors): Record<
   StatusBadgeVariant,
   { text: string; bg: string; border: string; dot: string }
-> = {
-  bullish: {
-    text: theme.colors.bullish,
-    bg: theme.colors.bullishGlow,
-    border: theme.colors.bullish,
-    dot: theme.colors.bullish,
-  },
-  bearish: {
-    text: theme.colors.bearish,
-    bg: theme.colors.bearishGlow,
-    border: theme.colors.bearish,
-    dot: theme.colors.bearish,
-  },
-  warning: {
-    text: theme.colors.warning,
-    bg: theme.colors.warningGlow,
-    border: theme.colors.warning,
-    dot: theme.colors.warning,
-  },
-  cyan: {
-    text: theme.colors.cyan,
-    bg: theme.colors.cyanGlow,
-    border: theme.colors.cyan,
-    dot: theme.colors.cyan,
-  },
-  purple: {
-    text: theme.colors.purple,
-    bg: theme.colors.purpleGlow,
-    border: theme.colors.purple,
-    dot: theme.colors.purple,
-  },
-  neutral: {
-    text: theme.colors.textSecondary,
-    bg: 'rgba(148, 163, 184, 0.12)',
-    border: theme.colors.textMuted,
-    dot: theme.colors.textSecondary,
-  },
-};
+> {
+  return {
+    bullish: {
+      text: colors.bullish,
+      bg: colors.bullishGlow,
+      border: colors.bullish,
+      dot: colors.bullish,
+    },
+    bearish: {
+      text: colors.bearish,
+      bg: colors.bearishGlow,
+      border: colors.bearish,
+      dot: colors.bearish,
+    },
+    warning: {
+      text: colors.warning,
+      bg: colors.warningGlow,
+      border: colors.warning,
+      dot: colors.warning,
+    },
+    cyan: {
+      text: colors.cyan,
+      bg: colors.cyanGlow,
+      border: colors.cyan,
+      dot: colors.cyan,
+    },
+    purple: {
+      text: colors.purple,
+      bg: colors.purpleGlow,
+      border: colors.purple,
+      dot: colors.purple,
+    },
+    neutral: {
+      text: colors.textSecondary,
+      bg: 'rgba(148, 163, 184, 0.12)',
+      border: colors.textMuted,
+      dot: colors.textSecondary,
+    },
+  };
+}
 
 const SIZE_CONFIG: Record<
   StatusBadgeSize,
@@ -117,8 +119,10 @@ export function StatusBadge({
   textStyle,
   testID,
 }: StatusBadgeProps): React.JSX.Element {
+  const { colors } = useTheme();
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const config = VARIANT_CONFIG[variant] || VARIANT_CONFIG.neutral;
+  const variantMap = React.useMemo(() => getVariantConfig(colors), [colors]);
+  const config = variantMap[variant] || variantMap.neutral;
   const sizeConfig = SIZE_CONFIG[size] || SIZE_CONFIG.md;
 
   useEffect(() => {

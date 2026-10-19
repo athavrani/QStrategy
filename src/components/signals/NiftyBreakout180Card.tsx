@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { NiftyBreakout180State } from '../../types/mobile';
 import * as Haptics from 'expo-haptics';
 
@@ -10,6 +10,8 @@ interface Props {
 }
 
 export function NiftyBreakout180Card({ data, onPress }: Props) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
   const handleOpenBroker = (symbol: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const kiteUrl = `kite://search?q=${encodeURIComponent(symbol)}`;
@@ -137,7 +139,7 @@ export function NiftyBreakout180Card({ data, onPress }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   card: {
     backgroundColor: colors.card,
     borderRadius: 12,
@@ -439,4 +441,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
   },
-});
+}));
+

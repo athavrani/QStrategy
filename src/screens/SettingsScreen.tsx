@@ -10,7 +10,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { colors } from '../theme/colors';
+import { useTheme, createThemedStyles } from '../theme';
 import { notificationService } from '../services/notificationService';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { secureVault, isDhanJwtToken, isNumericClientId } from '../services/SecureCredentialVault';
@@ -21,6 +21,8 @@ import { API_CONFIG } from '../config/apiConfig';
 import * as Haptics from 'expo-haptics';
 
 export function SettingsScreen() {
+  const { mode, effectiveMode, isDark, setMode, colors } = useTheme();
+  const styles = useThemedStyles();
   const [pushEnabled, setPushEnabled] = useState(true);
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -232,6 +234,66 @@ export function SettingsScreen() {
 
   return (
     <ScrollView style={styles.container}>
+      {/* APPEARANCE & THEME */}
+      <Text style={styles.sectionHeader}>APPEARANCE & THEME</Text>
+      <View style={styles.card}>
+        <View style={styles.statusRow}>
+          <View>
+            <Text style={styles.gatewayTitle}>Display Theme</Text>
+            <Text style={styles.gatewaySub}>
+              {mode === 'system'
+                ? `System Default (${isDark ? 'Dark' : 'Light'} Active)`
+                : mode === 'dark'
+                ? 'Obsidian Dark Terminal'
+                : 'Clean Slate Financial Light'}
+            </Text>
+          </View>
+          <View style={[styles.statusBadge, styles.themeModeBadge]}>
+            <Text style={[styles.statusBadgeText, { color: colors.cyan }]}>
+              {mode.toUpperCase()}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.themeSelectorGroup}>
+          <TouchableOpacity
+            style={[styles.themeOptionBtn, mode === 'dark' && styles.themeOptionBtnActive]}
+            onPress={() => setMode('dark')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.themeOptionIcon}>🌙</Text>
+            <Text style={[styles.themeOptionText, mode === 'dark' && styles.themeOptionTextActive]}>
+              Dark
+            </Text>
+            <Text style={styles.themeOptionSub}>Obsidian</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.themeOptionBtn, mode === 'light' && styles.themeOptionBtnActive]}
+            onPress={() => setMode('light')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.themeOptionIcon}>☀️</Text>
+            <Text style={[styles.themeOptionText, mode === 'light' && styles.themeOptionTextActive]}>
+              Light
+            </Text>
+            <Text style={styles.themeOptionSub}>Slate</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.themeOptionBtn, mode === 'system' && styles.themeOptionBtnActive]}
+            onPress={() => setMode('system')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.themeOptionIcon}>💻</Text>
+            <Text style={[styles.themeOptionText, mode === 'system' && styles.themeOptionTextActive]}>
+              System
+            </Text>
+            <Text style={styles.themeOptionSub}>Auto</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {/* DIRECT DHAN LIVE STREAMER */}
       <Text style={styles.sectionHeader}>DHANHQ DATA API (OFFICIAL PLAN)</Text>
 
@@ -499,7 +561,7 @@ export function SettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   container: {
     flex: 1,
     backgroundColor: colors.obsidian,
@@ -520,6 +582,49 @@ const styles = StyleSheet.create({
     borderColor: colors.cardBorder,
     padding: 14,
     marginBottom: 16,
+  },
+  themeModeBadge: {
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.borderActive,
+  },
+  themeSelectorGroup: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  themeOptionBtn: {
+    flex: 1,
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  themeOptionBtnActive: {
+    backgroundColor: colors.surfaceHover,
+    borderColor: colors.borderActive,
+    borderWidth: 1.5,
+  },
+  themeOptionIcon: {
+    fontSize: 18,
+    marginBottom: 4,
+  },
+  themeOptionText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  themeOptionTextActive: {
+    color: colors.textPrimary,
+    fontWeight: '800',
+  },
+  themeOptionSub: {
+    color: colors.textMuted,
+    fontSize: 9,
+    marginTop: 2,
   },
   statusRow: {
     flexDirection: 'row',
@@ -840,4 +945,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.8,
   },
-});
+}));
+

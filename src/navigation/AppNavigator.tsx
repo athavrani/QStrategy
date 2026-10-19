@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar } from 'react-native';
-import { colors } from '../theme/colors';
+import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { HeaderBar } from '../components/common/HeaderBar';
 import { SignalsScreen } from '../screens/SignalsScreen';
@@ -15,6 +15,8 @@ type Tab = 'SIGNALS' | 'RADAR' | 'OPTIONS' | 'JOURNAL' | 'SETTINGS';
 export function AppNavigator() {
   const [activeTab, setActiveTab] = useState<Tab>('SIGNALS');
   const { istTime, marketStatus, signalsTodayCount } = useRadarStore();
+  const { colors, isDark } = useTheme();
+  const styles = useThemedStyles();
 
   const handleTabPress = (tab: Tab) => {
     Haptics.selectionAsync();
@@ -38,7 +40,10 @@ export function AppNavigator() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={colors.obsidian} />
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.obsidian}
+      />
 
       {/* Top Application Header */}
       <HeaderBar istTime={istTime} marketStatus={marketStatus} />
@@ -97,7 +102,7 @@ export function AppNavigator() {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   container: {
     flex: 1,
     backgroundColor: colors.obsidian,
@@ -155,4 +160,4 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '800',
   },
-});
+}));

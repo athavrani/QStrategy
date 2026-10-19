@@ -1,13 +1,18 @@
 import React, { useEffect } from 'react';
 import { useRadarStore } from './src/store/useRadarStore';
+import { useTheme } from './src/theme';
 import { notificationService } from './src/services/notificationService';
 import { AppNavigator } from './src/navigation/AppNavigator';
 import { dhanDirectService } from './src/services/dhanDirectService';
 
 export default function App() {
   const { refreshAll, setIstTime, initStreamer } = useRadarStore();
+  const { initTheme } = useTheme();
 
   useEffect(() => {
+    // 0. Initialize saved theme preference
+    initTheme();
+
     // 1. Initialize notification channel permissions
     notificationService.registerForPushNotifications();
 

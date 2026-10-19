@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../types';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import * as Haptics from 'expo-haptics';
 
 export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
@@ -100,15 +100,29 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
     };
   },
 
-  renderCard: ({ state, onOpenBroker, onViewDetails }) => {
-    const handleCardPress = () => {
-      Haptics.selectionAsync();
-      if (onViewDetails) {
-        onViewDetails('NIFTY_BREAKOUT_180');
-      }
-    };
+  renderCard: (props) => <NiftyBreakout180PluginCard {...props} />,
+};
 
-    const ceLeg = state.legs?.find((l) => l.type === 'CE');
+function NiftyBreakout180PluginCard({
+  state,
+  onOpenBroker,
+  onViewDetails,
+}: {
+  state: StrategySignalOutput;
+  onOpenBroker: (symbol: string) => void;
+  onViewDetails?: (id: string) => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
+
+  const handleCardPress = () => {
+    Haptics.selectionAsync();
+    if (onViewDetails) {
+      onViewDetails('NIFTY_BREAKOUT_180');
+    }
+  };
+
+  const ceLeg = state.legs?.find((l) => l.type === 'CE');
     const peLeg = state.legs?.find((l) => l.type === 'PE');
     const isCeTriggered = ceLeg?.status === 'ACTIVE' && (ceLeg?.currentLtp ?? 0) >= 180;
     const isPeTriggered = peLeg?.status === 'ACTIVE' && (peLeg?.currentLtp ?? 0) >= 180;
@@ -204,10 +218,9 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
         </View>
       </TouchableOpacity>
     );
-  },
-};
+}
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   card: {
     backgroundColor: colors.card,
     borderRadius: 12,
@@ -505,4 +518,4 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
   },
-});
+}));

@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
-import { colors } from '../theme/colors';
+import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { StockRadarItem } from '../types/mobile';
 import { TacticalStrikeModal } from '../components/radar/TacticalStrikeModal';
@@ -38,6 +38,8 @@ interface StockCardProps {
 // Memoized Card: Only re-renders if this specific stock's live tick values changed
 const StockCard = React.memo(
   function StockCard({ item, onSelect }: StockCardProps) {
+    const { colors } = useTheme();
+    const styles = useThemedStyles();
     const ratioPercent = Math.min(150, Math.round(item.volumeRatio * 100));
     const effectivePrevClose = (item.prevClose && item.prevClose > 0)
       ? item.prevClose
@@ -168,6 +170,8 @@ const StockCard = React.memo(
 );
 
 export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
+  const { colors, isDark } = useTheme();
+  const styles = useThemedStyles();
   // Fine-grained Zustand selectors to prevent unnecessary re-renders
   const stocks = useRadarStore((s) => s.stocks);
   const selectedStock = useRadarStore((s) => s.selectedStock);
@@ -407,7 +411,7 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   container: {
     flex: 1,
     backgroundColor: colors.obsidian,
@@ -681,4 +685,5 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
   },
-});
+}));
+

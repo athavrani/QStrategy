@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   Linking,
 } from 'react-native';
-import { colors } from '../theme/colors';
+import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { strategyRegistry } from '../strategies';
 import { StrategyCategory, StrategyContext } from '../strategies/types';
@@ -24,6 +24,8 @@ interface SignalsScreenProps {
 }
 
 export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) {
+  const { colors, isDark } = useTheme();
+  const styles = useThemedStyles();
   const {
     stocks,
     marketStatus,
@@ -214,7 +216,7 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   container: {
     flex: 1,
     backgroundColor: colors.obsidian,
@@ -317,4 +319,4 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     marginBottom: 10,
   },
-});
+}));

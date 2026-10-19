@@ -10,7 +10,7 @@ import {
   SafeAreaView,
   StatusBar,
 } from 'react-native';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import * as Haptics from 'expo-haptics';
 
@@ -53,6 +53,8 @@ export function OobtstDetailModal({
   istTime,
   stepDetails,
 }: OobtstDetailModalProps) {
+  const { colors, isDark } = useTheme();
+  const styles = useThemedStyles();
   const currentStep = stepDetails?.currentStep ?? 1;
 
   const step1 = stepDetails?.step1 ?? {
@@ -114,7 +116,7 @@ export function OobtstDetailModal({
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="light-content" backgroundColor={colors.obsidian} />
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.obsidian} />
 
         {/* Top Header */}
         <View style={styles.header}>
@@ -569,7 +571,7 @@ export function OobtstDetailModal({
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   safeArea: {
     flex: 1,
     backgroundColor: colors.obsidian,
@@ -951,4 +953,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
   },
-});
+}));

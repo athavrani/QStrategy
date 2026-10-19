@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../types';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 
 export const VolumeCrossoverPlugin: BaseStrategyPlugin = {
   id: '20D_CROSSOVER',
@@ -86,74 +86,78 @@ export const VolumeCrossoverPlugin: BaseStrategyPlugin = {
     };
   },
 
-  renderCard: ({ state, onOpenBroker }) => {
-    const isTriggered = state.status === 'TRIGGERED';
-
-    return (
-      <View style={styles.card}>
-        <View style={styles.header}>
-          <View style={styles.titleRow}>
-            <Text style={styles.icon}>📊</Text>
-            <View>
-              <Text style={styles.title}>20-Day Volume Crossover Screener</Text>
-              <Text style={styles.sub}>Institutional Accumulation (Today Vol ≥ 20D Avg)</Text>
-            </View>
-          </View>
-          <View style={[styles.badge, { backgroundColor: isTriggered ? colors.bullishGlow : colors.warningGlow }]}>
-            <Text style={[styles.badgeText, { color: isTriggered ? colors.bullish : colors.warning }]}>
-              {state.statusBadgeText}
-            </Text>
-          </View>
-        </View>
-
-        {/* Highlight Banner */}
-        <View style={styles.headlineBox}>
-          <Text style={styles.headlineText}>{state.headline}</Text>
-        </View>
-
-        {/* Parameters Grid */}
-        <View style={styles.metricsBox}>
-          <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>CONFIRMED CROSSED</Text>
-            <Text style={[styles.metricVal, { color: colors.bullish }]}>{state.primaryMetricValue}</Text>
-          </View>
-          <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>TARGET RULE</Text>
-            <Text style={[styles.metricVal, { color: colors.cyan }]}>1:2 R:R (+40%)</Text>
-          </View>
-          <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>STOP LOSS (TSL)</Text>
-            <Text style={[styles.metricVal, { color: colors.bearish }]}>-20% (BE @ +1R)</Text>
-          </View>
-        </View>
-
-        {state.invariantNotice && (
-          <View style={styles.noticeBox}>
-            <Text style={styles.noticeText}>{state.invariantNotice}</Text>
-          </View>
-        )}
-
-        {state.legs && state.legs.length > 0 && (
-          <View style={styles.topStockRow}>
-            <Text style={styles.topStockLabel}>Recommended ATM Call:</Text>
-            <TouchableOpacity onPress={() => onOpenBroker(state.legs![0].symbol)}>
-              <Text style={styles.brokerLink}>
-                {state.legs![0].symbol} {state.legs![0].currentLtp > 0 ? `(₹${state.legs![0].currentLtp.toFixed(2)})` : ''} ↗
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <View style={styles.footer}>
-          <Text style={styles.footerNote}>Continuous Scan: 09:16:00 – 15:30:00 IST</Text>
-          <Text style={[styles.viewRadarText, { color: colors.bullish }]}>Switch to Tab 2: Radar 📡</Text>
-        </View>
-      </View>
-    );
-  },
+  renderCard: (props) => <VolumeCrossoverCard {...props} />,
 };
 
-const styles = StyleSheet.create({
+function VolumeCrossoverCard({ state, onOpenBroker }: { state: StrategySignalOutput; onOpenBroker: (symbol: string) => void }) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
+  const isTriggered = state.status === 'TRIGGERED';
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.header}>
+        <View style={styles.titleRow}>
+          <Text style={styles.icon}>📊</Text>
+          <View>
+            <Text style={styles.title}>20-Day Volume Crossover Screener</Text>
+            <Text style={styles.sub}>Institutional Accumulation (Today Vol ≥ 20D Avg)</Text>
+          </View>
+        </View>
+        <View style={[styles.badge, { backgroundColor: isTriggered ? colors.bullishGlow : colors.warningGlow }]}>
+          <Text style={[styles.badgeText, { color: isTriggered ? colors.bullish : colors.warning }]}>
+            {state.statusBadgeText}
+          </Text>
+        </View>
+      </View>
+
+      {/* Highlight Banner */}
+      <View style={styles.headlineBox}>
+        <Text style={styles.headlineText}>{state.headline}</Text>
+      </View>
+
+      {/* Parameters Grid */}
+      <View style={styles.metricsBox}>
+        <View style={styles.metricItem}>
+          <Text style={styles.metricLabel}>CONFIRMED CROSSED</Text>
+          <Text style={[styles.metricVal, { color: colors.bullish }]}>{state.primaryMetricValue}</Text>
+        </View>
+        <View style={styles.metricItem}>
+          <Text style={styles.metricLabel}>TARGET RULE</Text>
+          <Text style={[styles.metricVal, { color: colors.cyan }]}>1:2 R:R (+40%)</Text>
+        </View>
+        <View style={styles.metricItem}>
+          <Text style={styles.metricLabel}>STOP LOSS (TSL)</Text>
+          <Text style={[styles.metricVal, { color: colors.bearish }]}>-20% (BE @ +1R)</Text>
+        </View>
+      </View>
+
+      {state.invariantNotice && (
+        <View style={styles.noticeBox}>
+          <Text style={styles.noticeText}>{state.invariantNotice}</Text>
+        </View>
+      )}
+
+      {state.legs && state.legs.length > 0 && (
+        <View style={styles.topStockRow}>
+          <Text style={styles.topStockLabel}>Recommended ATM Call:</Text>
+          <TouchableOpacity onPress={() => onOpenBroker(state.legs![0].symbol)}>
+            <Text style={styles.brokerLink}>
+              {state.legs![0].symbol} {state.legs![0].currentLtp > 0 ? `(₹${state.legs![0].currentLtp.toFixed(2)})` : ''} ↗
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <View style={styles.footer}>
+        <Text style={styles.footerNote}>Continuous Scan: 09:16:00 – 15:30:00 IST</Text>
+        <Text style={[styles.viewRadarText, { color: colors.bullish }]}>Switch to Tab 2: Radar 📡</Text>
+      </View>
+    </View>
+  );
+}
+
+const useThemedStyles = createThemedStyles((colors) => ({
   card: {
     backgroundColor: colors.card,
     borderRadius: 10,
@@ -280,4 +284,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-});
+}));

@@ -1,18 +1,20 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { colors } from '../../theme/colors';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { useTheme, createThemedStyles } from '../../theme';
 import { MarketSessionStatus } from '../../types/mobile';
 import { useRadarStore } from '../../store/useRadarStore';
 
 interface HeaderBarProps {
-  istTime: string;
-  marketStatus: MarketSessionStatus;
+  istTime?: string;
+  marketStatus?: MarketSessionStatus;
 }
 
-export function HeaderBar({ istTime, marketStatus }: HeaderBarProps) {
+export function HeaderBar({ istTime = '09:15:00 IST', marketStatus = 'REGULAR_HOURS' }: HeaderBarProps) {
   const isMarketOpen = marketStatus === 'REGULAR_HOURS';
   const feedStatus = useRadarStore((s) => s.feedStatus);
   const isDhanActive = feedStatus === 'ONLINE';
+  const { colors, isDark, toggleTheme } = useTheme();
+  const styles = useThemedStyles();
 
   return (
     <View style={styles.header}>
@@ -32,12 +34,40 @@ export function HeaderBar({ istTime, marketStatus }: HeaderBarProps) {
       </View>
 
       <View style={styles.headerRight}>
-        <View style={styles.clockBadge}>
-          <View style={[styles.liveDot, { backgroundColor: isMarketOpen ? colors.bullish : colors.warning }]} />
-          <Text style={styles.clockText}>{istTime}</Text>
+        <View style={styles.topControlRow}>
+          {/* Quick 1-Tap Theme Toggle Button */}
+          <TouchableOpacity
+            style={styles.themeToggleBtn}
+            onPress={toggleTheme}
+            activeOpacity={0.7}
+            accessibilityLabel={`Switch to ${isDark ? 'Light' : 'Dark'} Theme`}
+          >
+            <Text style={styles.themeToggleIcon}>{isDark ? '🌙' : '☀️'}</Text>
+          </TouchableOpacity>
+
+          <View style={styles.clockBadge}>
+            <View
+              style={[
+                styles.liveDot,
+                { backgroundColor: isMarketOpen ? colors.bullish : colors.warning },
+              ]}
+            />
+            <Text style={styles.clockText}>{istTime}</Text>
+          </View>
         </View>
-        <View style={[styles.statusBadge, isMarketOpen ? styles.statusBadgeActive : styles.statusBadgeClosed]}>
-          <Text style={[styles.statusText, { color: isMarketOpen ? colors.bullish : colors.warning }]}>
+
+        <View
+          style={[
+            styles.statusBadge,
+            isMarketOpen ? styles.statusBadgeActive : styles.statusBadgeClosed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.statusText,
+              { color: isMarketOpen ? colors.bullish : colors.warning },
+            ]}
+          >
             {marketStatus}
           </Text>
         </View>
@@ -46,7 +76,7 @@ export function HeaderBar({ istTime, marketStatus }: HeaderBarProps) {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -78,10 +108,26 @@ const styles = StyleSheet.create({
   headerRight: {
     alignItems: 'flex-end',
   },
+  topControlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  themeToggleBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    backgroundColor: colors.surfaceSubtle,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  themeToggleIcon: {
+    fontSize: 12,
+  },
   clockBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 4,
   },
   liveDot: {
     width: 6,
@@ -111,7 +157,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   dhanPill: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: colors.bullishGlow,
     borderWidth: 1,
     borderColor: colors.bullish,
     paddingHorizontal: 5,
@@ -123,4 +169,4 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '800',
   },
-});
+}));

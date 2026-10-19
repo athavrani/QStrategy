@@ -1,7 +1,7 @@
 // Zero-Flicker Skeleton Shimmer Loader for Obsidian Dark Terminal
 import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Animated, ViewStyle, StyleProp, DimensionValue } from 'react-native';
-import { theme } from '../../theme';
+import { theme as defaultTheme, useTheme } from '../../theme';
 
 export interface SkeletonLoaderProps {
   /** Width of the skeleton element (number or percentage string e.g. '100%') */
@@ -25,13 +25,14 @@ export interface SkeletonLoaderProps {
 export function SkeletonLoader({
   width = '100%',
   height = 16,
-  borderRadius = theme.borderRadius.sm,
+  borderRadius = defaultTheme.borderRadius.sm,
   lines = 1,
-  spacing = theme.spacing.sm,
+  spacing = defaultTheme.spacing.sm,
   backgroundColor,
   style,
   testID,
 }: SkeletonLoaderProps): React.JSX.Element {
+  const { theme } = useTheme();
   const pulseAnim = useRef(new Animated.Value(0.35)).current;
 
   useEffect(() => {

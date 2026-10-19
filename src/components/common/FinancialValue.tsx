@@ -1,10 +1,10 @@
 // Financial Value Component with Dhan-Grade Colorization & Indian Numbering
 import React from 'react';
 import { Text, StyleSheet, TextStyle, StyleProp } from 'react-native';
-import { theme } from '../../theme';
+import { theme as defaultTheme, useTheme } from '../../theme';
 
 export type FinancialFormat = 'currency' | 'percent' | 'points' | 'compact' | 'raw';
-export type FinancialSize = keyof typeof theme.typography.sizes;
+export type FinancialSize = keyof typeof defaultTheme.typography.sizes;
 
 export interface FinancialValueProps {
   /** Numeric value to format and display. If null/undefined, renders fallback */
@@ -22,7 +22,7 @@ export interface FinancialValueProps {
   /** Use monospace tabular numbers font for flicker-free alignment */
   mono?: boolean;
   /** Font weight */
-  weight?: keyof typeof theme.typography.weights;
+  weight?: keyof typeof defaultTheme.typography.weights;
   /** Fallback string when value is null/undefined or NaN */
   fallback?: string;
   /** Optional custom prefix (placed before sign or value) */
@@ -95,6 +95,7 @@ export function FinancialValue({
   style,
   testID,
 }: FinancialValueProps): React.JSX.Element {
+  const { theme } = useTheme();
   if (value === null || value === undefined || Number.isNaN(value)) {
     return (
       <Text

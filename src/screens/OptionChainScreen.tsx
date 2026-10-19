@@ -10,7 +10,7 @@ import {
   RefreshControl,
   SafeAreaView,
 } from 'react-native';
-import { theme } from '../theme';
+import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { DhanOptionChainService, OptionChainResult, OptionStrikeData } from '../services/dhan/DhanOptionChainService';
 import { calculateGreeks, OptionGreeks } from '../services/quant/BlackScholes';
@@ -64,6 +64,8 @@ export function formatOi(oi: number | undefined | null): string {
 }
 
 export function OptionChainScreen(): React.JSX.Element {
+  const { theme, colors, isDark } = useTheme();
+  const styles = useThemedStyles();
   const [selectedPreset, setSelectedPreset] = useState<UnderlyingPreset>(UNDERLYING_PRESETS[0]);
   const [selectedExpiry, setSelectedExpiry] = useState<string>('');
   const [strikeRange, setStrikeRange] = useState<StrikeRange>('6');
@@ -514,7 +516,7 @@ export function OptionChainScreen(): React.JSX.Element {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors, theme) => ({
   container: {
     flex: 1,
     backgroundColor: theme.colors.obsidian,
@@ -902,4 +904,5 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.sizes.sm,
     fontWeight: theme.typography.weights.semibold,
   },
-});
+}));
+

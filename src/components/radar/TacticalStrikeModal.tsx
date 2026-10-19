@@ -8,7 +8,7 @@ import {
   ScrollView,
   Linking,
 } from 'react-native';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { StockRadarItem, TacticalStrikeSuggestion } from '../../types/mobile';
 import * as Haptics from 'expo-haptics';
 
@@ -23,6 +23,8 @@ interface Props {
 }
 
 export function TacticalStrikeModal({ visible, stock, tactical, onClose, onViewOptionChain }: Props) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
   if (!stock || !tactical) return null;
 
   const handleOpenBroker = (action: 'CE' | 'PE', broker: 'kite' | 'dhan' = 'dhan') => {
@@ -263,7 +265,7 @@ export function TacticalStrikeModal({ visible, stock, tactical, onClose, onViewO
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   overlay: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -506,4 +508,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-});
+}));
+

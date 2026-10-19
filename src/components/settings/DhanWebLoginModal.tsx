@@ -15,7 +15,7 @@ import {
 import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import CryptoJS from 'crypto-js';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { secureVault } from '../../services/SecureCredentialVault';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { dhanHqFeedSocket } from '../../services/dhan/DhanHqFeedSocket';
@@ -449,6 +449,8 @@ const INJECTED_TOKEN_INTERCEPTOR = `
 `;
 
 export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginModalProps) {
+  const { colors, isDark } = useTheme();
+  const styles = useThemedStyles();
   const [loading, setLoading] = useState(true);
   const [isCapturing, setIsCapturing] = useState(false);
   const capturedRef = useRef(false);
@@ -683,7 +685,7 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="light-content" backgroundColor="#0A111C" />
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.surface} />
 
         {/* Top Header Bar */}
         <View style={styles.header}>
@@ -787,10 +789,10 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   safeArea: {
     flex: 1,
-    backgroundColor: '#070D18',
+    backgroundColor: colors.obsidian,
   },
   header: {
     flexDirection: 'row',
@@ -799,8 +801,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-    backgroundColor: '#0A111C',
+    borderBottomColor: colors.divider,
+    backgroundColor: colors.surface,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -811,7 +813,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: colors.bullishSubtle,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -819,7 +821,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   headerTitle: {
-    color: '#FFFFFF',
+    color: colors.textPrimary,
     fontSize: 14,
     fontWeight: '700',
   },
@@ -836,12 +838,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 6,
-    backgroundColor: 'rgba(234, 179, 8, 0.15)',
+    backgroundColor: colors.warningSubtle,
     borderWidth: 1,
-    borderColor: 'rgba(234, 179, 8, 0.35)',
+    borderColor: colors.cardBorder,
   },
   freshLoginBtnText: {
-    color: '#EAB308',
+    color: colors.warning,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -849,10 +851,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
   },
   iconBtnText: {
-    color: '#FFFFFF',
+    color: colors.textPrimary,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -860,9 +864,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: colors.bearishSubtle,
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderColor: colors.cardBorder,
   },
   closeBtnText: {
     color: colors.bearish,
@@ -870,9 +874,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   securityBanner: {
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    backgroundColor: colors.bullishSubtle,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(16, 185, 129, 0.15)',
+    borderBottomColor: colors.cardBorder,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
@@ -884,29 +888,29 @@ const styles = StyleSheet.create({
   webViewContainer: {
     flex: 1,
     position: 'relative',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.obsidian,
   },
   webView: {
     flex: 1,
   },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(7, 13, 24, 0.85)',
+    backgroundColor: colors.overlay,
     justifyContent: 'center',
     alignItems: 'center',
     gap: 12,
   },
   loadingText: {
-    color: '#FFFFFF',
+    color: colors.textPrimary,
     fontSize: 12,
     fontWeight: '600',
   },
   bottomBar: {
     paddingHorizontal: 14,
     paddingVertical: 10,
-    backgroundColor: '#0A111C',
+    backgroundColor: colors.surface,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    borderTopColor: colors.divider,
     flexDirection: 'row',
     gap: 8,
     alignItems: 'center',
@@ -915,9 +919,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 8,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: colors.bearishSubtle,
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderColor: colors.cardBorder,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -940,4 +944,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.2,
   },
-});
+}));

@@ -44,21 +44,22 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
       const strikePrice = atmStrike + i * step;
       list.push({
         strikePrice,
+        moneyness: i === 0 ? 'ATM' : i < 0 ? 'ITM' : 'OTM',
         ce: {
-          lastPrice: Math.max(1, 200 - i * 15),
           ltp: Math.max(1, 200 - i * 15),
           oi: 50000 + i * 1000,
-          impliedVolatility: 14.5,
+          volume: 10000,
           iv: 14.5,
-          moneyness: i === 0 ? 'ATM' : i < 0 ? 'ITM' : 'OTM',
+          bid: null,
+          ask: null,
         },
         pe: {
-          lastPrice: Math.max(1, 200 + i * 15),
           ltp: Math.max(1, 200 + i * 15),
           oi: 60000 - i * 1000,
-          impliedVolatility: 15.2,
+          volume: 8000,
           iv: 15.2,
-          moneyness: i === 0 ? 'ATM' : i > 0 ? 'ITM' : 'OTM',
+          bid: null,
+          ask: null,
         },
       });
     }
@@ -68,6 +69,8 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
   test('default strike slicing selects exactly 13 strikes (6 ITM + 1 ATM + 6 OTM)', async () => {
     const mockStrikes = generateMockStrikes(25000, 50, 15); // 31 strikes total
     const mockChain: OptionChainResult = {
+      underlyingScrip: 13,
+      underlyingSeg: 'IDX_I',
       spotPrice: 25010,
       atmStrike: 25000,
       strikes: mockStrikes,
@@ -120,6 +123,8 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
   test('FlatList uses getItemLayout with 54px row height for smooth 60fps rendering', async () => {
     const mockStrikes = generateMockStrikes(25000, 50, 10);
     const mockChain: OptionChainResult = {
+      underlyingScrip: 13,
+      underlyingSeg: 'IDX_I',
       spotPrice: 25000,
       atmStrike: 25000,
       strikes: mockStrikes,

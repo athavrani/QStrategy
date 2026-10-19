@@ -1,13 +1,13 @@
-// Institutional Trade Journal with Dynamic P&L & Zero-Fabrication Analytics
 import React from 'react';
 import { View, Text, StyleSheet, FlatList } from 'react-native';
-import { theme } from '../theme';
+import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { SignalJournalItem } from '../types/mobile';
 import { FinancialValue } from '../components/common/FinancialValue';
 import { StatusBadge } from '../components/common/StatusBadge';
 
 export function JournalScreen(): React.JSX.Element {
+  const styles = useThemedStyles();
   const { journal, netPointsCaptured } = useRadarStore();
 
   // Dynamic SEBI-compliant Win Rate calculation from real journal executions (Zero Fabrication)
@@ -136,7 +136,7 @@ export function JournalScreen(): React.JSX.Element {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors, theme) => ({
   container: {
     flex: 1,
     backgroundColor: theme.colors.obsidian,
@@ -260,4 +260,5 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     maxWidth: 320,
   },
-});
+}));
+

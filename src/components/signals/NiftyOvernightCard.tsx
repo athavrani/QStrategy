@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
-import { colors } from '../../theme/colors';
+import { useTheme, createThemedStyles } from '../../theme';
 import { NiftyOvernightState } from '../../types/mobile';
 import * as Haptics from 'expo-haptics';
 
@@ -9,6 +9,8 @@ interface Props {
 }
 
 export function NiftyOvernightCard({ data }: Props) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
   const handleOpenBroker = (symbol: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     // Deep link intent to broker apps (fallback to web search if not installed)
@@ -98,7 +100,7 @@ export function NiftyOvernightCard({ data }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const useThemedStyles = createThemedStyles((colors) => ({
   card: {
     backgroundColor: colors.card,
     borderWidth: 1,
@@ -223,4 +225,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-});
+}));
+
