@@ -4,6 +4,44 @@ This guide provides step-by-step instructions to compile, build, download, and i
 
 ---
 
+## ⚡ Direct Download: Already Built & Ready
+
+Your local standalone APK has been compiled and is ready right in your project root:
+- **File location**: [`c:\Project\QStrategy\QStrategy.apk`](file:///c:/Project/QStrategy/QStrategy.apk)
+- **Original Gradle output**: `c:\Project\QStrategy\android\app\build\outputs\apk\debug\app-debug.apk`
+- **Size**: ~147 MB (includes 64-bit and 32-bit ARM/x86 architectures, SQLite C engine, encryption vault, and Hermes JS bundle)
+
+### Quickest way to install on your phone right now:
+1. **Option A (USB Cable)**: Connect your Android phone to your PC via USB, copy `QStrategy.apk` into your phone's `Downloads` folder, and tap to install.
+2. **Option B (Google Drive / WhatsApp Web)**: Upload `QStrategy.apk` to Google Drive or send it to yourself on WhatsApp Web / Telegram, download it on your phone, and tap to install.
+3. **Option C (ADB if developer mode is enabled)**:
+   ```powershell
+   adb install -r c:\Project\QStrategy\QStrategy.apk
+   ```
+
+---
+
+## 🛠 Rebuilding Locally (Offline / Fast)
+
+Whenever you make code changes, you can rebuild the APK locally in under 60 seconds (since all dependencies and tools are now permanently cached):
+
+```powershell
+# In PowerShell:
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot"
+$env:ANDROID_HOME = "C:\Android\Sdk"
+$env:Path = "$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:Path"
+
+npm run build:local
+```
+Or directly:
+```powershell
+cd c:\Project\QStrategy\android
+.\gradlew.bat assembleDebug
+```
+The new APK will update at `c:\Project\QStrategy\android\app\build\outputs\apk\debug\app-debug.apk`.
+
+---
+
 ## 1. Prerequisites
 
 Before generating the APK, ensure you have:
