@@ -1,0 +1,193 @@
+/**
+ * QStrategy — Official DhanHQ v2 REST Client
+ * Directly interacts with DhanHQ Data API v2 (AWS Mumbai)
+ * Features strict nullability, hardware Keystore auth, timeout management,
+ * and 401 token expiry handling.
+ */
+
+import { secureVault } from '../SecureCredentialVault';
+
+export const DHAN_HQ_REST_BASE_URL = 'https://api.dhan.co/v2';
+
+export interface DhanLtpItem {
+  last_price: number;
+}
+
+export interface DhanQuoteItem {
+  last_price: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  prev_close?: number;
+  average_price?: number;
+  volume: number;
+  total_buy_quantity?: number;
+  total_sell_quantity?: number;
+  oi?: number;
+  last_trade_time?: string;
+  depth?: any;
+}
+
+export interface DhanOptionContractRaw {
+  last_price: number;
+  oi: number;
+  change_in_oi?: number;
+  volume?: number;
+  implied_volatility?: number;
+  iv?: number;
+  top_bid?: number;
+  bid?: number;
+  top_ask?: number;
+  ask?: number;
+  security_id?: number | string;
+  sec_id?: number | string;
+  strike_price?: number;
+}
+
+export interface DhanOptionChainStrikeItem {
+  ce?: DhanOptionContractRaw;
+  pe?: DhanOptionContractRaw;
+}
+
+export interface DhanOptionChainRawResponse {
+  status?: string;
+  remarks?: string;
+  data?: {
+    last_price?: number;
+    oc?: Record<string, DhanOptionChainStrikeItem>;
+  };
+}
+
+export class DhanHqRestClient {
+  private timeoutMs: number;
+
+  constructor(timeoutMs = 8000) {
+    this.timeoutMs = timeoutMs;
+  }
+
+  private async getAuthHeaders(): Promise<Record<string, string> | null> {
+    const creds = await secureVault.getCredentials();
+    if (!creds.clientId || !creds.token) {
+      return null;
+    }
+    return {
+      'access-token': creds.token,
+      'client-id': creds.clientId,
+      'dhanClientId': creds.clientId,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+  }
+
+  /**
+   * Internal request wrapper with timeout & 401 detection
+   */
+  public async post<T>(endpoint: string, body: any): Promise<T | null> {
+    const headers = await this.getAuthHeaders();
+    if (!headers) {
+      return null;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const url = `${DHAN_HQ_REST_BASE_URL}${endpoint}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timer);
+
+      if (response.status === 401) {
+        secureVault.updateTelemetry({
+          status: 'TOKEN_EXPIRED',
+          lastError: 'Access token expired or unauthorized (HTTP 401).',
+        });
+        return null;
+      }
+
+      if (!response.ok) {
+        secureVault.updateTelemetry({
+          lastError: `DhanHQ REST error: HTTP ${response.status}`,
+        });
+        return null;
+      }
+
+      const json = await response.json();
+      return json as T;
+    } catch (err: any) {
+      clearTimeout(timer);
+      const isAbort = err.name === 'AbortError';
+      secureVault.updateTelemetry({
+        lastError: isAbort ? 'Request timed out' : err.message,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Fetches Last Traded Price for instruments across exchange segments
+   * POST /v2/marketfeed/ltp
+   */
+  public async fetchLtp(
+    instruments: Record<string, number[]>
+  ): Promise<Record<string, Record<string, DhanLtpItem>> | null> {
+    const res = await this.post<{ data?: Record<string, Record<string, DhanLtpItem>> }>(
+      '/marketfeed/ltp',
+      instruments
+    );
+    return res?.data ?? null;
+  }
+
+  /**
+   * Fetches full quote for instruments
+   * POST /v2/marketfeed/quote
+   */
+  public async fetchQuotes(
+    instruments: Record<string, number[]>
+  ): Promise<Record<string, Record<string, DhanQuoteItem>> | null> {
+    const res = await this.post<{ data?: Record<string, Record<string, DhanQuoteItem>> }>(
+      '/marketfeed/quote',
+      instruments
+    );
+    return res?.data ?? null;
+  }
+
+  /**
+   * Fetches live option chain from DhanHQ
+   * POST /v2/optionchain
+   */
+  public async fetchOptionChain(
+    underlyingScrip: number,
+    underlyingSeg: string,
+    expiry: string
+  ): Promise<DhanOptionChainRawResponse | null> {
+    return this.post<DhanOptionChainRawResponse>('/optionchain', {
+      UnderlyingScrip: underlyingScrip,
+      UnderlyingSeg: underlyingSeg,
+      Expiry: expiry,
+    });
+  }
+
+  /**
+   * Fetches active expiry date list for underlying contract
+   * POST /v2/optionchain/expirylist
+   */
+  public async fetchExpiryList(
+    underlyingScrip: number,
+    underlyingSeg: string
+  ): Promise<string[]> {
+    const res = await this.post<{ data?: string[] }>('/optionchain/expirylist', {
+      UnderlyingScrip: underlyingScrip,
+      UnderlyingSeg: underlyingSeg,
+    });
+    return Array.isArray(res?.data) ? res.data : [];
+  }
+}
+
+export const dhanHqRestClient = new DhanHqRestClient();

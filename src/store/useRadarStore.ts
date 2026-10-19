@@ -63,7 +63,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   istTime: '--:--:--',
   isRefreshing: false,
   latchServiceInitialized: false,
-  niftySpot: 23146.15,
+  niftySpot: 0,
   feedStatus: 'UNCONFIGURED',
   lastTickTime: null,
   isStreamerInitialized: false,

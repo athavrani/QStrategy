@@ -383,7 +383,7 @@ class NiftyOptionFeedService {
   ) {
     // If passed spot is zero or default placeholder, fallback to live spot if available
     let resolvedSpot = spot;
-    if ((!resolvedSpot || resolvedSpot <= 0 || resolvedSpot === 23146.15) && this.lastLiveSpot && this.lastLiveSpot > 0) {
+    if ((!resolvedSpot || resolvedSpot <= 0) && this.lastLiveSpot && this.lastLiveSpot > 0) {
       resolvedSpot = this.lastLiveSpot;
     }
 

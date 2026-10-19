@@ -64,7 +64,7 @@ export const liveMarketService = {
   // 2. Fetch live multi-strike option chain directly from Dhan HQ Data API
   async fetchLiveOptionChain(
     ticker: string = 'NIFTY',
-    spotLtp: number = 23146.15,
+    spotLtp: number = 0,
     strikeStep: number = 50,
     forOobtst: boolean = true
   ): Promise<LiveOptionChainSummary> {
@@ -76,9 +76,9 @@ export const liveMarketService = {
     // 2. Resolve live spot price
     let resolvedSpot = spotLtp;
     const lastLiveSpot = niftyOptionFeedService.getLastLiveSpot();
-    if (lastLiveSpot && lastLiveSpot > 0 && (!resolvedSpot || resolvedSpot <= 0 || resolvedSpot === 23146.15)) {
+    if (lastLiveSpot && lastLiveSpot > 0 && (!resolvedSpot || resolvedSpot <= 0)) {
       resolvedSpot = lastLiveSpot;
-    } else if (!resolvedSpot || resolvedSpot <= 0 || resolvedSpot === 23146.15) {
+    } else if (!resolvedSpot || resolvedSpot <= 0) {
       try {
         const quote = await dhanDirectService.fetchNiftyIndexQuote();
         if (quote && quote.ltp > 0) {

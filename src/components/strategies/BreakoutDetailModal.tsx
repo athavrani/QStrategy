@@ -36,7 +36,7 @@ export function BreakoutDetailModal({
   onClose,
   istTime,
   data,
-  niftySpot = 23146.15,
+  niftySpot = 0,
 }: BreakoutDetailModalProps) {
   const currentStep = data?.currentStep ?? 1;
   const status = data?.status ?? 'MONITORING_BREAKOUT';
@@ -141,7 +141,7 @@ export function BreakoutDetailModal({
             </View>
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={styles.metaLabel}>NIFTY SPOT</Text>
-              <Text style={styles.metaSpot}>₹{niftySpot.toLocaleString('en-IN')}</Text>
+              <Text style={styles.metaSpot}>{niftySpot > 0 ? `₹${niftySpot.toLocaleString('en-IN')}` : '--'}</Text>
             </View>
           </View>
 

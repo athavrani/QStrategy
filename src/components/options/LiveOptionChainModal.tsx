@@ -25,7 +25,7 @@ interface Props {
 export function LiveOptionChainModal({
   visible,
   ticker = 'NIFTY',
-  spotPrice = 23146.15,
+  spotPrice = 0,
   strikeStep = 50,
   onClose,
 }: Props) {
@@ -114,7 +114,7 @@ export function LiveOptionChainModal({
                 )}
               </View>
               <Text style={styles.sub}>
-                Spot: ₹{displaySpot.toFixed(2)} • Expiry: {chain?.expiryDate} {chain?.daysToExpiry ? `(${chain.daysToExpiry}d)` : ''}
+                Spot: {displaySpot > 0 ? `₹${displaySpot.toFixed(2)}` : '--'} • Expiry: {chain?.expiryDate || '--'} {chain?.daysToExpiry ? `(${chain.daysToExpiry}d)` : ''}
               </Text>
             </View>
 

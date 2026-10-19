@@ -47,7 +47,7 @@ export function SignalsScreen() {
     dhanDirectService.launchDhanApp(symbol);
   };
 
-  const activeSpot = niftySpot || 23146.15;
+  const activeSpot = niftySpot || 0;
   const ctx: StrategyContext = {
     istTime,
     marketStatus,

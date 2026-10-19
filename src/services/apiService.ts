@@ -210,7 +210,7 @@ export const apiService = {
       if (data && data.state) return data.state;
     } catch {}
 
-    let spot = 23146.15;
+    let spot = 0;
     try {
       const indexQuote = await dhanDirectService.fetchNiftyIndexQuote();
       if (indexQuote && indexQuote.ltp > 0) {

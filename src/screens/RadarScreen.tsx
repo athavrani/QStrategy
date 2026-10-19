@@ -390,7 +390,7 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
       <LiveOptionChainModal
         visible={!!chainStock}
         ticker={chainStock?.ticker || 'NIFTY'}
-        spotPrice={chainStock?.spotPrice || 23146.15}
+        spotPrice={chainStock?.spotPrice || 0}
         strikeStep={chainStock?.strikeStep || 50}
         onClose={() => setChainStock(null)}
       />
