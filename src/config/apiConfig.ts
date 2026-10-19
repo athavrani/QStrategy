@@ -2,8 +2,7 @@
 
 export const API_CONFIG = {
   // Update this to your local computer's IP when testing on physical phone via Expo Go
-  // e.g. "http://192.168.1.100:3000"
-  BASE_URL: process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:3000',
+  BASE_URL: (process.env as Record<string, string | undefined>)?.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:3000',
 
   ENDPOINTS: {
     // Strategy Telemetry
