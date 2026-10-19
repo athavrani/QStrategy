@@ -73,9 +73,11 @@ export interface StrategyContext {
   istTime: string;
   marketStatus: MarketSessionStatus;
   niftySpot?: number;
+  sensexSpot?: number;
   stocks: StockRadarItem[];
   oobtstLiveState?: OobtstLiveState;
   breakout180LiveState?: NiftyBreakout180State;
+  sensexOobtstLiveState?: OobtstLiveState;
 }
 
 export interface StrategySignalOutput {

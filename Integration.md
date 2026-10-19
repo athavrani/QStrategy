@@ -21,7 +21,8 @@
    - [7.1 Strategy 1: 20D Cumulative Volume Crossover Breakout](#71-strategy-1-20d-cumulative-volume-crossover-breakout-20d_crossover)
    - [7.2 Strategy 2: NIFTY 09:20 Overnight Strangle (Zero Target Invariant)](#72-strategy-2-nifty-0920-overnight-strangle-nifty_overnight)
    - [7.3 Strategy 3: NIFTY 09:25 ₹180 Directional Breakout (OCO)](#73-strategy-3-nifty-0925-180-directional-breakout-nifty_breakout_180)
-   - [7.4 Onboarding Strategies from BackTest (15-Min ORB, 3:10 PM BTST)](#74-onboarding-strategies-from-backtest-15-min-orb-310-pm-btst)
+   - [7.4 Strategy 4: BSE SENSEX 09:20 OOBTST](#74-strategy-4-bse-sensex-0920-oobtst-sensex_oobtst)
+   - [7.5 Onboarding Strategies from BackTest (15-Min ORB, 3:10 PM BTST)](#75-onboarding-strategies-from-backtest-15-min-orb-310-pm-btst)
 8. [Database Schema & Local SQLite Persistence](#8-database-schema--local-sqlite-persistence)
 9. [Obsidian Design System & Zero-Flicker UI Engineering](#9-obsidian-design-system--zero-flicker-ui-engineering)
 10. [Granular 12-Phase Micro-Implementation Roadmap](#10-granular-12-phase-micro-implementation-roadmap)
@@ -484,7 +485,40 @@ flowchart TD
 
 ---
 
-### 7.4 Onboarding Strategies from BackTest (`15-Min ORB` & `3:10 PM BTST`)
+### 7.4 Strategy 4: BSE SENSEX 09:20 OOBTST (`SENSEX_OOBTST`)
+
+#### Quantitative Thesis:
+Captures directional opening expansion on BSE SENSEX weekly options (Friday expiry). Evaluates eligible CE & PE options in the ₹90–₹120 range targeting ₹100, locks opening prices at 09:20:00 AM IST, triggers an entry on a 1.5x breakout with strict OCO opposing leg cancellation, enforces a 50% stop loss of executed price, and holds surviving trades overnight (BTST) for liquidation next morning (09:15–09:25 AM IST).
+
+#### Exact Mathematical Invariants:
+1. **Target & Eligibility Window:**
+   $$\text{Target Premium} = ₹100.00 \quad (\text{Configurable}, > 0)$$
+   $$\text{Eligible Universe} = \{ C \in \text{SensexWeeklyExpiry} \mid 90.00 \le \text{Premium}(C) \le 120.00 \}$$
+2. **Candidate Distance & Ranking:**
+   $$\text{Distance}(C) = |\text{Premium}(C) - \text{Target}|$$
+   $$\text{Top 2 CE} = \text{Smallest Distance}, \quad \text{Top 2 PE} = \text{Smallest Distance}$$
+3. **Deterministic Tie-Breaker:**
+   $$\text{Primary: } \min |\text{Ask} - \text{Bid}| \quad \text{(Tighter Spread Wins)}$$
+   $$\text{Secondary: } \text{CE: Lower Strike First}, \quad \text{PE: Higher Strike First}$$
+4. **Exact 09:20 Candle Open Lock:**
+   At 09:20:00 AM IST, captures the authoritative 09:20 candle opening price.
+   $$\text{Invariant: } 90.00 \le \text{Open}_{09:20} \le 120.00$$
+   Locked strikes and opening prices remain permanently fixed for the entire trading session.
+5. **Directional Breakout & OCO Execution:**
+   $$\text{CE Trigger} = \text{Open}_{09:20}(\text{CE}) \times 1.5$$
+   $$\text{PE Trigger} = \text{Open}_{09:20}(\text{PE}) \times 1.5$$
+   First leg reaching trigger executes immediately; opposite leg is permanently disabled under OCO logic.
+6. **Stop-Loss Calculation:**
+   $$\text{Stop-Loss} = \frac{\text{Actual Execution Price}}{2} \quad (50\% \text{ of Buy Price})$$
+   $$\text{Target Price} \equiv \text{undefined} \quad (\text{Strictly Zero Profit Target Invariant})$$
+7. **Overnight Carry & Rollover Protection:**
+   - Positions surviving through 15:30:00 IST transition to `BTST_HOLD`.
+   - Mandatory next-session exit between 09:15:00 and 09:25:00 AM IST.
+   - **Expiry Invariant:** On Friday (or preponed holiday expiry), automatically rolls over to the **NEXT weekly Friday (+7 days)** so overnight BTST positions are never opened on expiring contracts.
+
+---
+
+### 7.5 Onboarding Strategies from BackTest (`15-Min ORB` & `3:10 PM BTST`)
 
 The platform's plugin interface allows adding models from [`c:\Project\BackTest`](file:///c:/Project/BackTest) with zero core engine refactoring:
 

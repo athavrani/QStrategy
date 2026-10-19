@@ -26,7 +26,8 @@
    - [Strategy 1: 20-Day Cumulative Volume Crossover Breakout](#41-strategy-1-20-day-cumulative-volume-crossover-breakout-20d_crossover)
    - [Strategy 2: NIFTY 09:20 Overnight Strangle (Zero Target Invariant)](#42-strategy-2-nifty-0920-overnight-strangle-nifty_overnight)
    - [Strategy 3: NIFTY 09:25 ₹180 Directional Breakout](#43-strategy-3-nifty-0925-180-directional-breakout-nifty_breakout_180)
-   - [Strategy Extension Framework (Modular Plugins)](#44-strategy-extension-framework-modular-plugins)
+   - [Strategy 4: BSE SENSEX 09:20 OOBTST](#44-strategy-4-bse-sensex-0920-oobtst-sensex_oobtst)
+   - [Strategy Extension Framework (Modular Plugins)](#45-strategy-extension-framework-modular-plugins)
 5. [Target Production-Grade System Architecture](#5-target-production-grade-system-architecture)
 6. [Security & Credential Protection Blueprint](#6-security--credential-protection-blueprint)
 7. [Database & State Management Architecture](#7-database--state-management-architecture)
@@ -363,7 +364,59 @@ flowchart TD
 
 ---
 
-### 4.4 Strategy Extension Framework (Modular Plugins)
+### 4.4 Strategy 4: BSE SENSEX 09:20 OOBTST (`SENSEX_OOBTST`)
+
+Captures directional momentum and overnight gap expansion on BSE SENSEX weekly index options (Friday expiry). Dynamically selects CE & PE contracts trading near ₹100.00 within a strict ₹90.00–₹120.00 boundary, locks opening prices at exactly 09:20:00 AM IST, and executes the first leg to break out by $1.5\times$ with strict OCO cancellation and 50% stop-loss.
+
+```mermaid
+flowchart TD
+    PreMarket["Pre-Market / 09:15 AM IST"] --> Discover["Scan BSE SENSEX Weekly Option Chain<br/>Weekly Friday Expiry (Rolls to Next Week on Expiry Day)"]
+    Discover --> FilterRange["Filter: ₹90.00 <= Premium <= ₹120.00<br/>Rank: min |Premium - 100.00|<br/>Tie-Breaker: Tighter Bid-Ask Spread"]
+    FilterRange --> ProvWindow["09:15 - 09:19:59 IST: Live Provisional Monitoring (300ms)<br/>Display Top 2 CE & Top 2 PE Candidates"]
+    ProvWindow --> LockPoint["🔒 Exactly 09:20:00 AM IST Strike Lock<br/>Capture 09:20 Candle Open for CE & PE<br/>Strict Invariant: 90 <= Open <= 120"]
+    LockPoint --> SetTriggers["Set 1.5x Breakout Triggers:<br/>CE Trigger = CE Open × 1.5<br/>PE Trigger = PE Open × 1.5<br/>Status: LOCKED / ARMED_1.5X"]
+    SetTriggers --> MonitorLegs{"First Leg LTP >= Trigger?"}
+    MonitorLegs -->|CE Crosses First| BuyCE["⚡ BUY CE @ Market Execution Price"]
+    MonitorLegs -->|PE Crosses First| BuyPE["⚡ BUY PE @ Market Execution Price"]
+    BuyCE --> OCO["⛔ OCO: Cancel & Disable PE Leg Permanently"]
+    BuyPE --> OCO2["⛔ OCO: Cancel & Disable CE Leg Permanently"]
+    OCO --> CalcSL["Set Stop-Loss = 50% of Executed Price<br/>Strictly Zero Profit Target Invariant"]
+    OCO2 --> CalcSL
+    CalcSL --> InTrade{"Trade Lifecycle Monitoring"}
+    InTrade -->|LTP <= Stop-Loss| ExitSL["🛑 Stop-Loss Hit (50% Loss)"]
+    InTrade -->|Survives to 15:30 IST| HoldOvernight["🌙 Transition to BTST_HOLD (Carry Overnight)"]
+    HoldOvernight --> NextDayExit["⏱️ Next Trading Day (D+1) Exit: 09:15 - 09:25 AM IST"]
+```
+
+#### Exact Mathematical Invariants:
+1. **Target & Eligibility Window:**
+   $$\text{Target Premium} = ₹100.00 \quad (\text{Configurable}, > 0)$$
+   $$\text{Eligible Universe} = \{ C \in \text{SensexWeeklyExpiry} \mid 90.00 \le \text{Premium}(C) \le 120.00 \}$$
+2. **Candidate Distance & Ranking:**
+   $$\text{Distance}(C) = |\text{Premium}(C) - \text{Target}|$$
+   $$\text{Top 2 CE} = \text{Smallest Distance}, \quad \text{Top 2 PE} = \text{Smallest Distance}$$
+3. **Deterministic Tie-Breaker:**
+   $$\text{Primary: } \min |\text{Ask} - \text{Bid}| \quad \text{(Tighter Spread Wins)}$$
+   $$\text{Secondary: } \text{CE: Lower Strike First}, \quad \text{PE: Higher Strike First}$$
+4. **Exact 09:20 Candle Open Lock:**
+   At 09:20:00 AM IST, captures the authoritative 09:20 candle opening price.
+   $$\text{Invariant: } 90.00 \le \text{Open}_{09:20} \le 120.00$$
+   Locked strikes and opening prices remain permanently fixed for the entire trading session.
+5. **Directional Breakout & OCO Execution:**
+   $$\text{CE Trigger} = \text{Open}_{09:20}(\text{CE}) \times 1.5$$
+   $$\text{PE Trigger} = \text{Open}_{09:20}(\text{PE}) \times 1.5$$
+   First leg reaching trigger executes immediately; opposite leg is permanently disabled under OCO logic.
+6. **Stop-Loss Calculation:**
+   $$\text{Stop-Loss} = \frac{\text{Actual Execution Price}}{2} \quad (50\% \text{ of Buy Price})$$
+   $$\text{Target Price} \equiv \text{undefined} \quad (\text{Strictly Zero Profit Target Invariant})$$
+7. **Overnight Carry & Rollover Protection:**
+   - Positions surviving through 15:30:00 IST transition to `BTST_HOLD`.
+   - Mandatory next-session exit between 09:15:00 and 09:25:00 AM IST.
+   - **Expiry Invariant:** On Friday (or preponed holiday expiry), automatically rolls over to the **NEXT weekly Friday (+7 days)** so overnight BTST positions are never opened on expiring contracts.
+
+---
+
+### 4.5 Strategy Extension Framework (Modular Plugins)
 
 Every strategy in QStrategy implements the `BaseStrategyPlugin` interface:
 

@@ -119,6 +119,76 @@ export class TradingCalendarService {
       holidayReason: holidayName,
     };
   }
+
+  /**
+   * Computes the active weekly Friday expiry for BSE SENSEX options.
+   * If `skipIfTodayIsExpiry` is true and today is Friday/Expiry day,
+   * rolls forward +7 days to the NEXT weekly expiry so overnight BTST positions
+   * are never opened on contracts ceasing trading at 15:30.
+   */
+  public getActiveWeeklySensexExpiry(now = new Date(), skipIfTodayIsExpiry = true): ExpiryResolution {
+    const currentDay = now.getDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
+    const daysUntilFriday = (5 - currentDay + 7) % 7;
+    let candidateFriday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntilFriday);
+
+    let { adjustedDate, wasPreponed, holidayName } = getAdjustedExpiryDate(candidateFriday);
+
+    const nowDateStr = formatDateKey(now);
+    let adjDateStr = formatDateKey(adjustedDate);
+
+    const isTodayExpiryDay = nowDateStr === adjDateStr;
+    let isExpiryDay = isTodayExpiryDay;
+    let rolledToNextExpiry = false;
+
+    const nowHours = now.getHours();
+    const nowMins = now.getMinutes();
+    const isPastExpiryTime = isExpiryDay && (nowHours > 15 || (nowHours === 15 && nowMins >= 30));
+    const isPastDate = now.getTime() > adjustedDate.getTime() && !isExpiryDay && nowDateStr > adjDateStr;
+
+    if ((skipIfTodayIsExpiry && isTodayExpiryDay) || isPastExpiryTime || isPastDate) {
+      // Roll over to next weekly Friday (+7 days)
+      candidateFriday = new Date(
+        candidateFriday.getFullYear(),
+        candidateFriday.getMonth(),
+        candidateFriday.getDate() + 7
+      );
+      const nextAdj = getAdjustedExpiryDate(candidateFriday);
+      adjustedDate = nextAdj.adjustedDate;
+      wasPreponed = nextAdj.wasPreponed;
+      holidayName = nextAdj.holidayName;
+      adjDateStr = formatDateKey(adjustedDate);
+      isExpiryDay = nowDateStr === adjDateStr;
+      rolledToNextExpiry = true;
+    }
+
+    // Set official expiry time to 15:30:00 IST
+    adjustedDate.setHours(15, 30, 0, 0);
+
+    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const dayStr = String(adjustedDate.getDate()).padStart(2, '0');
+    const monthStr = months[adjustedDate.getMonth()];
+    const yearStr = adjustedDate.getFullYear();
+    const expiryStr = `${dayStr}-${monthStr}-${yearStr}`;
+
+    const mNumStr = String(adjustedDate.getMonth() + 1).padStart(2, '0');
+    const dNumStr = String(adjustedDate.getDate()).padStart(2, '0');
+    const expiryDateYMD = `${yearStr}-${mNumStr}-${dNumStr}`;
+
+    const diffMs = Math.max(60000, adjustedDate.getTime() - now.getTime());
+    const daysToExpiry = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+    const timeToExpiryYears = Math.max(0.0005, diffMs / (1000 * 60 * 60 * 24 * 365));
+
+    return {
+      expiryStr,
+      expiryDateYMD,
+      daysToExpiry,
+      timeToExpiryYears,
+      isExpiryDay,
+      rolledToNextExpiry,
+      wasPreponed,
+      holidayReason: holidayName,
+    };
+  }
 }
 
 export const tradingCalendarService = new TradingCalendarService();

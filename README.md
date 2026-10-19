@@ -52,6 +52,15 @@ QStrategy features a modular, plug-and-play quantitative strategy engine:
 - **Target & SL:** Fixed ₹220 Target (+40 pts) and ₹160 SL (-20 pts) for exact 1:2 Risk-to-Reward.
 - **Mandatory Time Cutoff:** Force closed at market price at 09:45:00 AM IST.
 
+### 4. Strategy 4: BSE SENSEX 09:20 OOBTST (`SENSEX_OOBTST`)
+- **Underlying:** BSE SENSEX weekly index options (Friday weekly expiry cycle).
+- **Target & Range:** Configurable target ₹100.00 with strict ₹90.00–₹120.00 eligibility bounds.
+- **Candidate Discovery & Lock:** 300ms live provisional candidate ranking (Top 2 CE + Top 2 PE) locking exact 09:20 candle open prices at 09:20:00 AM IST.
+- **1.5x Directional Breakout:** Independent triggers (`CE Trigger = CE Open * 1.5`, `PE Trigger = PE Open * 1.5`).
+- **OCO Execution:** First leg to reach trigger executes; opposing leg cancelled permanently.
+- **50% Stop-Loss:** Calculated strictly as 50% of executed buy price (`Executed Price / 2`).
+- **Overnight BTST Carry:** Trades surviving through 15:30 IST carry overnight and exit at 09:15–09:25 AM IST next morning. Auto-rolls to next weekly expiry on expiry day.
+
 ---
 
 ## 3. Technology Stack

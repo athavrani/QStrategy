@@ -13,8 +13,9 @@ import { notificationService } from '../services/notificationService';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
 import { InstrumentSubscription, DhanFeedResponseCode } from '../services/dhan/DhanBinaryCodec';
-import { DHAN_SECURITY_MAP, DHAN_NIFTY_INDEX_ID, getDhanSecurityId } from '../constants/dhanSecurityMaster';
+import { DHAN_SECURITY_MAP, DHAN_NIFTY_INDEX_ID, DHAN_SENSEX_INDEX_ID, getDhanSecurityId } from '../constants/dhanSecurityMaster';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
+import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { OobtstLiveState } from '../strategies/types';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 
@@ -26,6 +27,7 @@ interface RadarStoreState {
   isRefreshing: boolean;
   latchServiceInitialized: boolean;
   niftySpot: number;
+  sensexSpot: number;
   feedStatus: 'ONLINE' | 'ERROR' | 'UNCONFIGURED';
   lastTickTime: string | null;
 
@@ -43,6 +45,10 @@ interface RadarStoreState {
   niftyBreakout180: NiftyBreakout180State | null;
   breakoutThreshold: number;
 
+  // Strategy 4: SENSEX 09:20 OOBTST
+  sensexOobtstState: OobtstLiveState | null;
+  sensexOobtstTargetPremium: number;
+
   // Audit Journal
   journal: SignalJournalItem[];
   signalsTodayCount: number;
@@ -59,6 +65,7 @@ interface RadarStoreState {
   setIstTime: (timeStr: string) => void;
   setOobtstTargetPremium: (target: number) => Promise<boolean>;
   setBreakoutThreshold: (target: number) => Promise<boolean>;
+  setSensexOobtstTargetPremium: (target: number) => Promise<boolean>;
 }
 
 export const useRadarStore = create<RadarStoreState>((set, get) => ({
@@ -68,6 +75,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   isRefreshing: false,
   latchServiceInitialized: false,
   niftySpot: 0,
+  sensexSpot: 0,
   feedStatus: 'ONLINE',
   lastTickTime: null,
   isStreamerInitialized: false,
@@ -81,6 +89,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   oobtstTargetPremium: 62.50,
   niftyBreakout180: null,
   breakoutThreshold: 180.00,
+  sensexOobtstState: null,
+  sensexOobtstTargetPremium: 100.00,
 
   journal: [],
   signalsTodayCount: 0,
@@ -103,6 +113,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     if (get().sessionDate !== todayIST) {
       niftyOptionFeedService.resetAnchor();
       niftyOptionFeedService.resetBreakout180();
+      sensexOptionFeedService.resetAnchor();
       set({
         sessionDate: todayIST,
         journal: [],
@@ -123,7 +134,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     try {
       await niftyOptionFeedService.loadSavedTargetPremium();
       await niftyOptionFeedService.loadSavedBreakoutThreshold();
-      const [sessionRes, stocksRes, overnightRes, breakoutRes, niftyIndexQuoteRes, _chainRes] =
+      await sensexOptionFeedService.loadSavedTargetPremium();
+      const [sessionRes, stocksRes, overnightRes, breakoutRes, niftyIndexQuoteRes, _chainRes, sensexIndexQuoteRes, _sensexChainRes] =
         await Promise.allSettled([
           apiService.fetchMarketSession(),
           apiService.fetchStockRadarList(),
@@ -131,6 +143,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           apiService.fetchNiftyBreakout180State(),
           dhanDirectService.fetchNiftyIndexQuote(),
           niftyOptionFeedService.syncLiveOptionChain(),
+          dhanDirectService.fetchSensexIndexQuote(),
+          sensexOptionFeedService.syncLiveOptionChain(),
         ]);
 
       const session =
@@ -246,9 +260,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       const resolvedSpot = niftyIndexQuote && niftyIndexQuote.ltp > 0 ? niftyIndexQuote.ltp : get().niftySpot;
       const liveOobtst = niftyOptionFeedService.evaluateOobtst(resolvedSpot, session.istTime);
 
+      const sensexIndexQuote = sensexIndexQuoteRes.status === 'fulfilled' ? sensexIndexQuoteRes.value : null;
+      const resolvedSensexSpot = sensexIndexQuote && sensexIndexQuote.ltp > 0 ? sensexIndexQuote.ltp : (get().sensexSpot || 81000);
+      const liveSensexOobtst = sensexOptionFeedService.evaluateSensexOobtst(resolvedSensexSpot, session.istTime);
+
       const isOvernightActive = overnight && (overnight.status === 'ACTIVE_HOLD' || overnight.status === 'OVERNIGHT_HOLD');
       const isBreakoutActive = breakout && breakout.status === 'IN_TRADE';
-      const signalsTodayCount = greenCount + redCount + (isOvernightActive ? 1 : 0) + (isBreakoutActive ? 1 : 0);
+      const isSensexActive = liveSensexOobtst && (liveSensexOobtst.status === 'ACTIVE' || liveSensexOobtst.status === 'BTST_HOLD');
+      const signalsTodayCount = greenCount + redCount + (isOvernightActive ? 1 : 0) + (isBreakoutActive ? 1 : 0) + (isSensexActive ? 1 : 0);
 
       set((prev) => {
         const existingMap = new Map(prev.stocks.map((s) => [s.ticker, s]));
@@ -320,11 +339,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           istTime: session.istTime,
           stocks: mergedStocks,
           niftySpot: resolvedSpot,
+          sensexSpot: resolvedSensexSpot,
           niftyOvernight: overnight,
           oobtstState: liveOobtst,
+          sensexOobtstState: liveSensexOobtst,
           niftyBreakout180: breakout,
           oobtstTargetPremium: niftyOptionFeedService.getTargetPremium(),
           breakoutThreshold: niftyOptionFeedService.getBreakoutThreshold(),
+          sensexOobtstTargetPremium: sensexOptionFeedService.getTargetPremium(),
           signalsTodayCount,
           feedStatus: telemetry.status,
           lastTickTime: telemetry.lastTickTime || session.istTime,
@@ -374,6 +396,17 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     return ok;
   },
 
+  setSensexOobtstTargetPremium: async (target: number) => {
+    const ok = await sensexOptionFeedService.setTargetPremium(target);
+    if (ok) {
+      const spot = get().sensexSpot || 81000;
+      const ist = get().istTime !== '--:--:--' ? get().istTime : undefined;
+      const updated = sensexOptionFeedService.evaluateSensexOobtst(spot, ist);
+      set({ sensexOobtstTargetPremium: target, sensexOobtstState: updated });
+    }
+    return ok;
+  },
+
   initStreamer: () => {
     if (get().isStreamerInitialized) return;
     set({ isStreamerInitialized: true });
@@ -384,10 +417,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       securityId: meta.securityId,
     }));
 
-    // 2. Add NIFTY 50 Spot Index
+    // 2. Add NIFTY 50 and SENSEX Spot Indices
     subscriptions.push({
       exchangeSegment: 'IDX_I',
       securityId: DHAN_NIFTY_INDEX_ID,
+    });
+    subscriptions.push({
+      exchangeSegment: 'IDX_I',
+      securityId: DHAN_SENSEX_INDEX_ID,
     });
 
     // 3. Batch subscribe & start feed
@@ -408,13 +445,28 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         hasChanged = true;
       }
 
+      // Check if SENSEX spot tick arrived
+      let sensexSpotChanged = false;
+      let newSensexSpot = get().sensexSpot;
+      const sensexTick = tickBatch[DHAN_SENSEX_INDEX_ID];
+      if (sensexTick && 'ltp' in sensexTick && sensexTick.ltp > 0 && sensexTick.ltp !== newSensexSpot) {
+        newSensexSpot = sensexTick.ltp;
+        sensexSpotChanged = true;
+        hasChanged = true;
+      }
+
       let derivativeTickArrived = false;
-      // Check if derivative ticks arrived (NSE_FNO, segment 2)
+      let sensexDerivativeTickArrived = false;
+      // Check if derivative ticks arrived (NSE_FNO = 2, BSE_FNO = 8)
       for (const tick of Object.values(tickBatch)) {
         if ('ltp' in tick && (tick.exchangeSegment === 2 || (tick as any).exchangeSegment === 'NSE_FNO')) {
           niftyOptionFeedService.updateOptionPriceFromTick(String(tick.securityId), tick.ltp);
           hasChanged = true;
           derivativeTickArrived = true;
+        } else if ('ltp' in tick && (tick.exchangeSegment === 8 || (tick as any).exchangeSegment === 'BSE_FNO')) {
+          sensexOptionFeedService.updateOptionPriceFromTick(String(tick.securityId), tick.ltp);
+          hasChanged = true;
+          sensexDerivativeTickArrived = true;
         }
       }
 
@@ -528,6 +580,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           }
           const spot = spotChanged ? newNiftySpot : get().niftySpot;
           stateUpdates.oobtstState = niftyOptionFeedService.evaluateOobtst(spot, get().istTime || nowTime);
+        }
+
+        if (sensexSpotChanged || sensexDerivativeTickArrived) {
+          if (sensexSpotChanged) {
+            stateUpdates.sensexSpot = newSensexSpot;
+          }
+          const spot = sensexSpotChanged ? newSensexSpot : get().sensexSpot;
+          stateUpdates.sensexOobtstState = sensexOptionFeedService.evaluateSensexOobtst(spot, get().istTime || nowTime);
         }
 
         set(stateUpdates);

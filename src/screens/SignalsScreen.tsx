@@ -14,6 +14,7 @@ import { strategyRegistry } from '../strategies';
 import { StrategyCategory, StrategyContext } from '../strategies/types';
 import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal';
 import { OobtstDetailModal } from '../components/strategies/OobtstDetailModal';
+import { SensexOobtstDetailModal } from '../components/strategies/SensexOobtstDetailModal';
 import { BreakoutDetailModal } from '../components/strategies/BreakoutDetailModal';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { FinancialValue } from '../components/common/FinancialValue';
@@ -31,7 +32,9 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
     marketStatus,
     istTime,
     niftySpot,
+    sensexSpot,
     oobtstState,
+    sensexOobtstState,
     niftyBreakout180,
     signalsTodayCount,
     netPointsCaptured,
@@ -42,6 +45,7 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
   const [categoryFilter, setCategoryFilter] = useState<StrategyCategory | 'ALL'>('ALL');
   const [optionChainVisible, setOptionChainVisible] = useState(false);
   const [oobtstModalVisible, setOobtstModalVisible] = useState(false);
+  const [sensexModalVisible, setSensexModalVisible] = useState(false);
   const [breakoutModalVisible, setBreakoutModalVisible] = useState(false);
 
   const handleRefresh = async () => {
@@ -55,13 +59,16 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
   };
 
   const activeSpot = niftySpot || 0;
+  const activeSensexSpot = sensexSpot || 0;
   const ctx: StrategyContext = {
     istTime,
     marketStatus,
     niftySpot: activeSpot,
+    sensexSpot: activeSensexSpot,
     stocks,
     oobtstLiveState: oobtstState || undefined,
     breakout180LiveState: niftyBreakout180 || undefined,
+    sensexOobtstLiveState: sensexOobtstState || undefined,
   };
 
   const allPlugins = strategyRegistry.getAll();
@@ -175,6 +182,8 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
                 onViewDetails: (strategyId) => {
                   if (strategyId === 'NIFTY_OVERNIGHT') {
                     setOobtstModalVisible(true);
+                  } else if (strategyId === 'SENSEX_OOBTST') {
+                    setSensexModalVisible(true);
                   } else if (strategyId === 'NIFTY_BREAKOUT_180') {
                     setBreakoutModalVisible(true);
                   }
@@ -196,12 +205,20 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
         onClose={() => setOptionChainVisible(false)}
       />
 
-      {/* 3-Step OOBTST Strategy Detail Modal */}
+      {/* 3-Step NIFTY OOBTST Strategy Detail Modal */}
       <OobtstDetailModal
         visible={oobtstModalVisible}
         onClose={() => setOobtstModalVisible(false)}
         istTime={istTime}
         stepDetails={allPlugins.find((p) => p.id === 'NIFTY_OVERNIGHT')?.evaluate(ctx).stepDetails}
+      />
+
+      {/* 3-Step SENSEX OOBTST Strategy Detail Modal */}
+      <SensexOobtstDetailModal
+        visible={sensexModalVisible}
+        onClose={() => setSensexModalVisible(false)}
+        istTime={istTime}
+        stepDetails={allPlugins.find((p) => p.id === 'SENSEX_OOBTST')?.evaluate(ctx).stepDetails}
       />
 
       {/* 3-Step 09:25 ₹180 Breakout Strategy Detail Modal */}

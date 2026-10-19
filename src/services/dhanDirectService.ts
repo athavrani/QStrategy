@@ -808,6 +808,79 @@ class DhanDirectService {
   }
 
   /**
+   * Fetches live SENSEX Index quote directly from Dhan HQ (/marketfeed/ohlc)
+   */
+  public async fetchSensexIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
+    await this.initialize();
+
+    if (this.cachedClientId && this.cachedAccessToken) {
+      const sensexId = parseInt(DHAN_SENSEX_INDEX_ID, 10);
+
+      try {
+        const res = await fetch(`${DHAN_BASE_URL}/marketfeed/ohlc`, {
+          method: 'POST',
+          headers: {
+            'access-token': this.cachedAccessToken,
+            'client-id': this.cachedClientId,
+            'dhanClientId': this.cachedClientId,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            IDX_I: [sensexId],
+          }),
+        });
+
+        if (res.ok) {
+          const json = await res.json();
+          const item = json?.data?.IDX_I?.[DHAN_SENSEX_INDEX_ID] || json?.IDX_I?.[DHAN_SENSEX_INDEX_ID];
+          if (item) {
+            const ltp = Number(item.last_price || item.close || 0);
+            if (ltp > 0) {
+              return {
+                ltp,
+                open: Number(item.ohlc?.open || ltp),
+                high: Number(item.ohlc?.high || ltp),
+                low: Number(item.ohlc?.low || ltp),
+                close: Number(item.ohlc?.close || ltp),
+              };
+            }
+          }
+        }
+      } catch {}
+
+      try {
+        const resLtp = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
+          method: 'POST',
+          headers: {
+            'access-token': this.cachedAccessToken,
+            'client-id': this.cachedClientId,
+            'dhanClientId': this.cachedClientId,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            IDX_I: [sensexId],
+          }),
+        });
+
+        if (resLtp.ok) {
+          const jsonLtp = await resLtp.json();
+          const item = jsonLtp?.data?.IDX_I?.[DHAN_SENSEX_INDEX_ID] || jsonLtp?.IDX_I?.[DHAN_SENSEX_INDEX_ID];
+          if (item) {
+            const ltp = Number(item.last_price || 0);
+            if (ltp > 0) {
+              return { ltp, open: ltp, high: ltp, low: ltp, close: ltp };
+            }
+          }
+        }
+      } catch {}
+    }
+
+    return null;
+  }
+
+  /**
    * Fetches intraday 1-minute historical candles from Dhan API
    * POST /v2/charts/intraday
    */

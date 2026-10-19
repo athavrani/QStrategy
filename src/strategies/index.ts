@@ -1,11 +1,13 @@
 import { strategyRegistry } from './StrategyRegistry';
 import { VolumeCrossoverPlugin } from './plugins/VolumeCrossoverPlugin';
 import { NiftyOvernightPlugin } from './plugins/NiftyOvernightPlugin';
+import { SensexOobtstPlugin } from './plugins/SensexOobtstPlugin';
 import { NiftyBreakout180Plugin } from './plugins/NiftyBreakout180Plugin';
 import { Orb15MinPlugin } from './plugins/Orb15MinPlugin';
 // Register all active quantitative strategies
 strategyRegistry.register(VolumeCrossoverPlugin);
 strategyRegistry.register(NiftyOvernightPlugin);
+strategyRegistry.register(SensexOobtstPlugin);
 strategyRegistry.register(NiftyBreakout180Plugin);
 strategyRegistry.register(Orb15MinPlugin);
 
@@ -13,4 +15,5 @@ export { strategyRegistry };
 export * from './VolumeCrossoverStrategy';
 export * from './TrailingSLStateMachine';
 export * from './NiftyOvernightStrategy';
+export * from './SensexOobtstStrategy';
 export * from './NiftyBreakout180Strategy';
