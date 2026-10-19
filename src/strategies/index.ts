@@ -13,3 +13,4 @@ export { strategyRegistry };
 export * from './VolumeCrossoverStrategy';
 export * from './TrailingSLStateMachine';
 export * from './NiftyOvernightStrategy';
+export * from './NiftyBreakout180Strategy';
