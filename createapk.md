@@ -22,6 +22,43 @@ Your local standalone APK has been compiled and is ready right in your project r
 
 ---
 
+## 🚀 1-Click Automated Release Script
+
+Whenever you make improvements and want to release a new version so all installed mobile apps automatically receive the update:
+
+```powershell
+npm run release
+```
+*(Or directly: `.\scripts\release.ps1`)*
+
+### What the Release Script Does Automatically:
+1. **Prompts or Auto-Bumps Version**: Increments `version` and `versionCode` in both [`app.json`](file:///c:/Project/QStrategy/app.json) and [`package.json`](file:///c:/Project/QStrategy/package.json).
+2. **Runs Pre-flight Quality Checks**: Executes TypeScript typecheck (`tsc --noEmit`) and Jest unit tests (`npm test`).
+3. **Compiles Standalone Release APK**: Runs Gradle `assembleRelease` with Hermes bytecode and packages [`QStrategy.apk`](file:///c:/Project/QStrategy/QStrategy.apk) (~75MB).
+4. **Git Versioning**: Creates a release commit and tag (`vX.Y.Z`).
+5. **Pushes to GitHub**: Pushes commits and tags to `origin main`.
+6. **GitHub Release Publication**:
+   - If `GITHUB_TOKEN` is set, uploads `QStrategy.apk` directly via GitHub API.
+   - Otherwise, opens the GitHub release creation page in your browser with tag, title, and release notes pre-filled for 1-click publishing.
+7. **Mobile Over-The-Air Update**: All mobile phones with QStrategy installed immediately detect the new release on launch!
+
+### Command Examples:
+```powershell
+# Interactive (prompts for notes and bumps patch: 1.0.0 -> 1.0.1)
+npm run release
+
+# One-liner with custom release notes
+.\scripts\release.ps1 -Bump patch -Notes "Sensex 09:20 OOBTST improvements"
+
+# Specific version
+.\scripts\release.ps1 -Version 1.1.0 -Notes "Major update with enhanced Option Chains"
+
+# Fast release skipping test suite
+.\scripts\release.ps1 -SkipTests
+```
+
+---
+
 ## 🛠 Rebuilding Locally (Offline / Fast)
 
 Whenever you make code changes, you can rebuild the APK locally in under 60 seconds (since all dependencies and tools are now permanently cached):
@@ -143,9 +180,18 @@ Once installed on your phone, test the following key features:
 - **Cause**: An older build signed with a different debug keystore or Expo development client may already be on the phone.
 - **Fix**: Uninstall any previous version of **QStrategy** or development build from your phone, then re-install the new `.apk`.
 
-### Q2: How do I build a new APK after making code changes?
-- Commit your changes locally or push to Git.
-- Run `npm run build:apk` again. EAS will compile the new code into an updated APK.
+### Q2: How do mobile devices receive updates when I build a new version?
+- **Automatic In-App Update Checker**:
+  1. Bump `version` (e.g., `1.0.1`) and `android.versionCode` (e.g., `2`) in `app.json`.
+  2. Add your changelog into `"extra.releaseNotes"` in `app.json`.
+  3. Rebuild the APK (`npm run build:local`).
+  4. Push your changes to GitHub:
+     ```powershell
+     git commit -am "release: v1.0.1"
+     git push origin main
+     ```
+  5. Upload `QStrategy.apk` to your GitHub Release (`v1.0.1`) or direct download URL.
+  6. Any phone running QStrategy will automatically detect the new version on next launch (or when tapping **"Check for Updates Now"** in Settings), display what's new, and prompt the user to download and update directly in place!
 
 ### Q3: Want to test immediately without waiting for a cloud build?
 - You can run the app directly on your phone using **Expo Go**:

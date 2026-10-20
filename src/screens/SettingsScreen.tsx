@@ -18,6 +18,7 @@ import { dhanHqFeedSocket, testDhanFeedConnection } from '../services/dhan/DhanH
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { useRadarStore } from '../store/useRadarStore';
 import { API_CONFIG } from '../config/apiConfig';
+import { appUpdateService, UpdateCheckResult } from '../services/appUpdateService';
 import * as Haptics from 'expo-haptics';
 
 export function SettingsScreen() {
@@ -41,6 +42,49 @@ export function SettingsScreen() {
   const [isTesting, setIsTesting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoginModalVisible, setIsLoginModalVisible] = useState(false);
+
+  // App Update State
+  const currentAppVer = appUpdateService.getCurrentVersionInfo();
+  const [updateStatus, setUpdateStatus] = useState<'IDLE' | 'CHECKING' | 'UP_TO_DATE' | 'AVAILABLE'>('IDLE');
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+
+  const handleManualCheckUpdate = async () => {
+    setIsCheckingUpdate(true);
+    setUpdateStatus('CHECKING');
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const result = await appUpdateService.checkForUpdate();
+      setUpdateInfo(result);
+      if (result.updateAvailable) {
+        setUpdateStatus('AVAILABLE');
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          '🚀 Update Available!',
+          `Version ${result.latestVersion} (Build ${result.latestVersionCode}) is ready to install.\n\nRelease Notes:\n${result.releaseNotes}`,
+          [
+            { text: 'Later', style: 'cancel' },
+            {
+              text: 'Download & Install',
+              onPress: () => appUpdateService.openApkDownload(result.apkDownloadUrl),
+            },
+          ]
+        );
+      } else {
+        setUpdateStatus('UP_TO_DATE');
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          '✅ Up to Date',
+          `You are running the latest version of QStrategy (v${result.currentVersion}).`
+        );
+      }
+    } catch (e: any) {
+      setUpdateStatus('IDLE');
+      Alert.alert('Update Check Failed', e?.message || 'Could not reach update server.');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     // Load hardware Keystore credentials on mount, fallback to default
@@ -519,6 +563,84 @@ export function SettingsScreen() {
         </View>
       </View>
 
+      {/* APP VERSION & UPDATES */}
+      <Text style={styles.sectionHeader}>APP VERSION & UPDATES</Text>
+      <View style={styles.card}>
+        <View style={styles.statusRow}>
+          <View>
+            <Text style={styles.gatewayTitle}>QStrategy Terminal</Text>
+            <Text style={styles.gatewaySub}>
+              Installed: v{currentAppVer.version} (Build {currentAppVer.versionCode})
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.statusBadge,
+              updateStatus === 'AVAILABLE'
+                ? styles.statusBadgeOnline
+                : styles.themeModeBadge,
+            ]}
+          >
+            <Text
+              style={[
+                styles.statusBadgeText,
+                updateStatus === 'AVAILABLE'
+                  ? styles.textBullish
+                  : { color: colors.cyan },
+              ]}
+            >
+              {updateStatus === 'CHECKING'
+                ? 'CHECKING...'
+                : updateStatus === 'AVAILABLE'
+                ? 'UPDATE READY'
+                : updateStatus === 'UP_TO_DATE'
+                ? 'LATEST'
+                : 'CURRENT'}
+            </Text>
+          </View>
+        </View>
+
+        {updateInfo?.updateAvailable && (
+          <View style={styles.updateAvailableBanner}>
+            <Text style={styles.updateAvailableTitle}>
+              🚀 New Version v{updateInfo.latestVersion} Available!
+            </Text>
+            <Text style={styles.updateAvailableDesc}>
+              {updateInfo.releaseNotes}
+            </Text>
+            <TouchableOpacity
+              style={styles.updateDownloadBtn}
+              onPress={() => appUpdateService.openApkDownload(updateInfo.apkDownloadUrl)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.updateDownloadBtnText}>
+                ⬇️ Download & Install Update (APK)
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={styles.checkUpdateBtn}
+          onPress={handleManualCheckUpdate}
+          disabled={isCheckingUpdate}
+          activeOpacity={0.7}
+        >
+          {isCheckingUpdate ? (
+            <ActivityIndicator size="small" color={colors.cyan} />
+          ) : (
+            <Text style={styles.checkUpdateBtnText}>🔄 Check for Updates Now</Text>
+          )}
+        </TouchableOpacity>
+
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Manifest Source:</Text>
+          <Text style={[styles.infoVal, { color: colors.textSecondary }]}>
+            GitHub (main/app.json)
+          </Text>
+        </View>
+      </View>
+
       {/* TEST & DIAGNOSTICS */}
       <Text style={styles.sectionHeader}>TEST & DIAGNOSTICS</Text>
 
@@ -831,6 +953,51 @@ const useThemedStyles = createThemedStyles((colors) => ({
   testAppLaunchText: {
     color: colors.bullish,
     fontSize: 11,
+    fontWeight: '700',
+  },
+  updateAvailableBanner: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: colors.bullish,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  updateAvailableTitle: {
+    color: colors.bullish,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  updateAvailableDesc: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 10,
+  },
+  updateDownloadBtn: {
+    backgroundColor: colors.bullish,
+    borderRadius: 6,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  updateDownloadBtnText: {
+    color: '#080A0F',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  checkUpdateBtn: {
+    backgroundColor: colors.surfaceHover,
+    borderRadius: 6,
+    paddingVertical: 11,
+    alignItems: 'center',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  checkUpdateBtnText: {
+    color: colors.cyan,
+    fontSize: 12,
     fontWeight: '700',
   },
   testBtn: {

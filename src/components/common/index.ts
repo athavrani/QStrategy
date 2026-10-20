@@ -3,3 +3,4 @@ export * from './HeaderBar';
 export * from './FinancialValue';
 export * from './StatusBadge';
 export * from './SkeletonLoader';
+export * from './AppUpdateModal';

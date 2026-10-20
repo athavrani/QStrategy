@@ -1,13 +1,17 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRadarStore } from './src/store/useRadarStore';
 import { useTheme } from './src/theme';
 import { notificationService } from './src/services/notificationService';
 import { AppNavigator } from './src/navigation/AppNavigator';
 import { dhanDirectService } from './src/services/dhanDirectService';
+import { AppUpdateModal } from './src/components/common';
+import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateService';
 
 export default function App() {
   const { refreshAll, setIstTime, initStreamer } = useRadarStore();
   const { initTheme } = useTheme();
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [isUpdateModalVisible, setIsUpdateModalVisible] = useState(false);
 
   useEffect(() => {
     // 0. Initialize saved theme preference
@@ -37,11 +41,35 @@ export default function App() {
       setIstTime(timeStr);
     }, 1000);
 
+    // 5. Silent background app update check (runs after 2.5s to keep startup instantaneous)
+    const updateCheckTimeout = setTimeout(async () => {
+      try {
+        const result = await appUpdateService.checkForUpdate();
+        if (result.updateAvailable && !appUpdateService.isDismissed(result.latestVersion)) {
+          setUpdateInfo(result);
+          setIsUpdateModalVisible(true);
+        }
+      } catch {
+        // Silent failure - do not interrupt trading loop
+      }
+    }, 2500);
+
     return () => {
       clearInterval(clockTimer);
       clearInterval(backgroundSyncTimer);
+      clearTimeout(updateCheckTimeout);
     };
   }, []);
 
-  return <AppNavigator />;
+  return (
+    <>
+      <AppNavigator />
+      <AppUpdateModal
+        visible={isUpdateModalVisible}
+        updateInfo={updateInfo}
+        onClose={() => setIsUpdateModalVisible(false)}
+      />
+    </>
+  );
 }
+

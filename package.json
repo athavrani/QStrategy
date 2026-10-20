@@ -1,6 +1,6 @@
 {
   "name": "qstrategy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "QStrategy — Standalone Mobile Trading & Quantitative Algo Strategy Terminal",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
@@ -10,6 +10,7 @@
     "web": "expo start --web",
     "build:apk": "eas build -p android --profile preview",
     "build:local": "cd android && gradlew.bat assembleRelease",
+    "release": "powershell -ExecutionPolicy Bypass -File ./scripts/release.ps1",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
