@@ -221,10 +221,16 @@ if (-not $NoPush) {
 Write-Host ""
 Write-Host "-> Publishing Release to GitHub..." -ForegroundColor Cyan
 
-$token = if ($GitHubToken) { $GitHubToken } elseif ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { $null }
+$token = if ($GitHubToken) { $GitHubToken } elseif ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else {
+    try {
+        $credLines = "protocol=https`nhost=github.com`n" | git credential fill 2>$null
+        $pwdLine = $credLines | Where-Object { $_ -match "^password=" }
+        if ($pwdLine) { ($pwdLine -replace "^password=", "").Trim() } else { $null }
+    } catch { $null }
+}
 
 if ($token) {
-    Write-Host "Authenticating with GitHub API token..." -ForegroundColor DarkGray
+    Write-Host "Authenticating with GitHub credentials..." -ForegroundColor DarkGray
     try {
         $releasePayload = @{
             tag_name         = ("v{0}" -f $targetVer)
@@ -246,13 +252,8 @@ if ($token) {
         if (Test-Path "QStrategy.apk") {
             Write-Host "-> Uploading QStrategy.apk asset to GitHub Release..." -ForegroundColor Cyan
             $uploadUri = $release.upload_url -replace '\{\?name,label\}', "?name=QStrategy.apk"
-            $uploadHeaders = @{
-                "Authorization" = ("Bearer {0}" -f $token)
-                "Content-Type"  = "application/vnd.android.package-archive"
-                "User-Agent"    = "QStrategy-Release"
-            }
-
-            Invoke-RestMethod -Uri $uploadUri -Method Post -Headers $uploadHeaders -InFile "QStrategy.apk"
+            
+            & curl.exe -s -X POST -H ("Authorization: Bearer {0}" -f $token) -H "Content-Type: application/vnd.android.package-archive" --data-binary "@QStrategy.apk" $uploadUri
             Write-Host "[OK] QStrategy.apk successfully attached to release!" -ForegroundColor Green
         }
     } catch {
