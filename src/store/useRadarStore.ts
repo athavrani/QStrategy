@@ -213,26 +213,38 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           circleIndicator: 'GREY',
         })),
       });
-
-      // Issue 1 Fix: Refresh 20D average volumes for all stocks on new trading day.
-      // Runs in background — does not block the UI refresh. Results are persisted to
-      // AsyncStorage and served instantly on subsequent refreshes within the same day.
-      avgVolumeService.refreshAll(todayIST).then((avgMap) => {
-        if (avgMap.size === 0) return;
-        set((prev) => ({
-          stocks: prev.stocks.map((s) => {
-            const newAvg = avgMap.get(s.ticker.toUpperCase());
-            if (!newAvg || newAvg <= 0) return s;
-            const avgShares = newAvg;
-            const ratio = s.todayTradedShares > 0 ? +(s.todayTradedShares / avgShares).toFixed(3) : 0;
-            const hasCrossed = s.todayTradedShares >= avgShares && s.todayTradedShares > 0;
-            return { ...s, avg20DTradedShares: avgShares, volumeRatio: ratio, hasCrossed20D: hasCrossed };
-          }),
-        }));
-      }).catch(() => {
-        // Silently fail — catalog static values remain as fallback
-      });
     }
+
+    // Daily 20D average volume & previous session close computation:
+    // Runs on day change or first refresh of the day; served instantly from cache within same day.
+    avgVolumeService.refreshAll(todayIST).then((avgMap) => {
+      if (!avgMap || avgMap.size === 0) return;
+      set((prev) => ({
+        stocks: prev.stocks.map((s) => {
+          const entry = avgMap.get(s.ticker.toUpperCase());
+          if (!entry) return s;
+          const newAvg = entry.avg20DVolume;
+          const dynamicPrev = entry.prevClose || dhanDirectService.getPrevClose(s.ticker);
+          const avgShares = (newAvg && newAvg > 0) ? newAvg : s.avg20DTradedShares;
+          const updatedPrevClose = (dynamicPrev && dynamicPrev > 0) ? dynamicPrev : s.prevClose;
+          const ratio = s.todayTradedShares > 0 ? +(s.todayTradedShares / avgShares).toFixed(3) : 0;
+          const hasCrossed = s.todayTradedShares >= avgShares && s.todayTradedShares > 0;
+          const pctChange = (updatedPrevClose && updatedPrevClose > 0 && s.spotPrice > 0)
+            ? safeChangePct(s.spotPrice, updatedPrevClose, s.percentChange)
+            : s.percentChange;
+          return {
+            ...s,
+            avg20DTradedShares: avgShares,
+            prevClose: updatedPrevClose,
+            percentChange: pctChange,
+            volumeRatio: ratio,
+            hasCrossed20D: hasCrossed,
+          };
+        }),
+      }));
+    }).catch(() => {
+      // Silently fail — catalog static values remain as fallback
+    });
 
     try {
       await niftyOptionFeedService.loadSavedTargetPremium();
@@ -514,7 +526,10 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
           // Traded volume: Monotonic guarantee, never overwrite live volume with 0
           const todayTradedShares = Math.max(newStock.todayTradedShares || 0, existing.todayTradedShares || 0);
-          const avgShares = newStock.avg20DTradedShares || existing.avg20DTradedShares || 1;
+          const cachedAvg = avgVolumeService.getCachedAvg(newStock.ticker);
+          const avgShares = (cachedAvg && cachedAvg > 0)
+            ? cachedAvg
+            : (existing.avg20DTradedShares > 0 ? existing.avg20DTradedShares : (newStock.avg20DTradedShares || 1));
           const volumeRatio = todayTradedShares > 0 ? +(todayTradedShares / avgShares).toFixed(3) : 0;
           const hasCrossed = todayTradedShares >= avgShares && todayTradedShares > 0;
 

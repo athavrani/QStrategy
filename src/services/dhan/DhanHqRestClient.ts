@@ -227,16 +227,7 @@ export class DhanHqRestClient {
     volume?: number[];
     start_Time?: number[];
   } | null> {
-    const res = await this.post<{
-      data?: {
-        open?: number[];
-        high?: number[];
-        low?: number[];
-        close?: number[];
-        volume?: number[];
-        start_Time?: number[];
-      };
-    }>('/charts/intraday', {
+    const res = await this.post<any>('/charts/intraday', {
       securityId: String(securityId),
       exchangeSegment,
       instrument,
@@ -244,7 +235,12 @@ export class DhanHqRestClient {
       fromDate,
       toDate,
     });
-    return res?.data ?? null;
+    // Dhan API returns arrays directly at root or inside .data
+    const payload = res?.data ?? res;
+    if (payload && (Array.isArray(payload.volume) || Array.isArray(payload.close))) {
+      return payload;
+    }
+    return null;
   }
 
   /**
@@ -265,16 +261,7 @@ export class DhanHqRestClient {
     volume?: number[];
     timestamp?: number[];
   } | null> {
-    const res = await this.post<{
-      data?: {
-        open?: number[];
-        high?: number[];
-        low?: number[];
-        close?: number[];
-        volume?: number[];
-        timestamp?: number[];
-      };
-    }>('/charts/historical', {
+    const res = await this.post<any>('/charts/historical', {
       securityId: String(securityId),
       exchangeSegment,
       instrument,
@@ -283,7 +270,12 @@ export class DhanHqRestClient {
       fromDate,
       toDate,
     });
-    return res?.data ?? null;
+    // Dhan API returns arrays directly at root or inside .data
+    const payload = res?.data ?? res;
+    if (payload && (Array.isArray(payload.volume) || Array.isArray(payload.close))) {
+      return payload;
+    }
+    return null;
   }
 }
 

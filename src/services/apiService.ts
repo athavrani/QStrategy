@@ -9,6 +9,8 @@ import {
 } from '../types/mobile';
 import { SENSEX_NIFTY_MASTER_CATALOG } from '../constants/stockUniverse';
 import { dhanDirectService } from './dhanDirectService';
+import { avgVolumeService } from './AvgVolumeService';
+import { safeChangePct, resolvePrevClose } from '../utils/marketDataUtils';
 import { niftyOptionFeedService, getActiveWeeklyExpiry } from './niftyOptionFeedService';
 import { isTradingDay } from '../constants/nseHolidays';
 
@@ -102,20 +104,28 @@ export const apiService = {
       const dayHigh = q && q.high > 0 ? q.high : spotPrice;
       const dayLow = q && q.low > 0 ? q.low : spotPrice;
       const todayShares = (q && q.volume > 0) ? q.volume : 0;
-      const avgShares = m.avg20DTradedShares || 1;
+      // Priority: 1. Live dynamic 20D average from service, 2. catalog baseline fallback
+      const dynamicAvg = avgVolumeService.getCachedAvg(m.ticker);
+      const avgShares = (dynamicAvg && dynamicAvg > 0) ? dynamicAvg : (m.avg20DTradedShares || 1);
       const ratio = todayShares > 0 ? +(todayShares / avgShares).toFixed(3) : 0;
       const hasCrossed = todayShares >= avgShares && todayShares > 0;
-      // Resolve authentic prevClose from quote, without rejecting close === spotPrice
-      let prevClose = (q && q.prevClose && q.prevClose > 0) ? q.prevClose : undefined;
-      if (!prevClose && q && q.close && q.close > 0) {
-        prevClose = q.close;
-      }
-      if (!prevClose && m.prevClose > 0) {
-        prevClose = m.prevClose;
-      }
 
-      const pctChange = (prevClose && prevClose > 0 && spotPrice > 0)
-        ? +(((spotPrice - prevClose) / prevClose) * 100).toFixed(2)
+      // Canonical prevClose resolution: live quote > dailyPrevCloseMap > catalog baseline
+      const dynamicPrev = dhanDirectService.getPrevClose(m.ticker);
+      const prevClose = resolvePrevClose(
+        spotPrice,
+        q?.netChange ?? 0,
+        {
+          previous_close: q?.prevClose,
+          close: q?.close,
+        },
+        dynamicPrev && dynamicPrev > 0 ? dynamicPrev : 0,
+        m.prevClose || 0
+      );
+
+      // Safe percentage change within ±25% circuit bounds
+      const pctChange = prevClose > 0 && spotPrice > 0
+        ? safeChangePct(spotPrice, prevClose, q?.changePercent ?? 0)
         : (q && q.changePercent !== undefined ? q.changePercent : 0);
       const isBullish = pctChange >= 0 || spotPrice >= dayOpen;
 

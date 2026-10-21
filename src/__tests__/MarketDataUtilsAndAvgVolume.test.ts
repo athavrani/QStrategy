@@ -146,15 +146,17 @@ describe('Issue 1: AvgVolumeService Dynamic 20D Volume Computation', () => {
     jest.clearAllMocks();
   });
 
-  test('computes 20D average volume from daily historical candles', async () => {
+  test('computes 20D average volume and authentic prevClose from daily historical candles', async () => {
     // 20 daily volumes of 1,000,000 to 2,900,000
     const mockDailyVolumes = Array.from({ length: 20 }, (_, i) => 1000000 + i * 100000);
+    const mockDailyCloses = Array.from({ length: 20 }, (_, i) => 2400 + i * 5); // last close = 2495
     const expectedAverage = Math.round(
       mockDailyVolumes.reduce((a, b) => a + b, 0) / mockDailyVolumes.length
     );
 
     jest.spyOn(dhanHqRestClient, 'fetchHistoricalDaily').mockResolvedValue({
       volume: mockDailyVolumes,
+      close: mockDailyCloses,
       timestamp: mockDailyVolumes.map((_, i) => 1700000000 + i * 86400),
     });
 
@@ -162,12 +164,31 @@ describe('Issue 1: AvgVolumeService Dynamic 20D Volume Computation', () => {
     expect(result.ticker).toBe('RELIANCE');
     expect(result.avg20DVolume).toBe(expectedAverage);
     expect(result.sessionCount).toBe(20);
+    expect(result.prevClose).toBe(2495);
     expect(result.fromCache).toBe(false);
 
-    // Second call should return from AsyncStorage cache
+    // Verify dhanDirectService prevClose was updated
+    expect(dhanDirectService.getPrevClose('RELIANCE')).toBe(2495);
+
+    // Second call should return from in-memory / AsyncStorage cache
     const cachedResult = await avgVolumeService.getAvgVolume('RELIANCE', sessionDate, 2000000);
     expect(cachedResult.fromCache).toBe(true);
     expect(cachedResult.avg20DVolume).toBe(expectedAverage);
+    expect(cachedResult.prevClose).toBe(2495);
+  });
+
+  test('does NOT cache failed requests (sessionCount === 0) into AsyncStorage', async () => {
+    jest.spyOn(dhanHqRestClient, 'fetchHistoricalDaily').mockResolvedValue(null);
+    jest.spyOn(dhanHqRestClient, 'fetchHistoricalIntraday').mockResolvedValue(null);
+
+    const result = await avgVolumeService.getAvgVolume('INFY', sessionDate, 1800000);
+    expect(result.sessionCount).toBe(0);
+    expect(result.avg20DVolume).toBe(1800000);
+
+    // Verify nothing was saved to AsyncStorage
+    const key = `avgvol_v2:INFY:${sessionDate}`;
+    const stored = await AsyncStorage.getItem(key);
+    expect(stored).toBeNull();
   });
 
   test('falls back to 1-minute intraday bars aggregated by day when daily endpoint unavailable', async () => {
