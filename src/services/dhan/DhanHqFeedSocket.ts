@@ -266,9 +266,12 @@ export class DhanHqFeedSocket {
       return;
     }
 
-    // Buffer Quote, Ticker, and OI by Security ID
-    const key = String(parsed.securityId);
-    this.pendingTickBatch.set(key, parsed);
+    // Buffer Quote, Ticker, and OI by composite key (segment:secId) and securityId
+    // Composite key eliminates collisions between instruments sharing the same numeric securityId across segments
+    // (e.g., Bank Nifty Index [segment 0, secId 25] vs ADANIENT Equity [segment 1, secId 25]).
+    const compositeKey = `${parsed.exchangeSegment}:${parsed.securityId}`;
+    this.pendingTickBatch.set(compositeKey, parsed);
+    this.pendingTickBatch.set(String(parsed.securityId), parsed);
     this.ensureFlushTimer();
   }
 

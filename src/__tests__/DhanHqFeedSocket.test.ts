@@ -106,6 +106,66 @@ describe('DhanHqFeedSocket Service Suite', () => {
     jest.advanceTimersByTime(300);
   });
 
+  test('isolates Bank Nifty Index (segment 0, secId 25) from ADANIENT Equity (segment 1, secId 25)', (done) => {
+    jest.useFakeTimers();
+
+    // Bank Nifty Index Packet (exchangeSegment: 0, securityId: 25, ltp: 54850)
+    const bankNiftyBuf = encodeDhanQuotePacket({
+      exchangeSegment: 0,
+      securityId: 25,
+      ltp: 54850.0,
+      ltq: 0,
+      ltt: 1729321200,
+      atp: 54800.0,
+      volume: 0,
+      totalSellQty: 0,
+      totalBuyQty: 0,
+      dayOpen: 54600.0,
+      dayClose: 54500.0,
+      dayHigh: 54900.0,
+      dayLow: 54550.0,
+    });
+
+    // ADANIENT Equity Packet (exchangeSegment: 1, securityId: 25, ltp: 2650)
+    const adanientBuf = encodeDhanQuotePacket({
+      exchangeSegment: 1,
+      securityId: 25,
+      ltp: 2650.0,
+      ltq: 50,
+      ltt: 1729321200,
+      atp: 2652.0,
+      volume: 2400000,
+      totalSellQty: 30000,
+      totalBuyQty: 45000,
+      dayOpen: 2670.0,
+      dayClose: 2692.0,
+      dayHigh: 2685.0,
+      dayLow: 2640.0,
+    });
+
+    const unsubscribe = socketInstance.addTickListener((batch) => {
+      try {
+        expect(batch['0:25']).toBeDefined();
+        expect((batch['0:25'] as any).ltp).toBe(54850.0);
+
+        expect(batch['1:25']).toBeDefined();
+        expect((batch['1:25'] as any).ltp).toBe(2650.0);
+
+        unsubscribe();
+        jest.useRealTimers();
+        done();
+      } catch (e) {
+        jest.useRealTimers();
+        done(e);
+      }
+    });
+
+    (socketInstance as any).handleIncomingFrame(bankNiftyBuf);
+    (socketInstance as any).handleIncomingFrame(adanientBuf);
+
+    jest.advanceTimersByTime(300);
+  });
+
   test('launches Dhan mobile app via deep linking Intent or fallback URL', async () => {
     const canOpenSpy = jest.spyOn(Linking, 'canOpenURL').mockResolvedValue(true);
     const openSpy = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);

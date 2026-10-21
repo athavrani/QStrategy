@@ -680,38 +680,38 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       let spotChanged = false;
       let newNiftySpot = get().niftySpot;
 
-      // Check if NIFTY spot tick arrived
-      const indexTick = tickBatch[DHAN_NIFTY_INDEX_ID];
+      // Check if NIFTY spot tick arrived (segment 0: IDX_I)
+      const indexTick = tickBatch[`0:${DHAN_NIFTY_INDEX_ID}`] || (tickBatch[DHAN_NIFTY_INDEX_ID]?.exchangeSegment === 0 ? tickBatch[DHAN_NIFTY_INDEX_ID] : undefined);
       if (indexTick && 'ltp' in indexTick && indexTick.ltp > 0 && indexTick.ltp !== newNiftySpot) {
         newNiftySpot = indexTick.ltp;
         spotChanged = true;
         hasChanged = true;
       }
 
-      // Check if BANK NIFTY spot tick arrived
+      // Check if BANK NIFTY spot tick arrived (segment 0: IDX_I)
       let bankNiftySpotChanged = false;
       let newBankNiftySpot = get().bankNiftySpot;
-      const bankNiftyTick = tickBatch[DHAN_BANKNIFTY_INDEX_ID];
+      const bankNiftyTick = tickBatch[`0:${DHAN_BANKNIFTY_INDEX_ID}`] || (tickBatch[DHAN_BANKNIFTY_INDEX_ID]?.exchangeSegment === 0 ? tickBatch[DHAN_BANKNIFTY_INDEX_ID] : undefined);
       if (bankNiftyTick && 'ltp' in bankNiftyTick && bankNiftyTick.ltp > 0 && bankNiftyTick.ltp !== newBankNiftySpot) {
         newBankNiftySpot = bankNiftyTick.ltp;
         bankNiftySpotChanged = true;
         hasChanged = true;
       }
 
-      // Check if FIN NIFTY spot tick arrived
+      // Check if FIN NIFTY spot tick arrived (segment 0: IDX_I)
       let finNiftySpotChanged = false;
       let newFinNiftySpot = get().finNiftySpot;
-      const finNiftyTick = tickBatch[DHAN_FINNIFTY_INDEX_ID];
+      const finNiftyTick = tickBatch[`0:${DHAN_FINNIFTY_INDEX_ID}`] || (tickBatch[DHAN_FINNIFTY_INDEX_ID]?.exchangeSegment === 0 ? tickBatch[DHAN_FINNIFTY_INDEX_ID] : undefined);
       if (finNiftyTick && 'ltp' in finNiftyTick && finNiftyTick.ltp > 0 && finNiftyTick.ltp !== newFinNiftySpot) {
         newFinNiftySpot = finNiftyTick.ltp;
         finNiftySpotChanged = true;
         hasChanged = true;
       }
 
-      // Check if SENSEX spot tick arrived
+      // Check if SENSEX spot tick arrived (segment 0: IDX_I)
       let sensexSpotChanged = false;
       let newSensexSpot = get().sensexSpot;
-      const sensexTick = tickBatch[DHAN_SENSEX_INDEX_ID];
+      const sensexTick = tickBatch[`0:${DHAN_SENSEX_INDEX_ID}`] || (tickBatch[DHAN_SENSEX_INDEX_ID]?.exchangeSegment === 0 ? tickBatch[DHAN_SENSEX_INDEX_ID] : undefined);
       if (sensexTick && 'ltp' in sensexTick && sensexTick.ltp > 0 && sensexTick.ltp !== newSensexSpot) {
         newSensexSpot = sensexTick.ltp;
         sensexSpotChanged = true;
@@ -741,14 +741,27 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         let stockTickFound = false;
         const nextStocks = currentStocks.map((stock) => {
           const secId = getDhanSecurityId(stock.ticker);
-          const tick = tickBatch[secId];
+          // Strictly isolate cash equity ticks (exchangeSegment 1 / NSE_EQ or 4 / BSE_EQ).
+          // Eliminates collision where Bank Nifty Index (segment 0, secId 25) overwrites ADANIENT (segment 1, secId 25).
+          const tick = tickBatch[`1:${secId}`] ||
+            (tickBatch[secId] && (tickBatch[secId].exchangeSegment === 1 || tickBatch[secId].exchangeSegment === 4)
+              ? tickBatch[secId]
+              : undefined);
           if (!tick) return stock;
 
           let stockUpdated = false;
 
-          // 1. Capture live LTP & official PrevClose
-          const spotPrice = ('ltp' in tick && tick.ltp > 0) ? tick.ltp : stock.spotPrice;
-          if ('ltp' in tick && tick.ltp > 0 && spotPrice !== stock.spotPrice) stockUpdated = true;
+          // 1. Capture live LTP & official PrevClose with sanity deviation check
+          let spotPrice = stock.spotPrice;
+          if ('ltp' in tick && tick.ltp > 0) {
+            const stockPrev = stock.prevClose ?? 0;
+            const baseline: number = stock.spotPrice > 0 ? stock.spotPrice : (stockPrev > 0 ? stockPrev : tick.ltp);
+            const deviationPct = Math.abs((tick.ltp - baseline) / baseline * 100);
+            if (baseline <= 0 || deviationPct <= 50) {
+              spotPrice = tick.ltp;
+              if (spotPrice !== stock.spotPrice) stockUpdated = true;
+            }
+          }
 
           let prevClose = stock.prevClose || avgVolumeService.getCachedPrevClose(stock.ticker) || dhanDirectService.getPrevClose(stock.ticker) || 0;
           if ('prevClose' in tick && tick.prevClose && tick.prevClose > 0) {
