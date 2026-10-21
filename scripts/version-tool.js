@@ -9,6 +9,7 @@ const path = require('path');
 const projectRoot = path.resolve(__dirname, '..');
 const appJsonPath = path.join(projectRoot, 'app.json');
 const pkgJsonPath = path.join(projectRoot, 'package.json');
+const buildGradlePath = path.join(projectRoot, 'android', 'app', 'build.gradle');
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -79,6 +80,14 @@ if (command === 'bump' || command === 'set') {
 
   writeJson(appJsonPath, app);
   writeJson(pkgJsonPath, pkg);
+
+  // Update android/app/build.gradle fallback values
+  if (fs.existsSync(buildGradlePath)) {
+    let gradle = fs.readFileSync(buildGradlePath, 'utf8');
+    gradle = gradle.replace(/return\s+["']\d+\.\d+\.\d+["']/, `return "${newVer}"`);
+    gradle = gradle.replace(/return\s+\d+(\s*\/\/\s*fallback versionCode)?/, `return ${newCode}`);
+    fs.writeFileSync(buildGradlePath, gradle, 'utf8');
+  }
 
   console.log(
     JSON.stringify({

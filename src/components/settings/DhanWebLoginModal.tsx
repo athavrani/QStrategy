@@ -5,6 +5,7 @@ import {
   Modal,
   View,
   Text,
+  TextInput,
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
@@ -263,6 +264,7 @@ const DESKTOP_VIEWPORT_INJECTION = `
           s.id = styleId;
           s.innerHTML = [
             'body { overflow-x: auto !important; }',
+            '* { -webkit-user-select: text !important; -moz-user-select: text !important; -ms-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important; }',
             '.webmobile, app-mobilelanding { display: none !important; visibility: hidden !important; height: 0 !important; max-height: 0 !important; overflow: hidden !important; pointer-events: none !important; }',
             '.webpage { display: block !important; visibility: visible !important; opacity: 1 !important; height: auto !important; min-height: 100vh !important; }',
             '@media only screen and (max-width: 900px) {',
@@ -290,6 +292,30 @@ const DESKTOP_VIEWPORT_INJECTION = `
     }
     var cssTimer = setInterval(applyDesktopStyles, 500);
     setTimeout(function() { clearInterval(cssTimer); }, 15000);
+
+    // Helper for programmatic clipboard copy from RN
+    try {
+      window.qStrategyCopyToClipboard = function(text) {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text);
+          }
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          return true;
+        } catch(e) {
+          return false;
+        }
+      };
+    } catch(e) {}
 
     // 3. Network Fetch & XHR Interception (catches plain-text OTP login response instantly)
     try {
@@ -453,6 +479,11 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
   const styles = useThemedStyles();
   const [loading, setLoading] = useState(true);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [capturedData, setCapturedData] = useState<{ clientId: string; token: string; name: string } | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const capturedRef = useRef(false);
   const currentUrlRef = useRef('https://web.dhan.co/login');
   const webViewRef = useRef<WebView>(null);
@@ -461,10 +492,60 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
     if (visible) {
       capturedRef.current = false;
       setIsCapturing(false);
+      setIsConnected(false);
+      setCapturedData(null);
+      setShowDetails(false);
+      setToastMessage(null);
       setLoading(true);
       currentUrlRef.current = 'https://web.dhan.co/login';
     }
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+    };
   }, [visible]);
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 2800);
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    if (!text) {
+      showToast(`⚠️ No ${label} available to copy`);
+      return;
+    }
+    if (webViewRef.current) {
+      const escaped = JSON.stringify(text);
+      webViewRef.current.injectJavaScript(`
+        (function() {
+          try {
+            if (window.qStrategyCopyToClipboard) {
+              window.qStrategyCopyToClipboard(${escaped});
+            } else {
+              var ta = document.createElement('textarea');
+              ta.value = ${escaped};
+              ta.style.position = 'fixed';
+              ta.style.left = '-9999px';
+              ta.style.opacity = '0';
+              document.body.appendChild(ta);
+              ta.focus();
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+            }
+          } catch(e) {}
+        })();
+        true;
+      `);
+    }
+    Haptics.selectionAsync().catch(() => {});
+    showToast(`✓ ${label} copied to clipboard!`);
+  };
 
   const handleClose = () => {
     capturedRef.current = false;
@@ -475,6 +556,10 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
   const handleFreshLogin = () => {
     capturedRef.current = false;
     setIsCapturing(false);
+    setIsConnected(false);
+    setCapturedData(null);
+    setShowDetails(false);
+    setToastMessage(null);
     if (webViewRef.current) {
       webViewRef.current.injectJavaScript(`
         (function() {
@@ -507,8 +592,13 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
       const currentUrl = (currentUrlRef.current || '').toLowerCase();
       const isOnLoginPage = currentUrl.includes('login') || currentUrl.includes('auth') || currentUrl.includes('signin');
 
-      if (data.type !== 'DHAN_STORAGE_DUMP' && isOnLoginPage) {
-        // User is still entering mobile number, OTP, or PIN. Do not auto-dismiss!
+      // Avoid passive background storage checks while user is actively typing login credentials
+      if (
+        isOnLoginPage &&
+        data.type !== 'DHAN_STORAGE_DUMP' &&
+        data.type !== 'DHAN_RAW_NETWORK_RESPONSE' &&
+        data.type !== 'DHAN_LOGIN_SUCCESS'
+      ) {
         return;
       }
 
@@ -586,47 +676,48 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
         }
       }
 
-      if (creds && creds.token && !capturedRef.current) {
-        capturedRef.current = true;
-        setIsCapturing(true);
+      if (creds && creds.token) {
+        if (!capturedRef.current) {
+          capturedRef.current = true;
+          setIsCapturing(false);
 
-        let clientId = creds.clientId?.trim();
-        if (!clientId) {
-          try {
-            const existing = await secureVault.getCredentials();
-            if (existing.clientId) {
-              clientId = existing.clientId.trim();
-            }
-          } catch {}
+          let clientId = creds.clientId?.trim();
+          if (!clientId) {
+            try {
+              const existing = await secureVault.getCredentials();
+              if (existing.clientId) {
+                clientId = existing.clientId.trim();
+              }
+            } catch {}
+          }
+          clientId = clientId || '';
+          const token = creds.token;
+          const traderName = creds.name || 'Dhan Trader';
+
+          // 1. Save credentials in hardware Keystore
+          await secureVault.saveCredentials(clientId, token);
+          await dhanDirectService.saveCredentials(clientId, token);
+
+          // 2. Notify parent Settings screen
+          onSuccess(clientId, token);
+
+          // 3. Keep modal window OPEN - do not auto-close so user can view and copy data
+          setIsConnected(true);
+          setCapturedData({ clientId, token, name: traderName });
+
+          // 4. In background, start live Dhan streamer and refresh store silently
+          dhanHqFeedSocket.start();
+          useRadarStore.getState().initStreamer();
+          useRadarStore.getState().refreshAll(false);
+
+          // 5. Fire success haptics and show toast notification
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          showToast('⚡ Live Stream Connected! Window kept open for inspection & copying.');
+        } else if (creds.clientId && (!capturedData?.clientId || capturedData.clientId === '')) {
+          setCapturedData((prev) => (prev ? { ...prev, clientId: creds!.clientId } : null));
+          secureVault.saveCredentials(creds.clientId, creds.token).catch(() => {});
+          dhanDirectService.saveCredentials(creds.clientId, creds.token).catch(() => {});
         }
-        clientId = clientId || '';
-        const token = creds.token;
-        const traderName = creds.name || 'Dhan Trader';
-
-        // 1. Save credentials in hardware Keystore
-        await secureVault.saveCredentials(clientId, token);
-        await dhanDirectService.saveCredentials(clientId, token);
-
-        // 2. Notify parent Settings screen
-        onSuccess(clientId, token);
-
-        // 3. Dismiss modal IMMEDIATELY so user is smoothly returned to app with zero lag
-        setIsCapturing(false);
-        onClose();
-
-        // 4. In background, start live Dhan streamer and refresh store silently
-        dhanHqFeedSocket.start();
-        useRadarStore.getState().initStreamer();
-        useRadarStore.getState().refreshAll(false);
-
-        // 5. Fire success haptics and show clean notification on parent screen
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setTimeout(() => {
-          Alert.alert(
-            '⚡ Dhan Live Stream Connected!',
-            `Welcome, ${traderName}!\n\nClient ID: ${clientId}\nToken captured successfully.\n\nLive real-time market streaming is now active on all screens.`
-          );
-        }, 350);
       }
     } catch {
       // Ignored non-json web messages
@@ -690,12 +781,18 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
         {/* Top Header Bar */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <View style={styles.lockBadge}>
-              <Text style={styles.lockIcon}>🔒</Text>
+            <View style={[styles.lockBadge, isConnected && styles.lockBadgeConnected]}>
+              <Text style={styles.lockIcon}>{isConnected ? '⚡' : '🔒'}</Text>
             </View>
             <View>
-              <Text style={styles.headerTitle}>Dhan Web Official Portal</Text>
-              <Text style={styles.headerSub}>web.dhan.co • Auto-Token Interception</Text>
+              <Text style={styles.headerTitle}>
+                {isConnected ? 'Dhan Web — Live Stream Active' : 'Dhan Web Official Portal'}
+              </Text>
+              <Text style={styles.headerSub}>
+                {isConnected
+                  ? `Connected as ${capturedData?.name || 'Trader'} • Data feed running`
+                  : 'web.dhan.co • Auto-Token Interception'}
+              </Text>
             </View>
           </View>
 
@@ -711,23 +808,112 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
             <TouchableOpacity style={styles.iconBtn} onPress={handleReload}>
               <Text style={styles.iconBtnText}>↻</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.closeBtn}
-              onPress={handleClose}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.closeBtnText}>✕ Close</Text>
-            </TouchableOpacity>
+            {isConnected ? (
+              <TouchableOpacity
+                testID="dhan-header-return-btn"
+                style={styles.returnAppHeaderBtn}
+                onPress={handleClose}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.returnAppHeaderBtnText}>✓ Return to App</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.closeBtn}
+                onPress={handleClose}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.closeBtnText}>✕ Close</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
-        {/* Security Trust Notice */}
-        <View style={styles.securityBanner}>
-          <Text style={styles.securityText}>
-            🛡️ <Text style={{ fontWeight: '700' }}>Direct Official Login:</Text> You are logging directly into Dhan's official servers. Your password, OTP, and PIN remain strictly between you and Dhan. QStrategy only captures the resulting streaming session token.
-          </Text>
-        </View>
+        {/* Connected Success Banner or Security Trust Notice */}
+        {isConnected ? (
+          <View style={styles.connectedBanner}>
+            <View style={styles.connectedBannerHeader}>
+              <View style={styles.livePulseDot} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.connectedTitle}>⚡ Dhan Live Stream Connected & Synced</Text>
+                <Text style={styles.connectedSub}>
+                  Client ID: <Text style={{ fontWeight: '700', color: colors.bullish }}>{capturedData?.clientId || 'Synced'}</Text> • Trader: {capturedData?.name || 'Dhan Trader'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                testID="dhan-banner-return-btn"
+                style={styles.returnBannerBtn}
+                onPress={handleClose}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.returnBannerBtnText}>✓ Return to App</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.actionChipsRow}>
+              <TouchableOpacity
+                testID="dhan-copy-token-btn"
+                style={styles.actionChip}
+                onPress={() => copyToClipboard(capturedData?.token || '', 'Access Token')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.actionChipText}>📋 Copy Token</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="dhan-copy-clientid-btn"
+                style={styles.actionChip}
+                onPress={() => copyToClipboard(capturedData?.clientId || '', 'Client ID')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.actionChipText}>📋 Copy Client ID</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="dhan-inspect-details-btn"
+                style={[styles.actionChip, styles.actionChipSubtle]}
+                onPress={() => setShowDetails(!showDetails)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.actionChipSubtleText}>{showDetails ? '▲ Hide Details' : '🔍 Inspect Details'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            {showDetails && (
+              <View style={styles.detailsContainer}>
+                <View style={styles.detailsField}>
+                  <Text style={styles.detailsFieldLabel}>CLIENT ID:</Text>
+                  <TextInput
+                    style={styles.detailsInput}
+                    value={capturedData?.clientId || ''}
+                    editable={false}
+                    selectTextOnFocus={true}
+                  />
+                </View>
+                <View style={styles.detailsField}>
+                  <Text style={styles.detailsFieldLabel}>ACCESS TOKEN (JWT):</Text>
+                  <TextInput
+                    style={[styles.detailsInput, styles.detailsInputMultiline]}
+                    value={capturedData?.token || ''}
+                    editable={false}
+                    selectTextOnFocus={true}
+                    multiline={true}
+                  />
+                </View>
+              </View>
+            )}
+
+            <Text style={styles.connectedNotice}>
+              💡 Window stays open so you can view & copy web data. Text selection enabled. Tap 'Return to App' when done.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.securityBanner}>
+            <Text style={styles.securityText}>
+              🛡️ <Text style={{ fontWeight: '700' }}>Direct Official Login:</Text> You are logging directly into Dhan's official servers. Your password, OTP, and PIN remain strictly between you and Dhan. QStrategy only captures the resulting streaming session token.
+            </Text>
+          </View>
+        )}
 
         {/* Embedded Official Dhan Web Terminal */}
         <View style={styles.webViewContainer}>
@@ -741,6 +927,7 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
             injectedJavaScriptBeforeContentLoaded={DESKTOP_VIEWPORT_INJECTION}
             injectedJavaScript={INJECTED_TOKEN_INTERCEPTOR}
             scalesPageToFit={true}
+            textInteractionEnabled={true}
             setSupportMultipleWindows={false}
             onNavigationStateChange={(navState) => {
               currentUrlRef.current = navState.url;
@@ -751,7 +938,7 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
             style={styles.webView}
           />
 
-          {loading && (
+          {loading && !isConnected && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={colors.bullish} />
               <Text style={styles.loadingText}>Connecting to web.dhan.co...</Text>
@@ -761,28 +948,58 @@ export function DhanWebLoginModal({ visible, onClose, onSuccess }: DhanWebLoginM
           {isCapturing && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={colors.cyan} />
-              <Text style={styles.loadingText}>Connecting Live Stream & Returning to App...</Text>
+              <Text style={styles.loadingText}>Connecting Live Stream & Syncing...</Text>
+            </View>
+          )}
+
+          {toastMessage && (
+            <View style={styles.floatingToast} pointerEvents="none">
+              <Text style={styles.floatingToastText}>{toastMessage}</Text>
             </View>
           )}
         </View>
 
-        {/* Bottom Floating Bar with Dual Action: Quick Close + Force Capture */}
+        {/* Bottom Floating Bar */}
         <View style={styles.bottomBar}>
-          <TouchableOpacity
-            style={styles.bottomCloseBtn}
-            onPress={handleClose}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.bottomCloseBtnText}>✕ Close / Back</Text>
-          </TouchableOpacity>
+          {isConnected ? (
+            <>
+              <TouchableOpacity
+                testID="dhan-bottom-copy-token-btn"
+                style={styles.bottomCopyBtn}
+                onPress={() => copyToClipboard(capturedData?.token || '', 'Access Token')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.bottomCopyBtnText}>📋 Copy Token</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.captureBtn}
-            onPress={handleManualForceCapture}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.captureBtnText}>⚡ Finished Login? Tap to Capture</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                testID="dhan-bottom-return-btn"
+                style={styles.bottomReturnBtn}
+                onPress={handleClose}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.bottomReturnBtnText}>✓ Return to App (Streaming Active)</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={styles.bottomCloseBtn}
+                onPress={handleClose}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.bottomCloseBtnText}>✕ Close / Back</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.captureBtn}
+                onPress={handleManualForceCapture}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.captureBtnText}>⚡ Finished Login? Tap to Capture</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </SafeAreaView>
     </Modal>
@@ -816,6 +1033,11 @@ const useThemedStyles = createThemedStyles((colors) => ({
     backgroundColor: colors.bullishSubtle,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  lockBadgeConnected: {
+    backgroundColor: colors.bullishSubtle,
+    borderWidth: 1,
+    borderColor: colors.bullish,
   },
   lockIcon: {
     fontSize: 14,
@@ -873,6 +1095,148 @@ const useThemedStyles = createThemedStyles((colors) => ({
     fontSize: 12,
     fontWeight: '700',
   },
+  returnAppHeaderBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.bullishSubtle,
+    borderWidth: 1,
+    borderColor: colors.bullish,
+  },
+  returnAppHeaderBtnText: {
+    color: colors.bullish,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  connectedBanner: {
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.bullish,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  connectedBannerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  livePulseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.bullish,
+  },
+  connectedTitle: {
+    color: colors.bullish,
+    fontSize: 12.5,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  connectedSub: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  returnBannerBtn: {
+    backgroundColor: colors.bullish,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 6,
+  },
+  returnBannerBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  actionChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  actionChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  actionChipText: {
+    color: colors.textPrimary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  actionChipSubtle: {
+    backgroundColor: 'transparent',
+    borderColor: colors.divider,
+  },
+  actionChipSubtleText: {
+    color: colors.cyan,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  detailsContainer: {
+    backgroundColor: colors.obsidian,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    padding: 10,
+    gap: 8,
+    marginTop: 2,
+  },
+  detailsField: {
+    gap: 4,
+  },
+  detailsFieldLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  detailsInput: {
+    backgroundColor: colors.surface,
+    color: colors.textPrimary,
+    fontSize: 11,
+    fontFamily: 'monospace',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  detailsInputMultiline: {
+    height: 60,
+    textAlignVertical: 'top',
+  },
+  connectedNotice: {
+    color: colors.textMuted,
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  floatingToast: {
+    position: 'absolute',
+    top: 14,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(20, 24, 33, 0.95)',
+    borderWidth: 1,
+    borderColor: colors.bullish,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    zIndex: 9999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  floatingToastText: {
+    color: colors.bullish,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   securityBanner: {
     backgroundColor: colors.bullishSubtle,
     borderBottomWidth: 1,
@@ -914,6 +1278,35 @@ const useThemedStyles = createThemedStyles((colors) => ({
     flexDirection: 'row',
     gap: 8,
     alignItems: 'center',
+  },
+  bottomCopyBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomCopyBtnText: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  bottomReturnBtn: {
+    flex: 1,
+    backgroundColor: colors.bullish,
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomReturnBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   bottomCloseBtn: {
     paddingVertical: 12,
