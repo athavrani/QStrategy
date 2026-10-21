@@ -1,5 +1,6 @@
 import { dbManager } from '../db/database';
 import type { SignalJournalItem } from '../types/mobile';
+import type { ClosedTrade } from '../engine/types';
 
 /** SQLite-backed signal audit trail, keyed by session date. */
 export class JournalRepository {
@@ -52,6 +53,17 @@ export class JournalRepository {
       outcome: r.outcome,
       ...(r.notes != null ? { notes: r.notes } : {}),
     }));
+  }
+
+  /** Marks the open entry of a trade as closed. Closed or missing rows are left untouched. */
+  async closeTrade(trade: ClosedTrade, tradeDate: string): Promise<void> {
+    const db = await dbManager.getDatabase();
+    await db.run(
+      `UPDATE signal_journal
+         SET outcome = ?, exit_price = ?, pnl_points = ?, notes = COALESCE(notes, '') || ?
+       WHERE trade_date = ? AND strategy_id = ? AND symbol = ? AND outcome = 'OPEN'`,
+      [trade.outcome, trade.exitPrice, trade.pnlPoints, ` ${trade.notes}`, tradeDate, trade.strategyId, trade.symbol]
+    );
   }
 
   /** Drops sessions older than `cutoffDate` (YYYY-MM-DD). */

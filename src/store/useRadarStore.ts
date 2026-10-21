@@ -9,8 +9,9 @@ import {
 } from '../types/mobile';
 import { apiService } from '../services/apiService';
 import { alertLatchService } from '../services/alertLatchService';
-import { strategyEngine, STRATEGY_IDS } from '../engine';
+import { strategyEngine, STRATEGY_IDS, applyClosedTrades, sumPoints } from '../engine';
 import { journalRepository } from '../services/JournalRepository';
+import { isNearTrigger } from '../engine/clockTriggers';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
 import { marketData } from '../services/marketdata/MarketDataService';
@@ -39,6 +40,7 @@ interface RadarStoreState {
   istTime: string;
   isRefreshing: boolean;
   latchServiceInitialized: boolean;
+  avgLoaded: boolean;
   niftySpot: number;
   bankNiftySpot: number;
   finNiftySpot: number;
@@ -81,14 +83,25 @@ interface RadarStoreState {
   // Actions
   initStreamer: () => void;
   refreshAll: (isManual?: boolean) => Promise<void>;
+  ensureLatchReady: () => Promise<void>;
   selectStock: (ticker: string) => void;
   clearSelectedStock: () => void;
   setIstTime: (timeStr: string) => void;
+  runClockEvaluation: () => void;
   setOobtstTargetPremium: (target: number) => Promise<boolean>;
   setBreakoutThreshold: (target: number) => Promise<boolean>;
   setSensexOobtstTargetPremium: (target: number) => Promise<boolean>;
   fetchAvailableLockDates: () => Promise<string[]>;
   selectLockDate: (date: string | null) => Promise<void>;
+}
+
+let latchReadyPromise: Promise<void> | null = null;
+
+function withNewEntries(prev: RadarStoreState, entries: SignalJournalItem[]): Partial<RadarStoreState> {
+  return {
+    journal: [...entries, ...prev.journal],
+    signalsTodayCount: Math.max(prev.signalsTodayCount, prev.journal.length + entries.length),
+  };
 }
 
 export const useRadarStore = create<RadarStoreState>((set, get) => ({
@@ -97,6 +110,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   istTime: '--:--:--',
   isRefreshing: false,
   latchServiceInitialized: false,
+  avgLoaded: false,
   niftySpot: 0,
   bankNiftySpot: 0,
   finNiftySpot: 0,
@@ -126,14 +140,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   selectedLockDate: null,
   historicalLocks: [],
 
-  refreshAll: async (isManual = false) => {
-    // Only show pull-to-refresh spinner when user manually pulls down the list
-    if (isManual) {
-      set({ isRefreshing: true });
-    }
-
-    // Initialize Monotonic Alert Latch Guarantee if not already done
-    if (!get().latchServiceInitialized) {
+  ensureLatchReady: () => {
+    if (!latchReadyPromise) {
+      latchReadyPromise = (async () => {
       await alertLatchService.initialize();
       set({ latchServiceInitialized: true });
 
@@ -143,7 +152,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         if (persisted.length > 0) {
           set((prev) => {
             const known = new Set(prev.journal.map((j) => j.id));
-            return { journal: [...prev.journal, ...persisted.filter((j) => !known.has(j.id))] };
+            const journal = [...prev.journal, ...persisted.filter((j) => !known.has(j.id))];
+            return { journal, netPointsCaptured: sumPoints(journal) };
           });
         }
       } catch {}
@@ -151,7 +161,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       // Point 7.1: Fallback - rebuild session journal from persisted SQLite latches when no journal rows exist
       if (get().journal.length === 0) {
         try {
-          const latches = await alertLatchService.getAllSessionLatches();
+          // Exit latches only guard trade exits; they are not entries
+          const latches = (await alertLatchService.getAllSessionLatches()).filter((l) => !l.ticker.startsWith('EXIT_'));
           if (latches.length > 0) {
             const restoredJournal: SignalJournalItem[] = latches.map((item, idx) => {
               const strategyId = item.strategyId || '20D_CROSSOVER';
@@ -218,7 +229,21 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           }
         } catch {}
       }
+      })().catch((err) => {
+        latchReadyPromise = null;
+        throw err;
+      });
     }
+    return latchReadyPromise;
+  },
+
+  refreshAll: async (isManual = false) => {
+    // Only show pull-to-refresh spinner when user manually pulls down the list
+    if (isManual) {
+      set({ isRefreshing: true });
+    }
+
+    await get().ensureLatchReady();
 
     // Day rollover detection: if sessionDate !== today, reset daily caches & journal
     const todayIST = formatDateKeyIST();
@@ -230,6 +255,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       dhanDirectService.resetPrevCloseIfNewDay(true);
       set({
         sessionDate: todayIST,
+        avgLoaded: false,
         journal: [],
         signalsTodayCount: 0,
         netPointsCaptured: 0,
@@ -250,6 +276,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     avgVolumeService.refreshAll(todayIST, isDayChange).then((avgMap) => {
       if (!avgMap || avgMap.size === 0) return;
       set((prev) => ({
+        avgLoaded: true,
         stocks: prev.stocks.map((s) => {
           const entry = avgMap.get(s.ticker.toUpperCase());
           if (!entry) return s;
@@ -470,6 +497,40 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   setIstTime: (timeStr: string) => {
     if (get().istTime === timeStr) return;
     set({ istTime: timeStr });
+  },
+
+  // Time-based triggers (09:20 lock, 09:25 lock, 09:45 exit, 15:30 BTST) must not wait for a tick or the 10 s poll.
+  runClockEvaluation: () => {
+    const s = get();
+    if (!s.latchServiceInitialized || !isNearTrigger(s.istTime)) return;
+
+    const ist = s.istTime;
+    const updates: Partial<RadarStoreState> = {};
+    if (s.niftySpot > 0) {
+      updates.niftyBreakout180 = niftyOptionFeedService.evaluateBreakout180(s.niftySpot, ist);
+      updates.oobtstState = niftyOptionFeedService.evaluateOobtst(s.niftySpot, ist);
+    }
+    if (s.sensexSpot > 0) {
+      updates.sensexOobtstState = sensexOptionFeedService.evaluateSensexOobtst(s.sensexSpot, ist);
+    }
+    if (Object.keys(updates).length === 0) return;
+    set(updates);
+
+    const state = get();
+    strategyEngine
+      .evaluate(
+        {
+          istTime: ist,
+          breakout: state.niftyBreakout180,
+          niftyOobtst: state.oobtstState,
+          sensexOobtst: state.sensexOobtstState,
+        },
+        [STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX]
+      )
+      .then((entries) => {
+        if (entries.length > 0) set((prev) => withNewEntries(prev, entries));
+      })
+      .catch(() => {});
   },
 
   setOobtstTargetPremium: async (target: number) => {
@@ -763,28 +824,28 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
         set(stateUpdates);
 
-        // Option strategies react to ticks. The 20D crossover stays poll-driven until its averages are guaranteed loaded.
-        if (
-          (spotChanged || derivativeTickArrived || sensexSpotChanged || sensexDerivativeTickArrived) &&
-          get().latchServiceInitialized
-        ) {
+        // Option strategies react to ticks. The 20D crossover joins once real 20D averages are loaded;
+        // before that, tick-derived crossings would be measured against placeholder averages.
+        const optionsChanged = spotChanged || derivativeTickArrived || sensexSpotChanged || sensexDerivativeTickArrived;
+        const crossoverReady = updatedStocks !== currentStocks && get().avgLoaded;
+        if ((optionsChanged || crossoverReady) && get().latchServiceInitialized) {
           const state = get();
+          const only: string[] = [];
+          if (optionsChanged) only.push(STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX);
+          if (crossoverReady) only.push(STRATEGY_IDS.VOLUME_CROSSOVER);
           strategyEngine
             .evaluate(
               {
                 istTime: state.istTime !== '--:--:--' ? state.istTime : nowTime,
+                stocks: crossoverReady ? state.stocks : undefined,
                 breakout: state.niftyBreakout180,
                 niftyOobtst: state.oobtstState,
                 sensexOobtst: state.sensexOobtstState,
               },
-              [STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX]
+              only
             )
             .then((entries) => {
-              if (entries.length === 0) return;
-              set((prev) => ({
-                journal: [...entries, ...prev.journal],
-                signalsTodayCount: Math.max(prev.signalsTodayCount, prev.journal.length + entries.length),
-              }));
+              if (entries.length > 0) set((prev) => withNewEntries(prev, entries));
             })
             .catch(() => {});
         }
@@ -813,3 +874,11 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     });
   },
 }));
+
+// Closed trades (SL, target, time exit) update the live journal rows and the net points total.
+strategyEngine.onClosed((closed) => {
+  useRadarStore.setState((prev) => {
+    const journal = applyClosedTrades(prev.journal, closed);
+    return { journal, netPointsCaptured: sumPoints(journal) };
+  });
+});

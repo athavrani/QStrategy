@@ -7,11 +7,15 @@ import { StrategyEngine } from './StrategyEngine';
 import { createDefaultStrategies } from './strategies';
 
 export { STRATEGY_IDS } from './strategies';
-export type { EngineContext, SignalEvent, EngineStrategy } from './types';
+export { applyClosedTrades, sumPoints } from './journalMath';
+export type { EngineContext, SignalEvent, EngineStrategy, ClosedTrade } from './types';
 
 export const strategyEngine = new StrategyEngine(
-  new SignalPipeline(alertLatchService, Date.now, (entry) =>
-    journalRepository.save(entry, alertLatchService.getTodayISTDateString())
+  new SignalPipeline(
+    alertLatchService,
+    Date.now,
+    (entry) => journalRepository.save(entry, alertLatchService.getTodayISTDateString()),
+    (trade) => journalRepository.closeTrade(trade, alertLatchService.getTodayISTDateString())
   )
 );
 

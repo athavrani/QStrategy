@@ -34,4 +34,24 @@ export interface SignalEvent {
 export interface EngineStrategy {
   id: string;
   detect(ctx: EngineContext): SignalEvent[];
+  /** Detects trades that ended (stop-loss, target, time exit). Optional for entry-only strategies. */
+  detectExits?(ctx: EngineContext): ExitEvent[];
+}
+
+export type TradeOutcome = 'WIN' | 'LOSS' | 'TIME_EXIT';
+
+export interface ClosedTrade {
+  strategyId: string;
+  symbol: string;
+  outcome: TradeOutcome;
+  exitPrice: number;
+  pnlPoints: number;
+  timestamp: string;
+  notes: string;
+}
+
+export interface ExitEvent extends ClosedTrade {
+  /** Once-per-session guard so an exit is recorded exactly once, even after a restart. */
+  latch: SignalEvent['latch'];
+  notify?: () => void;
 }

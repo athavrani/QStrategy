@@ -14,6 +14,8 @@ import { useRadarStore } from '../store/useRadarStore';
 
 jest.setTimeout(25000);
 
+jest.mock('../components/common/FirstRunOnboarding', () => ({ FirstRunOnboarding: () => null }));
+
 let activeTrees: renderer.ReactTestRenderer[] = [];
 
 beforeEach(() => {

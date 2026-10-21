@@ -10,7 +10,9 @@ import { formatDateKeyIST } from './src/constants/nseHolidays';
 
 export default function App() {
   const refreshAll = useRadarStore((s) => s.refreshAll);
+  const ensureLatchReady = useRadarStore((s) => s.ensureLatchReady);
   const setIstTime = useRadarStore((s) => s.setIstTime);
+  const runClockEvaluation = useRadarStore((s) => s.runClockEvaluation);
   const initStreamer = useRadarStore((s) => s.initStreamer);
   const { initTheme } = useTheme();
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
@@ -23,10 +25,14 @@ export default function App() {
     // 1. Initialize notification channel permissions
     notificationService.registerForPushNotifications();
 
-    // 2. Perform initial batch data load silently in background then launch live Dhan Web Streamer
-    refreshAll(false).then(() => {
-      initStreamer();
-    });
+    // 2. Restore latches and today's journal first, then load data and launch the live streamer.
+    // The streamer starts even if the first refresh fails, so ticks are never blocked by one bad REST call.
+    ensureLatchReady().catch(() => {});
+    refreshAll(false)
+      .catch(() => {})
+      .then(() => {
+        initStreamer();
+      });
 
     // 3. Background sync fallback (every 10 seconds, runs silently without hiccups)
     const backgroundSyncTimer = setInterval(() => {
@@ -42,6 +48,7 @@ export default function App() {
       const istSeconds = now.getUTCSeconds();
       const timeStr = `${String(istHours).padStart(2, '0')}:${String(istMinutes).padStart(2, '0')}:${String(istSeconds).padStart(2, '0')} IST`;
       setIstTime(timeStr);
+      runClockEvaluation();
 
       // Instant day change detection: triggers refreshAll the moment midnight IST strikes
       const currentSession = useRadarStore.getState().sessionDate;

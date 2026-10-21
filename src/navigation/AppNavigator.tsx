@@ -4,6 +4,7 @@ import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { ConnectedHeaderBar } from '../components/common/ConnectedHeaderBar';
 import { FeedHealthBanner } from '../components/common/FeedHealthBanner';
+import { FirstRunOnboarding } from '../components/common/FirstRunOnboarding';
 import { SignalsScreen } from '../screens/SignalsScreen';
 import { RadarScreen } from '../screens/RadarScreen';
 import { JournalScreen } from '../screens/JournalScreen';
@@ -49,6 +50,7 @@ export function AppNavigator() {
       {/* Top Application Header */}
       <ConnectedHeaderBar />
       <FeedHealthBanner onOpenSettings={() => setActiveTab('SETTINGS')} />
+      <FirstRunOnboarding onOpenSettings={() => setActiveTab('SETTINGS')} />
 
       {/* Active Tab Screen Body */}
       <View style={styles.body}>{renderContent()}</View>

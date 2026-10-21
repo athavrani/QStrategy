@@ -202,6 +202,27 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
       }
     }
 
+    if (trimmed.startsWith('UPDATE') && sql.includes('signal_journal')) {
+      // Params: [outcome, exit_price, pnl_points, note_suffix, trade_date, strategy_id, symbol]
+      const [outcome, exit_price, pnl_points, noteSuffix, trade_date, strategy_id, symbol] = params;
+      let changes = 0;
+      for (const row of this.getOrCreateTable('signal_journal').values()) {
+        if (
+          row.trade_date === trade_date &&
+          row.strategy_id === strategy_id &&
+          row.symbol === symbol &&
+          row.outcome === 'OPEN'
+        ) {
+          row.outcome = outcome;
+          row.exit_price = exit_price;
+          row.pnl_points = pnl_points;
+          row.notes = `${row.notes ?? ''}${noteSuffix}`;
+          changes++;
+        }
+      }
+      return { changes };
+    }
+
     return { changes: 0 };
   }
 

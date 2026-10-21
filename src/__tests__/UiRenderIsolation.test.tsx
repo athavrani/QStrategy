@@ -7,6 +7,7 @@ import { AppNavigator } from '../navigation/AppNavigator';
 import { useRadarStore } from '../store/useRadarStore';
 
 let mockSignalsRenders = 0;
+jest.mock('../components/common/FirstRunOnboarding', () => ({ FirstRunOnboarding: () => null }));
 jest.mock('../screens/SignalsScreen', () => ({
   SignalsScreen: () => {
     mockSignalsRenders++;

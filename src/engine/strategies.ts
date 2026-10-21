@@ -1,6 +1,6 @@
 import type { StockRadarItem, TacticalStrikeSuggestion } from '../types/mobile';
 import type { OobtstLiveState } from '../strategies/types';
-import type { EngineContext, EngineStrategy, SignalEvent } from './types';
+import type { EngineContext, EngineStrategy, ExitEvent, SignalEvent } from './types';
 
 export const STRATEGY_IDS = {
   VOLUME_CROSSOVER: '20D_CROSSOVER',
@@ -13,6 +13,8 @@ export interface Notifier {
   notify20DCrossover(ticker: string, volumeRatio: number, spotPrice: number, atmStrike: number): unknown;
   notify180BreakoutTriggered(type: 'CE' | 'PE', strike: number, price: number, target: number, sl: number): unknown;
   notify0920StrangleEntry(ceStrike: number, peStrike: number, cePrice: number, pePrice: number): unknown;
+  notify0920StopLossHit?(legType: 'CE' | 'PE', strike: number, price: number): unknown;
+  notify180TimeExit?(strike: number, type: 'CE' | 'PE'): unknown;
 }
 
 export interface StrategyDeps {
@@ -113,6 +115,47 @@ export function createBreakout180Strategy(deps: StrategyDeps): EngineStrategy {
         },
       ];
     },
+    detectExits(ctx: EngineContext): ExitEvent[] {
+      const b = ctx.breakout;
+      if (!b || !b.activeContract || !b.ceCandidate || !b.peCandidate || b.entryPrice == null) return [];
+      if (b.status !== 'TARGET_HIT' && b.status !== 'SL_HIT' && b.status !== 'TIME_EXIT') return [];
+
+      const contract = b.activeContract;
+      const strike = contract === 'CE' ? b.ceCandidate.strike : b.peCandidate.strike;
+      const symbol = `NIFTY ${strike} ${contract}`;
+      const entry = b.entryPrice;
+      const exitPrice =
+        b.status === 'TARGET_HIT' ? b.fixedTarget : b.status === 'SL_HIT' ? b.fixedStopLoss : (b.currentPrice ?? entry);
+      const pnlPoints = +(exitPrice - entry).toFixed(2);
+      const label =
+        b.status === 'TARGET_HIT' ? 'Target hit' : b.status === 'SL_HIT' ? 'Stop-loss hit' : 'Squared off at 09:45 time exit';
+
+      return [
+        {
+          strategyId: STRATEGY_IDS.BREAKOUT_180,
+          symbol,
+          outcome: b.status === 'TARGET_HIT' ? 'WIN' : b.status === 'SL_HIT' ? 'LOSS' : 'TIME_EXIT',
+          exitPrice,
+          pnlPoints,
+          timestamp: ctx.istTime,
+          notes: `${label} @ ₹${exitPrice.toFixed(2)} (${pnlPoints >= 0 ? '+' : ''}${pnlPoints.toFixed(2)} pts).`,
+          latch: {
+            key: `EXIT_BREAKOUT_180_${symbol.replace(/\s+/g, '_')}`,
+            side: 'RED',
+            details: {
+              spotPrice: exitPrice,
+              todayTradedShares: 0,
+              avg20DTradedShares: 0,
+              volumeRatio: 1,
+              crossoverTime: ctx.istTime,
+              strategyId: STRATEGY_IDS.BREAKOUT_180,
+            },
+          },
+          notify:
+            b.status === 'TIME_EXIT' ? () => deps.notifier.notify180TimeExit?.(strike, contract) : undefined,
+        },
+      ];
+    },
   };
 }
 
@@ -163,6 +206,40 @@ function createOobtstStrategy(deps: StrategyDeps, cfg: OobtstConfig): EngineStra
             notify: () =>
               deps.notifier.notify0920StrangleEntry(s.ceLeg.strike, s.peLeg.strike, s.ceLeg.openPrice, s.peLeg.openPrice),
           }),
+        },
+      ];
+    },
+    detectExits(ctx: EngineContext): ExitEvent[] {
+      const s = cfg.select(ctx);
+      if (!s || s.status !== 'SL_HIT' || !s.activeLeg) return [];
+      if (s.executedPrice == null || s.slPrice == null) return [];
+
+      const leg = s.activeLeg === 'CE' ? s.ceLeg : s.peLeg;
+      const pnlPoints = +(s.slPrice - s.executedPrice).toFixed(2);
+      const legType = s.activeLeg;
+
+      return [
+        {
+          strategyId: cfg.strategyId,
+          symbol: leg.symbol,
+          outcome: 'LOSS',
+          exitPrice: s.slPrice,
+          pnlPoints,
+          timestamp: s.lastUpdated || ctx.istTime,
+          notes: `Stop-loss hit @ ₹${s.slPrice.toFixed(2)} (${pnlPoints.toFixed(2)} pts).`,
+          latch: {
+            key: `EXIT_${cfg.latchPrefix}_${leg.symbol.replace(/\s+/g, '_')}`,
+            side: 'RED',
+            details: {
+              spotPrice: s.slPrice,
+              todayTradedShares: 0,
+              avg20DTradedShares: 0,
+              volumeRatio: 1,
+              crossoverTime: s.lastUpdated || ctx.istTime,
+              strategyId: cfg.strategyId,
+            },
+          },
+          notify: () => deps.notifier.notify0920StopLossHit?.(legType, leg.strike, s.slPrice as number),
         },
       ];
     },
