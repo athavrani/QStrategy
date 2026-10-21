@@ -3,7 +3,7 @@
     "name": "QStrategy",
     "slug": "qstrategy",
     "scheme": "qstrategy",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "platforms": [
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.qstrategy.app",
-      "versionCode": 8,
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#080A0F"
@@ -54,7 +54,7 @@
       },
       "updateManifestUrl": "https://raw.githubusercontent.com/athavrani/QStrategy/main/app.json",
       "apkDownloadUrl": "https://github.com/athavrani/QStrategy/releases/latest/download/QStrategy.apk",
-      "releaseNotes": "Release v1.0.7: Dynamic 20D average volume, live option chain tick feed, and canonical prevClose with circuit bounds"
+      "releaseNotes": "Fix exchange segment collision isolating Bank Nifty index ticks from ADANIENT equity, and update 20D volume and prevClose dynamically on day rollover"
     },
     "owner": "quantpulse"
   }
