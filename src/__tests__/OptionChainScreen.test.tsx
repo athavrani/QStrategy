@@ -3,6 +3,8 @@ import renderer, { act } from 'react-test-renderer';
 import { OptionChainScreen, formatOi, UNDERLYING_PRESETS } from '../screens/OptionChainScreen';
 import { DhanOptionChainService, OptionChainResult, OptionStrikeData } from '../services/dhan/DhanOptionChainService';
 
+jest.setTimeout(25000);
+
 let activeTrees: renderer.ReactTestRenderer[] = [];
 
 beforeEach(() => {

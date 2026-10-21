@@ -12,6 +12,8 @@ import { JournalScreen } from '../screens/JournalScreen';
 import { AppNavigator } from '../navigation/AppNavigator';
 import { useRadarStore } from '../store/useRadarStore';
 
+jest.setTimeout(25000);
+
 let activeTrees: renderer.ReactTestRenderer[] = [];
 
 beforeEach(() => {

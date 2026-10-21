@@ -115,7 +115,7 @@ def getAppVersion() {
             }
         }
     } catch (Exception ignored) {}
-    return "1.0.9"
+    return "1.0.10"
 }
 
 def getAppVersionCode() {
@@ -128,7 +128,7 @@ def getAppVersionCode() {
             }
         }
     } catch (Exception ignored) {}
-    return 10
+    return 11
 }
 
 android {
