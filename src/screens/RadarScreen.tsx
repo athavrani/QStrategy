@@ -33,11 +33,12 @@ function formatShares(val: number): string {
 interface StockCardProps {
   item: StockRadarItem;
   onSelect: (item: StockRadarItem) => void;
+  isFeedOnline?: boolean;
 }
 
 // Memoized Card: Only re-renders if this specific stock's live tick values changed
 const StockCard = React.memo(
-  function StockCard({ item, onSelect }: StockCardProps) {
+  function StockCard({ item, onSelect, isFeedOnline = true }: StockCardProps) {
     const { colors } = useTheme();
     const styles = useThemedStyles();
     const ratioPercent = Math.min(150, Math.round(item.volumeRatio * 100));
@@ -57,7 +58,7 @@ const StockCard = React.memo(
 
     let circleIcon = '⚪';
     let circleTone = colors.textMuted;
-    let circleLabel = 'SCANNING';
+    let circleLabel = isFeedOnline ? 'SCANNING' : 'OFFLINE CACHE';
 
     if (item.circleIndicator === 'GREEN') {
       circleIcon = '🟢';
@@ -166,7 +167,8 @@ const StockCard = React.memo(
     prev.item.percentChange === next.item.percentChange &&
     prev.item.todayTradedShares === next.item.todayTradedShares &&
     prev.item.volumeRatio === next.item.volumeRatio &&
-    prev.item.circleIndicator === next.item.circleIndicator
+    prev.item.circleIndicator === next.item.circleIndicator &&
+    prev.isFeedOnline === next.isFeedOnline
 );
 
 export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
@@ -241,9 +243,9 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
 
   const renderStockItem = useCallback(
     ({ item }: { item: StockRadarItem }) => (
-      <StockCard item={item} onSelect={handleSelect} />
+      <StockCard item={item} onSelect={handleSelect} isFeedOnline={feedStatus === 'ONLINE'} />
     ),
-    [handleSelect]
+    [handleSelect, feedStatus]
   );
 
   const keyExtractor = useCallback((item: StockRadarItem) => item.ticker, []);
@@ -268,7 +270,11 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
       )}
 
       {/* Feed Status Indicator */}
-      <View style={styles.feedStatusBar}>
+      <TouchableOpacity
+        style={styles.feedStatusBar}
+        activeOpacity={0.7}
+        onPress={handleRefresh}
+      >
         <View style={styles.feedStatusLeft}>
           <View
             style={[
@@ -277,26 +283,39 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
                 backgroundColor:
                   feedStatus === 'ONLINE'
                     ? colors.bullish
+                    : feedStatus === 'CONNECTING'
+                    ? colors.warning
+                    : feedStatus === 'DISCONNECTED' || feedStatus === 'OFFLINE' || feedStatus === 'ERROR'
+                    ? colors.bearish
                     : marketStatus === 'CLOSED' || marketStatus === 'POST_MARKET'
                     ? colors.cyan
-                    : feedStatus === 'ERROR'
-                    ? colors.bearish
-                    : colors.warning,
+                    : colors.textMuted,
               },
             ]}
           />
           <Text style={styles.feedStatusText}>
-            {marketStatus === 'CLOSED' || marketStatus === 'POST_MARKET'
-              ? `🌙 MARKET CLOSED • DHAN EOD ACTIVE (${lastTickTime || '15:30 IST'})`
-              : feedStatus === 'ONLINE'
-              ? `🟢 DHAN LIVE STREAM (${lastTickTime || 'Streaming'})`
+            {feedStatus === 'OFFLINE' || feedStatus === 'DISCONNECTED'
+              ? '🔴 DHAN SESSION OFFLINE (Tap to Reconnect)'
               : feedStatus === 'ERROR'
-              ? '⚠️ DHAN STREAM RECONNECTING (Check Settings)'
-              : '⚡ CONNECTING DHAN STREAMER...'}
+              ? '⚠️ DHAN STREAM ERROR (Tap to Retry)'
+              : feedStatus === 'CONNECTING'
+              ? '⚡ CONNECTING DHAN STREAMER...'
+              : marketStatus === 'CLOSED' || marketStatus === 'POST_MARKET'
+              ? `🌙 MARKET CLOSED • DHAN EOD ACTIVE (${lastTickTime || '15:30 IST'})`
+              : `🟢 DHAN LIVE STREAM (${lastTickTime || 'Streaming'})`}
           </Text>
         </View>
         <Text style={styles.feedCountText}>{filteredStocks.length} STOCKS</Text>
-      </View>
+      </TouchableOpacity>
+
+      {/* Offline Data Notice Banner */}
+      {(feedStatus === 'OFFLINE' || feedStatus === 'DISCONNECTED' || feedStatus === 'ERROR') && (
+        <View style={styles.offlineNoticeBanner}>
+          <Text style={styles.offlineNoticeText}>
+            ⚠️ DHAN SESSION DISCONNECTED — Displaying cached quotes ({lastTickTime || 'Stale'}). Tap status above to reconnect.
+          </Text>
+        </View>
+      )}
 
       {/* Search Bar */}
       <View style={styles.searchContainer}>
@@ -474,6 +493,19 @@ const useThemedStyles = createThemedStyles((colors) => ({
     color: colors.textMuted,
     fontSize: 10,
     fontWeight: '700',
+  },
+  offlineNoticeBanner: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(239, 68, 68, 0.25)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+  },
+  offlineNoticeText: {
+    color: colors.bearish,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   searchContainer: {
     paddingHorizontal: 14,

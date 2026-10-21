@@ -13,7 +13,14 @@ import { notificationService } from '../services/notificationService';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
 import { InstrumentSubscription, DhanFeedResponseCode } from '../services/dhan/DhanBinaryCodec';
-import { DHAN_SECURITY_MAP, DHAN_NIFTY_INDEX_ID, DHAN_SENSEX_INDEX_ID, getDhanSecurityId } from '../constants/dhanSecurityMaster';
+import {
+  DHAN_SECURITY_MAP,
+  DHAN_NIFTY_INDEX_ID,
+  DHAN_BANKNIFTY_INDEX_ID,
+  DHAN_FINNIFTY_INDEX_ID,
+  DHAN_SENSEX_INDEX_ID,
+  getDhanSecurityId,
+} from '../constants/dhanSecurityMaster';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { OobtstLiveState } from '../strategies/types';
@@ -27,8 +34,10 @@ interface RadarStoreState {
   isRefreshing: boolean;
   latchServiceInitialized: boolean;
   niftySpot: number;
+  bankNiftySpot: number;
+  finNiftySpot: number;
   sensexSpot: number;
-  feedStatus: 'ONLINE' | 'ERROR' | 'UNCONFIGURED';
+  feedStatus: 'ONLINE' | 'OFFLINE' | 'CONNECTING' | 'DISCONNECTED' | 'ERROR' | 'UNCONFIGURED';
   lastTickTime: string | null;
 
   // Strategy 1: 20D Volume Screener
@@ -75,8 +84,10 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   isRefreshing: false,
   latchServiceInitialized: false,
   niftySpot: 0,
+  bankNiftySpot: 0,
+  finNiftySpot: 0,
   sensexSpot: 0,
-  feedStatus: 'ONLINE',
+  feedStatus: 'CONNECTING',
   lastTickTime: null,
   isStreamerInitialized: false,
 
@@ -106,14 +117,85 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     if (!get().latchServiceInitialized) {
       await alertLatchService.initialize();
       set({ latchServiceInitialized: true });
+
+      // Point 7.1: Restore session journal from persisted SQLite latches on startup
+      if (get().journal.length === 0) {
+        try {
+          const latches = await alertLatchService.getAllSessionLatches();
+          if (latches.length > 0) {
+            const restoredJournal: SignalJournalItem[] = latches.map((item, idx) => {
+              const strategyId = item.strategyId || '20D_CROSSOVER';
+              if (strategyId === 'NIFTY_BREAKOUT_180') {
+                return {
+                  id: `sig-restored-breakout-${idx}-${item.crossoverTime}`,
+                  timestamp: item.crossoverTime,
+                  strategyId: 'NIFTY_BREAKOUT_180',
+                  strategyName: 'NIFTY 09:25 ₹180 Breakout',
+                  symbol: item.ticker.startsWith('NIFTY') ? item.ticker : `NIFTY ${item.ticker}`,
+                  signalType: 'BUY' as const,
+                  entryPrice: item.spotPrice || 180,
+                  stopLoss: 160.00,
+                  target: 220.00,
+                  outcome: 'OPEN' as const,
+                  notes: `🚀 09:25 Candle Open < ₹180 Breakout Triggered @ ₹${(item.spotPrice || 180).toFixed(2)}. Target: ₹220, SL: ₹160.`,
+                };
+              }
+              if (strategyId === 'OOBTST_NIFTY') {
+                return {
+                  id: `sig-restored-oobtst-nifty-${idx}-${item.crossoverTime}`,
+                  timestamp: item.crossoverTime,
+                  strategyId: 'OOBTST_NIFTY',
+                  strategyName: '09:20 OOBTST NIFTY',
+                  symbol: item.ticker,
+                  signalType: 'BUY' as const,
+                  entryPrice: item.spotPrice,
+                  stopLoss: +(item.spotPrice / 1.5).toFixed(2),
+                  outcome: 'OPEN' as const,
+                  notes: `⚡ 09:20 1.5X Trigger Breached for ${item.ticker} @ ₹${item.spotPrice.toFixed(2)}.`,
+                };
+              }
+              if (strategyId === 'OOBTST_SENSEX') {
+                return {
+                  id: `sig-restored-oobtst-sensex-${idx}-${item.crossoverTime}`,
+                  timestamp: item.crossoverTime,
+                  strategyId: 'OOBTST_SENSEX',
+                  strategyName: '09:20 OOBTST SENSEX',
+                  symbol: item.ticker,
+                  signalType: 'BUY' as const,
+                  entryPrice: item.spotPrice,
+                  stopLoss: +(item.spotPrice / 1.5).toFixed(2),
+                  outcome: 'OPEN' as const,
+                  notes: `⚡ Sensex 09:20 1.5X Trigger Breached for ${item.ticker} @ ₹${item.spotPrice.toFixed(2)}.`,
+                };
+              }
+              // Default: 20D Volume Crossover
+              const isGreen = item.state === 'GREEN';
+              return {
+                id: `sig-restored-crossover-${idx}-${item.crossoverTime}`,
+                timestamp: item.crossoverTime,
+                strategyId: '20D_CROSSOVER',
+                strategyName: '20D Volume Crossover',
+                symbol: item.ticker,
+                signalType: (isGreen ? 'BUY' : 'SELL') as 'BUY' | 'SELL',
+                entryPrice: item.spotPrice,
+                outcome: 'OPEN' as const,
+                notes: isGreen
+                  ? `🟢 Crossed 100% of 20D Avg (${(item.volumeRatio * 100).toFixed(1)}% Vol). Bullish LTP > Open.`
+                  : `🔴 Crossed 100% of 20D Avg (${(item.volumeRatio * 100).toFixed(1)}% Vol). Bearish LTP < Open (Distribution).`,
+              };
+            });
+            set({ journal: restoredJournal.reverse() });
+          }
+        } catch {}
+      }
     }
 
     // Day rollover detection: if sessionDate !== today, reset daily caches & journal
     const todayIST = formatDateKeyIST();
     if (get().sessionDate !== todayIST) {
-      niftyOptionFeedService.resetAnchor();
-      niftyOptionFeedService.resetBreakout180();
-      sensexOptionFeedService.resetAnchor();
+      niftyOptionFeedService.resetAnchor(true);
+      niftyOptionFeedService.resetBreakout180(true);
+      sensexOptionFeedService.resetAnchor(true);
       set({
         sessionDate: todayIST,
         journal: [],
@@ -134,8 +216,22 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     try {
       await niftyOptionFeedService.loadSavedTargetPremium();
       await niftyOptionFeedService.loadSavedBreakoutThreshold();
+      await niftyOptionFeedService.loadPersistedAnchor();
+      await niftyOptionFeedService.loadPersistedBreakoutState();
       await sensexOptionFeedService.loadSavedTargetPremium();
-      const [sessionRes, stocksRes, overnightRes, breakoutRes, niftyIndexQuoteRes, _chainRes, sensexIndexQuoteRes, _sensexChainRes] =
+      await sensexOptionFeedService.loadPersistedAnchor();
+      const [
+        sessionRes,
+        stocksRes,
+        overnightRes,
+        breakoutRes,
+        niftyIndexQuoteRes,
+        _chainRes,
+        sensexIndexQuoteRes,
+        _sensexChainRes,
+        bankNiftyIndexQuoteRes,
+        finNiftyIndexQuoteRes,
+      ] =
         await Promise.allSettled([
           apiService.fetchMarketSession(),
           apiService.fetchStockRadarList(),
@@ -145,6 +241,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           niftyOptionFeedService.syncLiveOptionChain(),
           dhanDirectService.fetchSensexIndexQuote(),
           sensexOptionFeedService.syncLiveOptionChain(),
+          dhanDirectService.fetchBankNiftyIndexQuote(),
+          dhanDirectService.fetchFinNiftyIndexQuote(),
         ]);
 
       const session =
@@ -225,31 +323,41 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         }
       }
 
-      // Check for NIFTY Breakout 180 trigger journal logging
+      // Check for NIFTY Breakout 180 trigger journal logging and push notification
       if (breakout && breakout.status === 'IN_TRADE' && breakout.activeContract && breakout.ceCandidate && breakout.peCandidate) {
         const symbol = breakout.activeContract === 'CE' ? `${breakout.ceCandidate.strike} CE` : `${breakout.peCandidate.strike} PE`;
-        const lockKey = `BREAKOUT_180_${symbol}`;
+        const lockKey = `BREAKOUT_180_${symbol.replace(/\s+/g, '_')}`;
         if (!alertLatchService.isAlertLatched(lockKey, 'GREEN')) {
-          await alertLatchService.acquireAlertLatch(lockKey, 'GREEN', {
+          const acquired = await alertLatchService.acquireAlertLatch(lockKey, 'GREEN', {
             spotPrice: breakout.currentPrice || 180,
             todayTradedShares: 0,
             avg20DTradedShares: 0,
             volumeRatio: 1,
             crossoverTime: breakout.entryTime || session.istTime,
-          });
-          newJournalEntries.push({
-            id: `sig-breakout-${Date.now()}`,
-            timestamp: breakout.entryTime || session.istTime,
             strategyId: 'NIFTY_BREAKOUT_180',
-            strategyName: 'NIFTY 09:25 ₹180 Breakout',
-            symbol: `NIFTY ${symbol}`,
-            signalType: 'BUY',
-            entryPrice: breakout.entryPrice || 180,
-            stopLoss: breakout.fixedStopLoss,
-            target: breakout.fixedTarget,
-            outcome: 'OPEN',
-            notes: `🚀 09:25 Candle Open < ₹180 Breakout Triggered @ ₹${(breakout.entryPrice || 180).toFixed(2)}. Target: ₹220, SL: ₹160.`,
           });
+          if (acquired) {
+            notificationService.notify180BreakoutTriggered(
+              breakout.activeContract,
+              breakout.activeContract === 'CE' ? breakout.ceCandidate.strike : breakout.peCandidate.strike,
+              breakout.entryPrice || 180,
+              breakout.fixedTarget,
+              breakout.fixedStopLoss
+            );
+            newJournalEntries.push({
+              id: `sig-breakout-${Date.now()}`,
+              timestamp: breakout.entryTime || session.istTime,
+              strategyId: 'NIFTY_BREAKOUT_180',
+              strategyName: 'NIFTY 09:25 ₹180 Breakout',
+              symbol: `NIFTY ${symbol}`,
+              signalType: 'BUY',
+              entryPrice: breakout.entryPrice || 180,
+              stopLoss: breakout.fixedStopLoss,
+              target: breakout.fixedTarget,
+              outcome: 'OPEN',
+              notes: `🚀 09:25 Candle Open < ₹180 Breakout Triggered @ ₹${(breakout.entryPrice || 180).toFixed(2)}. Target: ₹220, SL: ₹160.`,
+            });
+          }
         }
       }
 
@@ -264,10 +372,91 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       const resolvedSensexSpot = sensexIndexQuote && sensexIndexQuote.ltp > 0 ? sensexIndexQuote.ltp : (get().sensexSpot || 81000);
       const liveSensexOobtst = sensexOptionFeedService.evaluateSensexOobtst(resolvedSensexSpot, session.istTime);
 
+      const bankNiftyIndexQuote = bankNiftyIndexQuoteRes.status === 'fulfilled' ? bankNiftyIndexQuoteRes.value : null;
+      const resolvedBankNiftySpot = bankNiftyIndexQuote && bankNiftyIndexQuote.ltp > 0 ? bankNiftyIndexQuote.ltp : (get().bankNiftySpot || 51200);
+
+      const finNiftyIndexQuote = finNiftyIndexQuoteRes.status === 'fulfilled' ? finNiftyIndexQuoteRes.value : null;
+      const resolvedFinNiftySpot = finNiftyIndexQuote && finNiftyIndexQuote.ltp > 0 ? finNiftyIndexQuote.ltp : (get().finNiftySpot || 23800);
+
+      // Check for NIFTY 09:20 OOBTST trigger latch and push alert
+      if (liveOobtst && (liveOobtst.status === 'ACTIVE' || liveOobtst.status === 'BTST_HOLD') && liveOobtst.activeLeg) {
+        const leg = liveOobtst.activeLeg === 'CE' ? liveOobtst.ceLeg : liveOobtst.peLeg;
+        const lockKey = `OOBTST_NIFTY_${leg.symbol.replace(/\s+/g, '_')}`;
+        if (!alertLatchService.isAlertLatched(lockKey, 'GREEN')) {
+          const acquired = await alertLatchService.acquireAlertLatch(lockKey, 'GREEN', {
+            spotPrice: leg.currentLtp || +(leg.openPrice * 1.5).toFixed(2),
+            todayTradedShares: 0,
+            avg20DTradedShares: 0,
+            volumeRatio: 1,
+            crossoverTime: liveOobtst.lastUpdated || session.istTime,
+            strategyId: 'OOBTST_NIFTY',
+          });
+          if (acquired) {
+            notificationService.notify0920StrangleEntry(
+              liveOobtst.ceLeg.strike,
+              liveOobtst.peLeg.strike,
+              liveOobtst.ceLeg.openPrice,
+              liveOobtst.peLeg.openPrice
+            );
+            newJournalEntries.push({
+              id: `sig-oobtst-nifty-${Date.now()}`,
+              timestamp: liveOobtst.lastUpdated || session.istTime || new Date().toLocaleTimeString('en-IN'),
+              strategyId: 'OOBTST_NIFTY',
+              strategyName: '09:20 OOBTST NIFTY',
+              symbol: leg.symbol,
+              signalType: 'BUY',
+              entryPrice: +(leg.openPrice * 1.5).toFixed(2),
+              stopLoss: leg.openPrice,
+              outcome: 'OPEN',
+              notes: `⚡ 09:20 1.5X Trigger Breached for ${leg.symbol} (Open: ₹${leg.openPrice.toFixed(2)}, Trigger: ₹${(leg.openPrice * 1.5).toFixed(2)}). SL: ₹${leg.openPrice.toFixed(2)}.`,
+            });
+          }
+        }
+      }
+
+      // Check for SENSEX 09:20 OOBTST trigger latch and push alert
+      if (liveSensexOobtst && (liveSensexOobtst.status === 'ACTIVE' || liveSensexOobtst.status === 'BTST_HOLD') && liveSensexOobtst.activeLeg) {
+        const leg = liveSensexOobtst.activeLeg === 'CE' ? liveSensexOobtst.ceLeg : liveSensexOobtst.peLeg;
+        const lockKey = `OOBTST_SENSEX_${leg.symbol.replace(/\s+/g, '_')}`;
+        if (!alertLatchService.isAlertLatched(lockKey, 'GREEN')) {
+          const acquired = await alertLatchService.acquireAlertLatch(lockKey, 'GREEN', {
+            spotPrice: leg.currentLtp || +(leg.openPrice * 1.5).toFixed(2),
+            todayTradedShares: 0,
+            avg20DTradedShares: 0,
+            volumeRatio: 1,
+            crossoverTime: liveSensexOobtst.lastUpdated || session.istTime,
+            strategyId: 'OOBTST_SENSEX',
+          });
+          if (acquired) {
+            notificationService.notify0920StrangleEntry(
+              liveSensexOobtst.ceLeg.strike,
+              liveSensexOobtst.peLeg.strike,
+              liveSensexOobtst.ceLeg.openPrice,
+              liveSensexOobtst.peLeg.openPrice
+            );
+            newJournalEntries.push({
+              id: `sig-oobtst-sensex-${Date.now()}`,
+              timestamp: liveSensexOobtst.lastUpdated || session.istTime || new Date().toLocaleTimeString('en-IN'),
+              strategyId: 'OOBTST_SENSEX',
+              strategyName: '09:20 OOBTST SENSEX',
+              symbol: leg.symbol,
+              signalType: 'BUY',
+              entryPrice: +(leg.openPrice * 1.5).toFixed(2),
+              stopLoss: leg.openPrice,
+              outcome: 'OPEN',
+              notes: `⚡ Sensex 09:20 1.5X Trigger Breached for ${leg.symbol} (Open: ₹${leg.openPrice.toFixed(2)}, Trigger: ₹${(leg.openPrice * 1.5).toFixed(2)}). SL: ₹${leg.openPrice.toFixed(2)}.`,
+            });
+          }
+        }
+      }
+
       const isOvernightActive = overnight && (overnight.status === 'ACTIVE_HOLD' || overnight.status === 'OVERNIGHT_HOLD');
       const isBreakoutActive = breakout && breakout.status === 'IN_TRADE';
       const isSensexActive = liveSensexOobtst && (liveSensexOobtst.status === 'ACTIVE' || liveSensexOobtst.status === 'BTST_HOLD');
-      const signalsTodayCount = greenCount + redCount + (isOvernightActive ? 1 : 0) + (isBreakoutActive ? 1 : 0) + (isSensexActive ? 1 : 0);
+      const signalsTodayCount = Math.max(
+        greenCount + redCount + (isOvernightActive ? 1 : 0) + (isBreakoutActive ? 1 : 0) + (isSensexActive ? 1 : 0),
+        get().journal.length + newJournalEntries.length
+      );
 
       set((prev) => {
         const existingMap = new Map(prev.stocks.map((s) => [s.ticker, s]));
@@ -276,9 +465,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           if (!existing) return newStock;
 
           // Preserve live non-zero spot price against placeholder approxLtp
-          const spotPrice = (existing.spotPrice > 0 && (!newStock.spotPrice || newStock.spotPrice === existing.spotPrice))
-            ? existing.spotPrice
-            : (newStock.spotPrice > 0 ? newStock.spotPrice : existing.spotPrice);
+          const spotPrice = (newStock.isLiveQuote && newStock.spotPrice > 0)
+            ? newStock.spotPrice
+            : (existing.spotPrice > 0 ? existing.spotPrice : newStock.spotPrice);
 
           // Preserve verified previous close
           const prevClose = (newStock.prevClose && newStock.prevClose > 0)
@@ -287,7 +476,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
               ? existing.prevClose
               : (dhanDirectService.getPrevClose(newStock.ticker) || undefined));
 
-          const dayOpen = (newStock.dayOpen && newStock.dayOpen > 0)
+          const dayOpen = (newStock.dayOpen && newStock.dayOpen > 0 && newStock.isLiveQuote)
             ? newStock.dayOpen
             : (existing.dayOpen && existing.dayOpen > 0 ? existing.dayOpen : spotPrice);
 
@@ -303,10 +492,10 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const volumeRatio = todayTradedShares > 0 ? +(todayTradedShares / avgShares).toFixed(3) : 0;
           const hasCrossed = todayTradedShares >= avgShares && todayTradedShares > 0;
 
-          // Compute genuine price percentage change
+          // Compute genuine price percentage change strictly against verified previous close
           const percentChange = (prevClose && prevClose > 0 && spotPrice > 0)
             ? +(((spotPrice - prevClose) / prevClose) * 100).toFixed(2)
-            : (newStock.percentChange !== 0 ? newStock.percentChange : existing.percentChange);
+            : (existing.percentChange !== 0 ? existing.percentChange : newStock.percentChange);
 
           const isBullish = percentChange >= 0 || spotPrice >= dayOpen;
           let circleIndicator: 'GREEN' | 'RED' | 'AMBER' | 'GREY' = 'GREY';
@@ -339,6 +528,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           istTime: session.istTime,
           stocks: mergedStocks,
           niftySpot: resolvedSpot,
+          bankNiftySpot: resolvedBankNiftySpot,
+          finNiftySpot: resolvedFinNiftySpot,
           sensexSpot: resolvedSensexSpot,
           niftyOvernight: overnight,
           oobtstState: liveOobtst,
@@ -417,10 +608,18 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       securityId: meta.securityId,
     }));
 
-    // 2. Add NIFTY 50 and SENSEX Spot Indices
+    // 2. Add NIFTY 50, BANK NIFTY, FIN NIFTY, and SENSEX Spot Indices
     subscriptions.push({
       exchangeSegment: 'IDX_I',
       securityId: DHAN_NIFTY_INDEX_ID,
+    });
+    subscriptions.push({
+      exchangeSegment: 'IDX_I',
+      securityId: DHAN_BANKNIFTY_INDEX_ID,
+    });
+    subscriptions.push({
+      exchangeSegment: 'IDX_I',
+      securityId: DHAN_FINNIFTY_INDEX_ID,
     });
     subscriptions.push({
       exchangeSegment: 'IDX_I',
@@ -442,6 +641,26 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       if (indexTick && 'ltp' in indexTick && indexTick.ltp > 0 && indexTick.ltp !== newNiftySpot) {
         newNiftySpot = indexTick.ltp;
         spotChanged = true;
+        hasChanged = true;
+      }
+
+      // Check if BANK NIFTY spot tick arrived
+      let bankNiftySpotChanged = false;
+      let newBankNiftySpot = get().bankNiftySpot;
+      const bankNiftyTick = tickBatch[DHAN_BANKNIFTY_INDEX_ID];
+      if (bankNiftyTick && 'ltp' in bankNiftyTick && bankNiftyTick.ltp > 0 && bankNiftyTick.ltp !== newBankNiftySpot) {
+        newBankNiftySpot = bankNiftyTick.ltp;
+        bankNiftySpotChanged = true;
+        hasChanged = true;
+      }
+
+      // Check if FIN NIFTY spot tick arrived
+      let finNiftySpotChanged = false;
+      let newFinNiftySpot = get().finNiftySpot;
+      const finNiftyTick = tickBatch[DHAN_FINNIFTY_INDEX_ID];
+      if (finNiftyTick && 'ltp' in finNiftyTick && finNiftyTick.ltp > 0 && finNiftyTick.ltp !== newFinNiftySpot) {
+        newFinNiftySpot = finNiftyTick.ltp;
+        finNiftySpotChanged = true;
         hasChanged = true;
       }
 
@@ -582,6 +801,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           stateUpdates.oobtstState = niftyOptionFeedService.evaluateOobtst(spot, get().istTime || nowTime);
         }
 
+        if (bankNiftySpotChanged) {
+          stateUpdates.bankNiftySpot = newBankNiftySpot;
+        }
+
+        if (finNiftySpotChanged) {
+          stateUpdates.finNiftySpot = newFinNiftySpot;
+        }
+
         if (sensexSpotChanged || sensexDerivativeTickArrived) {
           if (sensexSpotChanged) {
             stateUpdates.sensexSpot = newSensexSpot;
@@ -601,6 +828,12 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           feedStatus: 'ONLINE',
           lastTickTime: telem.lastTickTime || get().lastTickTime,
         });
+      } else if (telem.status === 'CONNECTING') {
+        set({ feedStatus: 'CONNECTING' });
+      } else if (telem.status === 'DISCONNECTED') {
+        set({ feedStatus: 'DISCONNECTED' });
+      } else if (telem.status === 'TOKEN_EXPIRED') {
+        set({ feedStatus: 'OFFLINE' });
       } else if (telem.status === 'ERROR') {
         set({ feedStatus: 'ERROR' });
       }

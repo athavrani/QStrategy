@@ -12,6 +12,7 @@ import {
 import { useTheme, createThemedStyles } from '../../theme';
 import { liveMarketService, LiveOptionChainSummary } from '../../services/liveMarketService';
 import { dhanDirectService } from '../../services/dhanDirectService';
+import { useRadarStore } from '../../store/useRadarStore';
 import * as Haptics from 'expo-haptics';
 
 interface Props {
@@ -34,6 +35,7 @@ export function LiveOptionChainModal({
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [chain, setChain] = useState<LiveOptionChainSummary | null>(null);
+  const feedStatus = useRadarStore((s) => s.feedStatus);
 
   useEffect(() => {
     if (visible) {
@@ -95,13 +97,15 @@ export function LiveOptionChainModal({
             <View style={{ flex: 1, marginHorizontal: 8 }}>
               <View style={styles.titleRow}>
                 <Text style={styles.title}>{ticker} Option Chain</Text>
-                {chain?.isLiveMarketData ? (
+                {chain?.isLiveMarketData && feedStatus === 'ONLINE' ? (
                   <View style={[styles.badge, styles.liveBadge]}>
                     <Text style={styles.liveBadgeText}>🟢 LIVE DHAN</Text>
                   </View>
                 ) : (
                   <View style={[styles.badge, styles.estimatedBadge]}>
-                    <Text style={styles.estimatedBadgeText}>⚡ AWAITING FEED</Text>
+                    <Text style={styles.estimatedBadgeText}>
+                      {feedStatus === 'ONLINE' ? '⚡ AWAITING FEED' : '⚠️ OFFLINE CACHE'}
+                    </Text>
                   </View>
                 )}
                 {chain?.rolledToNextExpiry && (

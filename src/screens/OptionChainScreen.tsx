@@ -19,6 +19,7 @@ import { StatusBadge } from '../components/common/StatusBadge';
 import { SkeletonLoader } from '../components/common/SkeletonLoader';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
+import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import * as Haptics from 'expo-haptics';
 
 export interface UnderlyingPreset {
@@ -76,6 +77,9 @@ export function OptionChainScreen(): React.JSX.Element {
   const [chainData, setChainData] = useState<OptionChainResult | null>(null);
 
   const niftySpotFromStore = useRadarStore((s) => s.niftySpot);
+  const bankNiftySpotFromStore = useRadarStore((s) => s.bankNiftySpot);
+  const finNiftySpotFromStore = useRadarStore((s) => s.finNiftySpot);
+  const sensexSpotFromStore = useRadarStore((s) => s.sensexSpot);
   const feedStatus = useRadarStore((s) => s.feedStatus);
 
   const optionChainService = useMemo(() => new DhanOptionChainService(), []);
@@ -105,7 +109,11 @@ export function OptionChainScreen(): React.JSX.Element {
         );
 
         if (!result || !result.strikes || result.strikes.length === 0) {
-          await niftyOptionFeedService.syncLiveOptionChain(selectedPreset.symbol);
+          if (selectedPreset.symbol === 'SENSEX') {
+            await sensexOptionFeedService.syncLiveOptionChain();
+          } else {
+            await niftyOptionFeedService.syncLiveOptionChain(selectedPreset.symbol);
+          }
           result = await optionChainService.getOptionChain(
             selectedPreset.scripId,
             selectedPreset.segment,
@@ -134,12 +142,40 @@ export function OptionChainScreen(): React.JSX.Element {
     loadOptionChain();
   }, [loadOptionChain]);
 
-  const activeSpot = chainData?.spotPrice ?? (selectedPreset.symbol === 'NIFTY' ? niftySpotFromStore : null);
-  const atmStrike = chainData?.atmStrike ?? (activeSpot ? Math.round(activeSpot / selectedPreset.strikeStep) * selectedPreset.strikeStep : null);
+  const storeSpot = useMemo(() => {
+    switch (selectedPreset.symbol) {
+      case 'NIFTY':
+        return niftySpotFromStore > 0 ? niftySpotFromStore : null;
+      case 'BANKNIFTY':
+        return bankNiftySpotFromStore > 0 ? bankNiftySpotFromStore : null;
+      case 'FINNIFTY':
+        return finNiftySpotFromStore > 0 ? finNiftySpotFromStore : null;
+      case 'SENSEX':
+        return sensexSpotFromStore > 0 ? sensexSpotFromStore : null;
+      default:
+        return null;
+    }
+  }, [
+    selectedPreset.symbol,
+    niftySpotFromStore,
+    bankNiftySpotFromStore,
+    finNiftySpotFromStore,
+    sensexSpotFromStore,
+  ]);
+
+  const isChainForCurrentPreset = Boolean(
+    chainData && chainData.underlyingScrip === selectedPreset.scripId
+  );
+  const activeSpot = (isChainForCurrentPreset && chainData?.spotPrice)
+    ? chainData.spotPrice
+    : storeSpot;
+  const atmStrike = (isChainForCurrentPreset && chainData?.atmStrike)
+    ? chainData.atmStrike
+    : (activeSpot ? Math.round(activeSpot / selectedPreset.strikeStep) * selectedPreset.strikeStep : null);
 
   // Filter strikes around ATM for responsive, high-density mobile viewing (6 ITM + 1 ATM + 6 OTM)
   const displayedStrikes = useMemo(() => {
-    if (!chainData || !chainData.strikes || chainData.strikes.length === 0) return [];
+    if (!isChainForCurrentPreset || !chainData || !chainData.strikes || chainData.strikes.length === 0) return [];
     if (strikeRange === 'ALL' || !atmStrike) return chainData.strikes;
 
     const count = parseInt(strikeRange, 10);
@@ -161,10 +197,10 @@ export function OptionChainScreen(): React.JSX.Element {
     const start = Math.max(0, centerIndex - count);
     const end = Math.min(chainData.strikes.length, centerIndex + count + 1);
     return chainData.strikes.slice(start, end);
-  }, [chainData, atmStrike, strikeRange]);
+  }, [chainData, atmStrike, strikeRange, isChainForCurrentPreset]);
 
   // PCR Analysis
-  const pcr = chainData?.pcr ?? null;
+  const pcr = isChainForCurrentPreset ? (chainData?.pcr ?? null) : null;
   let pcrTag = 'NEUTRAL';
   let pcrVariant: 'bullish' | 'bearish' | 'warning' = 'warning';
   if (pcr !== null) {
@@ -181,6 +217,7 @@ export function OptionChainScreen(): React.JSX.Element {
     Haptics.selectionAsync();
     setSelectedPreset(preset);
     setSelectedExpiry('');
+    setChainData(null);
   };
 
   const handleSelectExpiry = (exp: string) => {
@@ -351,7 +388,7 @@ export function OptionChainScreen(): React.JSX.Element {
       </View>
 
       {/* Expiry Selector Chips */}
-      {chainData?.expiryList && chainData.expiryList.length > 0 && (
+      {isChainForCurrentPreset && chainData?.expiryList && chainData.expiryList.length > 0 && (
         <View style={styles.expiryContainer}>
           <ScrollView
             horizontal
@@ -390,7 +427,7 @@ export function OptionChainScreen(): React.JSX.Element {
               colorize={false}
               style={styles.spotPriceText}
             />
-            {chainData?.expiry ? (
+            {isChainForCurrentPreset && chainData?.expiry ? (
               <Text style={styles.expiryTag}>📅 {formatExpiryDate(chainData.expiry)}</Text>
             ) : null}
           </View>
@@ -469,7 +506,7 @@ export function OptionChainScreen(): React.JSX.Element {
         <View style={styles.loadingContainer}>
           <SkeletonLoader lines={12} height={42} spacing={4} />
         </View>
-      ) : chainData && displayedStrikes.length > 0 ? (
+      ) : isChainForCurrentPreset && chainData && displayedStrikes.length > 0 ? (
         <FlatList
           style={styles.flatList}
           data={displayedStrikes}

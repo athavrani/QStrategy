@@ -96,7 +96,8 @@ export const apiService = {
 
     return SENSEX_NIFTY_MASTER_CATALOG.map((m) => {
       const q = liveQuotes[m.ticker];
-      const spotPrice = q && q.ltp > 0 ? q.ltp : m.approxLtp;
+      const isLiveQuote = Boolean(q && q.ltp > 0);
+      const spotPrice = isLiveQuote ? q.ltp : m.approxLtp;
       const dayOpen = q && q.open > 0 ? q.open : spotPrice;
       const dayHigh = q && q.high > 0 ? q.high : spotPrice;
       const dayLow = q && q.low > 0 ? q.low : spotPrice;
@@ -104,9 +105,9 @@ export const apiService = {
       const avgShares = m.avg20DTradedShares || 1;
       const ratio = todayShares > 0 ? +(todayShares / avgShares).toFixed(3) : 0;
       const hasCrossed = todayShares >= avgShares && todayShares > 0;
-      // Resolve authentic prevClose: prefer q.prevClose, then q.close (if !== spotPrice), then verified catalog baseline
+      // Resolve authentic prevClose from quote, without rejecting close === spotPrice
       let prevClose = (q && q.prevClose && q.prevClose > 0) ? q.prevClose : undefined;
-      if (!prevClose && q && q.close && q.close > 0 && q.close !== spotPrice) {
+      if (!prevClose && q && q.close && q.close > 0) {
         prevClose = q.close;
       }
       if (!prevClose && m.prevClose > 0) {
@@ -146,6 +147,7 @@ export const apiService = {
         circleIndicator,
         strikeStep: m.strikeStep,
         lotSize: m.lotSize,
+        isLiveQuote,
       };
     });
   },
@@ -153,6 +155,7 @@ export const apiService = {
   // 3. Strategy 2: NIFTY 09:20 Overnight (62.5)
   async fetchNiftyOvernightState(): Promise<NiftyOvernightState> {
     await dhanDirectService.initialize();
+    await niftyOptionFeedService.loadPersistedAnchor();
     let spot = 0;
 
     try {
@@ -215,6 +218,7 @@ export const apiService = {
 
   // 4. Strategy 3: NIFTY 09:25 ₹180 Breakout
   async fetchNiftyBreakout180State(): Promise<NiftyBreakout180State> {
+    await niftyOptionFeedService.loadPersistedBreakoutState();
     try {
       const data = await request<any>(API_CONFIG.ENDPOINTS.NIFTY_BREAKOUT_180);
       if (data && data.state) return data.state;

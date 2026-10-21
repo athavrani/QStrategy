@@ -18,6 +18,17 @@ export interface LatchedAlertRecord {
   avg20DTradedShares: number;
   volumeRatio: number;
   timestampMs?: number;
+  strategyId?: string;
+  latchKey?: string;
+}
+
+export interface AcquireAlertLatchDetails {
+  spotPrice: number;
+  todayTradedShares: number;
+  avg20DTradedShares: number;
+  volumeRatio: number;
+  crossoverTime?: string;
+  strategyId?: string;
 }
 
 class AlertLatchService {
@@ -51,17 +62,11 @@ class AlertLatchService {
   public async acquireAlertLatch(
     ticker: string,
     state: CrossoverTriggerState,
-    details: {
-      spotPrice: number;
-      todayTradedShares: number;
-      avg20DTradedShares: number;
-      volumeRatio: number;
-      crossoverTime?: string;
-    }
+    details: AcquireAlertLatchDetails
   ): Promise<boolean> {
     return monotonicLatchService.acquireLatch(ticker, state, {
       ...details,
-      strategyId: '20D_CROSSOVER',
+      strategyId: details.strategyId || '20D_CROSSOVER',
     });
   }
 
@@ -79,6 +84,8 @@ class AlertLatchService {
       todayTradedShares: item.todayTradedShares,
       avg20DTradedShares: item.avg20DTradedShares,
       volumeRatio: item.volumeRatio,
+      strategyId: item.strategyId,
+      latchKey: item.latchKey,
     }));
   }
 }

@@ -594,11 +594,47 @@ class NiftyOptionFeedService {
       this.cachedAnchor = newAnchor;
       this.peakCeLtp = ceOpen;
       this.peakPeLtp = peOpen;
+      this.persistLockedAnchor(newAnchor);
     } else {
       this.cachedAnchor = newAnchor;
     }
 
     return newAnchor;
+  }
+
+  /**
+   * Persists confirmed 09:20 day anchor and peak quote memory to AsyncStorage
+   */
+  public async persistLockedAnchor(anchor: OobtstDayAnchor): Promise<void> {
+    if (!anchor || !anchor.isConfirmed) return;
+    try {
+      const payload = {
+        anchor,
+        peakCeLtp: this.peakCeLtp,
+        peakPeLtp: this.peakPeLtp,
+      };
+      await AsyncStorage.setItem(`@qstrategy_oobtst_anchor_${anchor.tradeDate}`, JSON.stringify(payload));
+    } catch {}
+  }
+
+  /**
+   * Restores locked 09:20 day anchor from AsyncStorage across app restarts
+   */
+  public async loadPersistedAnchor(dateKey?: string): Promise<OobtstDayAnchor | null> {
+    const today = dateKey || formatDateKeyIST();
+    try {
+      const json = await AsyncStorage.getItem(`@qstrategy_oobtst_anchor_${today}`);
+      if (json) {
+        const parsed = JSON.parse(json);
+        if (parsed && parsed.anchor && parsed.anchor.tradeDate === today && parsed.anchor.isConfirmed) {
+          this.cachedAnchor = parsed.anchor;
+          if (typeof parsed.peakCeLtp === 'number') this.peakCeLtp = parsed.peakCeLtp;
+          if (typeof parsed.peakPeLtp === 'number') this.peakPeLtp = parsed.peakPeLtp;
+          return this.cachedAnchor;
+        }
+      }
+    } catch {}
+    return null;
   }
 
   /**
@@ -913,8 +949,18 @@ class NiftyOptionFeedService {
     }
 
     // Case 3: Confirmed & Locked at or after 09:20:00 IST
-    if (ceLtp > this.peakCeLtp) this.peakCeLtp = ceLtp;
-    if (peLtp > this.peakPeLtp) this.peakPeLtp = peLtp;
+    let peakUpdated = false;
+    if (ceLtp > this.peakCeLtp) {
+      this.peakCeLtp = ceLtp;
+      peakUpdated = true;
+    }
+    if (peLtp > this.peakPeLtp) {
+      this.peakPeLtp = peLtp;
+      peakUpdated = true;
+    }
+    if (peakUpdated) {
+      this.persistLockedAnchor(anchor);
+    }
 
     const ceProgress = anchor.ceTrigger > 0 ? Math.min(100, Math.round((ceLtp / anchor.ceTrigger) * 100)) : 0;
     const peProgress = anchor.peTrigger > 0 ? Math.min(100, Math.round((peLtp / anchor.peTrigger) * 100)) : 0;
@@ -1081,6 +1127,34 @@ class NiftyOptionFeedService {
     historicalDate?: string;
     historicalStatus?: 'HISTORICAL SESSION RESULTS' | 'HISTORICAL DATA UNAVAILABLE';
   } | null = null;
+
+  /**
+   * Persists 09:25 Breakout Engine state across app restarts
+   */
+  public async persistBreakoutState(state = this.cachedBreakout180): Promise<void> {
+    if (!state || (!state.isLocked && !state.isLockFailed)) return;
+    try {
+      await AsyncStorage.setItem(`@qstrategy_breakout180_state_${state.date}`, JSON.stringify(state));
+    } catch {}
+  }
+
+  /**
+   * Restores 09:25 Breakout Engine state from AsyncStorage across app restarts
+   */
+  public async loadPersistedBreakoutState(dateKey?: string): Promise<any> {
+    const today = dateKey || formatDateKeyIST();
+    try {
+      const json = await AsyncStorage.getItem(`@qstrategy_breakout180_state_${today}`);
+      if (json) {
+        const parsed = JSON.parse(json);
+        if (parsed && parsed.date === today && (parsed.isLocked || parsed.isLockFailed)) {
+          this.cachedBreakout180 = parsed;
+          return this.cachedBreakout180;
+        }
+      }
+    } catch {}
+    return null;
+  }
 
   /**
    * Selects top 2 CE and top 2 PE candidates strictly below the breakout threshold.
@@ -1389,6 +1463,7 @@ class NiftyOptionFeedService {
           cache.peStrike = bestPeStrike;
           cache.peOpen0925 = bestPeOpen;
           status = 'CANDIDATES_LOCKED';
+          this.persistBreakoutState(cache);
 
           // Subscribe selected contracts to WebSocket feed without duplicate connections
           if (bestCeSecId) {
@@ -1405,6 +1480,7 @@ class NiftyOptionFeedService {
         status = 'MONITORING_BREAKOUT';
       } else if (cache.isLockFailed) {
         status = 'LOCK_FAILED';
+        this.persistBreakoutState(cache);
       } else if (cache.noEligibleSide) {
         status = 'NO_ELIGIBLE_STRIKE';
       }
@@ -1430,12 +1506,14 @@ class NiftyOptionFeedService {
           cache.entryTime = nowTime;
           cache.peakPrice = cache.entryPrice;
           cache.troughPrice = cache.entryPrice;
+          this.persistBreakoutState(cache);
         } else if (currentPeLtp >= effectiveThreshold && currentCeLtp < effectiveThreshold) {
           cache.triggeredSide = 'PE';
           cache.entryPrice = +(Math.max(effectiveThreshold, currentPeLtp)).toFixed(2);
           cache.entryTime = nowTime;
           cache.peakPrice = cache.entryPrice;
           cache.troughPrice = cache.entryPrice;
+          this.persistBreakoutState(cache);
         } else if (currentCeLtp >= effectiveThreshold && currentPeLtp >= effectiveThreshold) {
           // Simultaneous crossing: relative percentage momentum tie-breaker
           const cePct = (currentCeLtp - cache.ceOpen0925) / cache.ceOpen0925;
@@ -1446,6 +1524,7 @@ class NiftyOptionFeedService {
           cache.entryTime = nowTime;
           cache.peakPrice = cache.entryPrice;
           cache.troughPrice = cache.entryPrice;
+          this.persistBreakoutState(cache);
         } else {
           status = 'MONITORING_BREAKOUT';
         }
@@ -1453,12 +1532,22 @@ class NiftyOptionFeedService {
 
       if (cache.triggeredSide) {
         const activeLtp = cache.triggeredSide === 'CE' ? currentCeLtp : currentPeLtp;
-        if (activeLtp > cache.peakPrice) cache.peakPrice = activeLtp;
-        if (activeLtp < cache.troughPrice) cache.troughPrice = activeLtp;
+        let boundsChanged = false;
+        if (activeLtp > cache.peakPrice) {
+          cache.peakPrice = activeLtp;
+          boundsChanged = true;
+        }
+        if (activeLtp < cache.troughPrice && activeLtp > 0) {
+          cache.troughPrice = activeLtp;
+          boundsChanged = true;
+        }
+        if (boundsChanged) {
+          this.persistBreakoutState(cache);
+        }
 
         if (activeLtp >= 220.00 || cache.peakPrice >= 220.00) {
           status = 'TARGET_HIT';
-        } else if (activeLtp <= 160.00 || cache.troughPrice <= 160.00) {
+        } else if (activeLtp <= 160.00 || (cache.troughPrice <= 160.00 && cache.troughPrice > 0)) {
           status = 'SL_HIT';
         } else {
           status = 'IN_TRADE';
@@ -1560,19 +1649,31 @@ class NiftyOptionFeedService {
   /**
    * Reset Day Anchor (for manual simulation or testing)
    */
-  public resetAnchor() {
+  public async resetAnchor(clearStorage = false) {
     this.cachedAnchor = null;
     this.peakCeLtp = 0;
     this.peakPeLtp = 0;
     this.cachedLiveOptionChain = null;
     this.lastOptionChainSyncTime = 0;
+    if (clearStorage) {
+      try {
+        const today = formatDateKeyIST();
+        await AsyncStorage.removeItem(`@qstrategy_oobtst_anchor_${today}`);
+      } catch {}
+    }
   }
 
   /**
    * Reset 09:25 Breakout Engine (for manual simulation or testing)
    */
-  public resetBreakout180() {
+  public async resetBreakout180(clearStorage = false) {
     this.cachedBreakout180 = null;
+    if (clearStorage) {
+      try {
+        const today = formatDateKeyIST();
+        await AsyncStorage.removeItem(`@qstrategy_breakout180_state_${today}`);
+      } catch {}
+    }
   }
 }
 

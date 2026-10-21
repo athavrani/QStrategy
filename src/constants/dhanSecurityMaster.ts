@@ -15,6 +15,8 @@ export interface DhanInstrumentMeta {
 }
 
 export const DHAN_NIFTY_INDEX_ID = '13'; // NIFTY 50 Index on Dhan
+export const DHAN_BANKNIFTY_INDEX_ID = '25'; // BANK NIFTY Index on Dhan
+export const DHAN_FINNIFTY_INDEX_ID = '27'; // FIN NIFTY Index on Dhan
 export const DHAN_SENSEX_INDEX_ID = '51'; // SENSEX Index on Dhan
 
 /**

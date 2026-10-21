@@ -13,6 +13,8 @@ import {
 } from './DhanHqRestClient';
 import { dhanDirectService } from '../dhanDirectService';
 import { niftyOptionFeedService, getActiveWeeklyExpiry } from '../niftyOptionFeedService';
+import { sensexOptionFeedService } from '../sensexOptionFeedService';
+import { useRadarStore } from '../../store/useRadarStore';
 
 export interface OptionLegData {
   ltp: number | null;
@@ -93,7 +95,13 @@ export class DhanOptionChainService {
     if (!raw || !raw.data || !raw.data.oc || Object.keys(raw.data.oc).length === 0) {
       try {
         const symbol =
-          underlyingScrip === 51 ? 'SENSEX' : underlyingScrip === 25 ? 'BANKNIFTY' : 'NIFTY';
+          underlyingScrip === 51
+            ? 'SENSEX'
+            : underlyingScrip === 25
+            ? 'BANKNIFTY'
+            : underlyingScrip === 27
+            ? 'FINNIFTY'
+            : 'NIFTY';
         const fallbackRes = await dhanDirectService.fetchOptionChain(targetExpiry, symbol);
         if (fallbackRes && fallbackRes.oc && Object.keys(fallbackRes.oc).length > 0) {
           const fallbackOc: Record<string, DhanOptionChainStrikeItem> = {};
@@ -142,10 +150,20 @@ export class DhanOptionChainService {
     }
 
     // Fallback 2: If both REST calls return empty (e.g. market closed or offline),
-    // use niftyOptionFeedService to deliver institutional strikes and Greeks
+    // use institutional matrix generation around each underlying's true spot price
     if (!raw || !raw.data || !raw.data.oc || Object.keys(raw.data.oc).length === 0) {
       try {
-        const activeSpot = niftyOptionFeedService.getLastLiveSpot() || (underlyingScrip === 51 ? 81500 : underlyingScrip === 25 ? 51200 : 24850);
+        let activeSpot: number;
+        const store = useRadarStore.getState();
+        if (underlyingScrip === 51) {
+          activeSpot = (store.sensexSpot > 0 ? store.sensexSpot : null) || sensexOptionFeedService.getLastLiveSpot() || 81500;
+        } else if (underlyingScrip === 25) {
+          activeSpot = (store.bankNiftySpot > 0 ? store.bankNiftySpot : null) || 51200;
+        } else if (underlyingScrip === 27) {
+          activeSpot = (store.finNiftySpot > 0 ? store.finNiftySpot : null) || 23800;
+        } else {
+          activeSpot = (store.niftySpot > 0 ? store.niftySpot : null) || niftyOptionFeedService.getLastLiveSpot() || 24850;
+        }
         const feedChain = niftyOptionFeedService.generateLiveOptionChainMatrix(activeSpot, strikeStep, 12, false);
         if (feedChain && feedChain.strikes && feedChain.strikes.length > 0) {
           return {

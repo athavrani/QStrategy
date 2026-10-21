@@ -149,11 +149,45 @@ export class SensexOptionFeedService {
     return true;
   }
 
-  public resetAnchor(): void {
+  public async resetAnchor(clearStorage = false): Promise<void> {
     this.cachedAnchor = null;
     this.openingCandleTicks = {};
     this.cachedLiveOptionChain = null;
     this.lastOptionChainSyncTime = 0;
+    if (clearStorage) {
+      try {
+        const today = formatDateKeyIST();
+        await AsyncStorage.removeItem(`@qstrategy_sensex_oobtst_anchor_${today}`);
+      } catch {}
+    }
+  }
+
+  /**
+   * Persists confirmed 09:20 day anchor to AsyncStorage across app restarts
+   */
+  public async persistLockedAnchor(anchor = this.cachedAnchor): Promise<void> {
+    if (!anchor || !anchor.isConfirmed || anchor.isLockFailed) return;
+    try {
+      await AsyncStorage.setItem(`@qstrategy_sensex_oobtst_anchor_${anchor.tradeDate}`, JSON.stringify(anchor));
+    } catch {}
+  }
+
+  /**
+   * Restores locked 09:20 day anchor from AsyncStorage across app restarts
+   */
+  public async loadPersistedAnchor(dateKey?: string): Promise<SensexOobtstDayAnchor | null> {
+    const today = dateKey || formatDateKeyIST();
+    try {
+      const json = await AsyncStorage.getItem(`@qstrategy_sensex_oobtst_anchor_${today}`);
+      if (json) {
+        const parsed: SensexOobtstDayAnchor = JSON.parse(json);
+        if (parsed && parsed.tradeDate === today && parsed.isConfirmed && !parsed.isLockFailed) {
+          this.cachedAnchor = parsed;
+          return this.cachedAnchor;
+        }
+      }
+    } catch {}
+    return null;
   }
 
   public getLastLiveSpot(): number | null {
@@ -526,6 +560,7 @@ export class SensexOptionFeedService {
 
     if (isConfirmed && !isLockFailed) {
       this.cachedAnchor = anchor;
+      this.persistLockedAnchor(anchor);
     }
 
     return anchor;
@@ -608,6 +643,7 @@ export class SensexOptionFeedService {
           anchor.slPrice = slPrice;
           anchor.peakPrice = executedPrice;
           anchor.status = 'ACTIVE';
+          this.persistLockedAnchor(anchor);
         }
       }
 
@@ -616,8 +652,15 @@ export class SensexOptionFeedService {
         executedSymbol = activeLeg === 'CE' ? `SENSEX ${anchor.ceStrike} CE` : `SENSEX ${anchor.peStrike} PE`;
         const currentTradedPrice = activeLeg === 'CE' ? ceLtp : peLtp;
 
-        anchor.peakPrice = Math.max(anchor.peakPrice, currentTradedPrice);
-        anchor.troughPrice = Math.min(anchor.troughPrice, currentTradedPrice);
+        let boundsChanged = false;
+        if (currentTradedPrice > anchor.peakPrice) {
+          anchor.peakPrice = currentTradedPrice;
+          boundsChanged = true;
+        }
+        if (currentTradedPrice < anchor.troughPrice && currentTradedPrice > 0) {
+          anchor.troughPrice = currentTradedPrice;
+          boundsChanged = true;
+        }
 
         // Check 50% Stop-Loss Hit
         if (currentTradedPrice <= slPrice) {
@@ -625,14 +668,19 @@ export class SensexOptionFeedService {
           anchor.status = 'SL_HIT';
           anchor.exitTime = istTimeStr || new Date().toLocaleTimeString('en-IN');
           statusBadgeText = 'SL_HIT';
+          this.persistLockedAnchor(anchor);
         } else if (totalSeconds >= gate1530) {
           // BTST Hold: Position survived until 15:30 IST
           status = 'BTST_HOLD';
           anchor.status = 'BTST_HOLD';
           statusBadgeText = 'BTST_HOLD';
+          this.persistLockedAnchor(anchor);
         } else {
           status = 'ACTIVE';
           statusBadgeText = activeLeg === 'CE' ? 'EXECUTED_CE' : 'EXECUTED_PE';
+          if (boundsChanged) {
+            this.persistLockedAnchor(anchor);
+          }
         }
       }
     }

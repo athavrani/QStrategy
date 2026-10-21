@@ -77,6 +77,11 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
     if (trimmed.startsWith('DELETE')) {
       if (sql.includes('alert_latches')) {
         const table = this.getOrCreateTable('alert_latches');
+        if (params.length === 0) {
+          const count = table.size;
+          table.clear();
+          return { changes: count };
+        }
         if (params.length === 1) {
           const [trade_date] = params;
           let deletedCount = 0;

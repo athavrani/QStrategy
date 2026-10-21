@@ -8,7 +8,14 @@
 import * as SecureStore from 'expo-secure-store';
 import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { DHAN_BASE_URL, getDhanSecurityId, DHAN_NIFTY_INDEX_ID, DHAN_SENSEX_INDEX_ID } from '../constants/dhanSecurityMaster';
+import {
+  DHAN_BASE_URL,
+  getDhanSecurityId,
+  DHAN_NIFTY_INDEX_ID,
+  DHAN_BANKNIFTY_INDEX_ID,
+  DHAN_FINNIFTY_INDEX_ID,
+  DHAN_SENSEX_INDEX_ID,
+} from '../constants/dhanSecurityMaster';
 import { SENSEX_NIFTY_MASTER_CATALOG } from '../constants/stockUniverse';
 import {
   secureVault,
@@ -355,8 +362,11 @@ class DhanDirectService {
           const json = await res.json();
           nseData = json?.data?.NSE_EQ || json?.NSE_EQ || {};
         } else if (res.status === 401) {
+          if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
+            this.fallbackToDefaultCredentials('Custom token expired on batch quote (HTTP 401)');
+            return this.fetchDirectBatchQuotes(tickers);
+          }
           had401 = true;
-          break;
         }
       } catch {
         // Proceed to Tier 2
@@ -439,7 +449,7 @@ class DhanDirectService {
           } else if (item.close && Number(item.close) > 0 && Number(item.close) !== ltp) {
             prevClose = Number(item.close);
           } else {
-            prevClose = this.dailyPrevCloseMap.get(sym) || 0;
+            prevClose = this.dailyPrevCloseMap.get(sym) || (Number(item.ohlc?.close) > 0 ? Number(item.ohlc.close) : 0);
           }
 
           // Cache discovered genuine prevClose
@@ -510,8 +520,14 @@ class DhanDirectService {
     let seg = 'IDX_I';
     const cleanTicker = (underlyingTicker || 'NIFTY').toUpperCase().trim();
 
-    if (cleanTicker === 'SENSEX') {
+    if (cleanTicker === 'SENSEX' || cleanTicker === 'BSE SENSEX') {
       scrip = parseInt(DHAN_SENSEX_INDEX_ID, 10);
+      seg = 'IDX_I';
+    } else if (cleanTicker === 'BANKNIFTY' || cleanTicker === 'NIFTY BANK') {
+      scrip = parseInt(DHAN_BANKNIFTY_INDEX_ID, 10);
+      seg = 'IDX_I';
+    } else if (cleanTicker === 'FINNIFTY' || cleanTicker === 'FIN NIFTY') {
+      scrip = parseInt(DHAN_FINNIFTY_INDEX_ID, 10);
       seg = 'IDX_I';
     } else if (cleanTicker !== 'NIFTY' && cleanTicker !== 'NIFTY 50') {
       const secId = getDhanSecurityId(cleanTicker);
@@ -594,8 +610,14 @@ class DhanDirectService {
     let scrip = parseInt(DHAN_NIFTY_INDEX_ID, 10);
     let seg = 'IDX_I';
 
-    if (cleanTicker === 'SENSEX') {
+    if (cleanTicker === 'SENSEX' || cleanTicker === 'BSE SENSEX') {
       scrip = parseInt(DHAN_SENSEX_INDEX_ID, 10);
+      seg = 'IDX_I';
+    } else if (cleanTicker === 'BANKNIFTY' || cleanTicker === 'NIFTY BANK') {
+      scrip = parseInt(DHAN_BANKNIFTY_INDEX_ID, 10);
+      seg = 'IDX_I';
+    } else if (cleanTicker === 'FINNIFTY' || cleanTicker === 'FIN NIFTY') {
+      scrip = parseInt(DHAN_FINNIFTY_INDEX_ID, 10);
       seg = 'IDX_I';
     } else if (cleanTicker !== 'NIFTY' && cleanTicker !== 'NIFTY 50') {
       const secId = getDhanSecurityId(cleanTicker);
@@ -727,157 +749,114 @@ class DhanDirectService {
   }
 
   /**
-   * Fetches live NIFTY 50 Index quote directly from Dhan HQ (/marketfeed/ohlc)
+   * Generic method to fetch live index quotes directly from Dhan HQ (/marketfeed/ohlc -> /marketfeed/ltp)
    */
-  public async fetchNiftyIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
+  public async fetchIndexQuote(
+    scripId: string | number,
+    seg: string = 'IDX_I'
+  ): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
     await this.initialize();
+    if (!this.cachedClientId || !this.cachedAccessToken) return null;
 
-    // 1. Attempt direct Dhan HQ quote if credentials configured
-    if (this.cachedClientId && this.cachedAccessToken) {
-      const niftyId = parseInt(DHAN_NIFTY_INDEX_ID, 10);
+    const idStr = String(scripId);
+    const idNum = parseInt(idStr, 10);
 
-      // Try /marketfeed/ohlc
-      try {
-        const res = await fetch(`${DHAN_BASE_URL}/marketfeed/ohlc`, {
-          method: 'POST',
-          headers: {
-            'access-token': this.cachedAccessToken,
-            'client-id': this.cachedClientId,
-            'dhanClientId': this.cachedClientId,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({
-            IDX_I: [niftyId],
-          }),
-        });
+    // Try /marketfeed/ohlc
+    try {
+      const res = await fetch(`${DHAN_BASE_URL}/marketfeed/ohlc`, {
+        method: 'POST',
+        headers: {
+          'access-token': this.cachedAccessToken,
+          'client-id': this.cachedClientId,
+          'dhanClientId': this.cachedClientId,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          [seg]: [idNum],
+        }),
+      });
 
-        if (res.ok) {
-          const json = await res.json();
-          const item = json?.data?.IDX_I?.[DHAN_NIFTY_INDEX_ID] || json?.IDX_I?.[DHAN_NIFTY_INDEX_ID];
-          if (item) {
-            const ltp = Number(item.last_price || item.close || 0);
-            if (ltp > 0) {
-              return {
-                ltp,
-                open: Number(item.ohlc?.open || ltp),
-                high: Number(item.ohlc?.high || ltp),
-                low: Number(item.ohlc?.low || ltp),
-                close: Number(item.ohlc?.close || ltp),
-              };
-            }
-          }
-        } else if (res.status === 401) {
-          if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
-            this.fallbackToDefaultCredentials('Custom token expired on index quote (HTTP 401)');
-            return this.fetchNiftyIndexQuote();
+      if (res.ok) {
+        const json = await res.json();
+        const item = json?.data?.[seg]?.[idStr] || json?.[seg]?.[idStr];
+        if (item) {
+          const ltp = Number(item.last_price || item.close || 0);
+          if (ltp > 0) {
+            return {
+              ltp,
+              open: Number(item.ohlc?.open || ltp),
+              high: Number(item.ohlc?.high || ltp),
+              low: Number(item.ohlc?.low || ltp),
+              close: Number(item.ohlc?.close || ltp),
+            };
           }
         }
-      } catch {}
+      } else if (res.status === 401) {
+        if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
+          this.fallbackToDefaultCredentials('Custom token expired on index quote (HTTP 401)');
+          return this.fetchIndexQuote(scripId, seg);
+        }
+      }
+    } catch {}
 
-      // Fallback: Try /marketfeed/ltp
-      try {
-        const resLtp = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
-          method: 'POST',
-          headers: {
-            'access-token': this.cachedAccessToken,
-            'client-id': this.cachedClientId,
-            'dhanClientId': this.cachedClientId,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({
-            IDX_I: [niftyId],
-          }),
-        });
+    // Fallback: Try /marketfeed/ltp
+    try {
+      const resLtp = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
+        method: 'POST',
+        headers: {
+          'access-token': this.cachedAccessToken,
+          'client-id': this.cachedClientId,
+          'dhanClientId': this.cachedClientId,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          [seg]: [idNum],
+        }),
+      });
 
-        if (resLtp.ok) {
-          const jsonLtp = await resLtp.json();
-          const item = jsonLtp?.data?.IDX_I?.[DHAN_NIFTY_INDEX_ID] || jsonLtp?.IDX_I?.[DHAN_NIFTY_INDEX_ID];
-          if (item) {
-            const ltp = Number(item.last_price || 0);
-            if (ltp > 0) {
-              return { ltp, open: ltp, high: ltp, low: ltp, close: ltp };
-            }
+      if (resLtp.ok) {
+        const jsonLtp = await resLtp.json();
+        const item = jsonLtp?.data?.[seg]?.[idStr] || jsonLtp?.[seg]?.[idStr];
+        if (item) {
+          const ltp = Number(item.last_price || 0);
+          if (ltp > 0) {
+            return { ltp, open: ltp, high: ltp, low: ltp, close: ltp };
           }
         }
-      } catch {}
-    }
+      }
+    } catch {}
 
     return null;
   }
 
   /**
-   * Fetches live SENSEX Index quote directly from Dhan HQ (/marketfeed/ohlc)
+   * Fetches live NIFTY 50 Index quote directly from Dhan HQ
+   */
+  public async fetchNiftyIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
+    return this.fetchIndexQuote(DHAN_NIFTY_INDEX_ID, 'IDX_I');
+  }
+
+  /**
+   * Fetches live BANK NIFTY Index quote directly from Dhan HQ
+   */
+  public async fetchBankNiftyIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
+    return this.fetchIndexQuote(DHAN_BANKNIFTY_INDEX_ID, 'IDX_I');
+  }
+
+  /**
+   * Fetches live FIN NIFTY Index quote directly from Dhan HQ
+   */
+  public async fetchFinNiftyIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
+    return this.fetchIndexQuote(DHAN_FINNIFTY_INDEX_ID, 'IDX_I');
+  }
+
+  /**
+   * Fetches live SENSEX Index quote directly from Dhan HQ
    */
   public async fetchSensexIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {
-    await this.initialize();
-
-    if (this.cachedClientId && this.cachedAccessToken) {
-      const sensexId = parseInt(DHAN_SENSEX_INDEX_ID, 10);
-
-      try {
-        const res = await fetch(`${DHAN_BASE_URL}/marketfeed/ohlc`, {
-          method: 'POST',
-          headers: {
-            'access-token': this.cachedAccessToken,
-            'client-id': this.cachedClientId,
-            'dhanClientId': this.cachedClientId,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({
-            IDX_I: [sensexId],
-          }),
-        });
-
-        if (res.ok) {
-          const json = await res.json();
-          const item = json?.data?.IDX_I?.[DHAN_SENSEX_INDEX_ID] || json?.IDX_I?.[DHAN_SENSEX_INDEX_ID];
-          if (item) {
-            const ltp = Number(item.last_price || item.close || 0);
-            if (ltp > 0) {
-              return {
-                ltp,
-                open: Number(item.ohlc?.open || ltp),
-                high: Number(item.ohlc?.high || ltp),
-                low: Number(item.ohlc?.low || ltp),
-                close: Number(item.ohlc?.close || ltp),
-              };
-            }
-          }
-        }
-      } catch {}
-
-      try {
-        const resLtp = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
-          method: 'POST',
-          headers: {
-            'access-token': this.cachedAccessToken,
-            'client-id': this.cachedClientId,
-            'dhanClientId': this.cachedClientId,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({
-            IDX_I: [sensexId],
-          }),
-        });
-
-        if (resLtp.ok) {
-          const jsonLtp = await resLtp.json();
-          const item = jsonLtp?.data?.IDX_I?.[DHAN_SENSEX_INDEX_ID] || jsonLtp?.IDX_I?.[DHAN_SENSEX_INDEX_ID];
-          if (item) {
-            const ltp = Number(item.last_price || 0);
-            if (ltp > 0) {
-              return { ltp, open: ltp, high: ltp, low: ltp, close: ltp };
-            }
-          }
-        }
-      } catch {}
-    }
-
-    return null;
+    return this.fetchIndexQuote(DHAN_SENSEX_INDEX_ID, 'IDX_I');
   }
 
   /**

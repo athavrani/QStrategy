@@ -32,6 +32,7 @@ export interface StockRadarItem {
   circleIndicator: 'GREEN' | 'RED' | 'AMBER' | 'GREY';
   strikeStep?: number;
   lotSize?: number;
+  isLiveQuote?: boolean;
 }
 
 export interface TacticalStrikeSuggestion {

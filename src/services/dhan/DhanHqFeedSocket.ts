@@ -42,6 +42,8 @@ export class DhanHqFeedSocket {
 
   // Registered instrument catalog
   private registeredInstruments = new Map<string, InstrumentSubscription>();
+  private lastPacketTimestamp = 0;
+  private watchdogTimer: NodeJS.Timeout | null = null;
 
   // Event Listeners
   private tickListeners = new Set<FeedTickListener>();
@@ -53,8 +55,17 @@ export class DhanHqFeedSocket {
 
   private handleAppStateChange = (nextState: AppStateStatus) => {
     if (nextState === 'active') {
-      if (!this.isExplicitlyStopped && (!this.socket || this.socket.readyState === WebSocket.CLOSED)) {
-        this.start();
+      if (!this.isExplicitlyStopped) {
+        if (!this.socket || this.socket.readyState === WebSocket.CLOSED || this.socket.readyState === WebSocket.CLOSING) {
+          this.start();
+        } else if (this.lastPacketTimestamp > 0 && Date.now() - this.lastPacketTimestamp > 20000) {
+          // Socket was open but stalled while app was backgrounded
+          try {
+            this.socket.close();
+          } catch {}
+          this.socket = null;
+          this.start();
+        }
       }
     }
   };
@@ -92,8 +103,10 @@ export class DhanHqFeedSocket {
 
       this.socket.onopen = () => {
         this.reconnectAttempts = 0;
+        this.lastPacketTimestamp = Date.now();
         this.updateStatus('STREAMING', null);
         this.flushSubscriptions();
+        this.startWatchdog();
       };
 
       this.socket.onmessage = (event: any) => {
@@ -242,6 +255,7 @@ export class DhanHqFeedSocket {
     const parsed = decodeDhanBinaryPacket(arrayBuffer);
     if (!parsed) return;
 
+    this.lastPacketTimestamp = Date.now();
     this.packetsReceivedCount++;
 
     if (parsed.responseCode === DhanFeedResponseCode.DISCONNECT) {
@@ -342,6 +356,30 @@ export class DhanHqFeedSocket {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
     }
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  /**
+   * 15-second Watchdog: Detects silent zombie/frozen sockets and reconnects promptly
+   */
+  private startWatchdog(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = setInterval(() => {
+      if (this.isExplicitlyStopped) return;
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        if (this.lastPacketTimestamp > 0 && Date.now() - this.lastPacketTimestamp > 20000) {
+          try {
+            this.socket.close();
+          } catch {}
+          this.socket = null;
+          this.updateStatus('DISCONNECTED', 'Connection stalled (No ticks for 20s)');
+          this.scheduleReconnect();
+        }
+      }
+    }, 5000);
   }
 
   private updateStatus(

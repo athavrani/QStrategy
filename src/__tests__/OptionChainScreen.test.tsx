@@ -171,4 +171,120 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
     expect(texts.some((txt) => txt.includes('±6 (13)'))).toBe(true);
     expect(texts.some((txt) => txt.includes('STRIKE'))).toBe(true);
   });
+
+  test('switches spot price correctly when changing tab from NIFTY to BANKNIFTY and SENSEX', async () => {
+    const niftyStrikes = generateMockStrikes(25000, 50, 5);
+    const bankNiftyStrikes = generateMockStrikes(51200, 100, 5);
+    const sensexStrikes = generateMockStrikes(81400, 100, 5);
+
+    const getOptionChainSpy = jest.spyOn(DhanOptionChainService.prototype, 'getOptionChain').mockImplementation(
+      async (scripId: number) => {
+        if (scripId === 25) {
+          return {
+            underlyingScrip: 25,
+            underlyingSeg: 'IDX_I',
+            spotPrice: 51250,
+            atmStrike: 51200,
+            strikes: bankNiftyStrikes,
+            pcr: 0.95,
+            totalCallOi: 400000,
+            totalPutOi: 380000,
+            expiry: '2026-10-22',
+            expiryList: ['2026-10-22'],
+          };
+        }
+        if (scripId === 51) {
+          return {
+            underlyingScrip: 51,
+            underlyingSeg: 'IDX_I',
+            spotPrice: 81400,
+            atmStrike: 81400,
+            strikes: sensexStrikes,
+            pcr: 1.05,
+            totalCallOi: 300000,
+            totalPutOi: 315000,
+            expiry: '2026-10-23',
+            expiryList: ['2026-10-23'],
+          };
+        }
+        return {
+          underlyingScrip: 13,
+          underlyingSeg: 'IDX_I',
+          spotPrice: 25010,
+          atmStrike: 25000,
+          strikes: niftyStrikes,
+          pcr: 1.15,
+          totalCallOi: 1000000,
+          totalPutOi: 1150000,
+          expiry: '2026-10-22',
+          expiryList: ['2026-10-22'],
+        };
+      }
+    );
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<OptionChainScreen />);
+    });
+    activeTrees.push(tree);
+
+    await act(async () => {
+      jest.runAllTimers();
+    });
+
+    // 1. Initial NIFTY check
+    let texts = tree.root.findAllByType(require('react-native').Text).map((t) => {
+      const c = t.props.children;
+      return Array.isArray(c) ? c.join('') : String(c ?? '');
+    });
+    expect(texts.some((txt) => txt.includes('25,010'))).toBe(true);
+
+    // 2. Tap BANKNIFTY chip
+    const touchables = tree.root.findAllByType(require('react-native').TouchableOpacity);
+    const bankNiftyChip = touchables.find((op) => {
+      const childTexts = op.findAllByType(require('react-native').Text).map((t) => t.props.children);
+      return childTexts.includes('BANKNIFTY');
+    });
+    expect(bankNiftyChip).toBeDefined();
+
+    await act(async () => {
+      bankNiftyChip?.props.onPress();
+    });
+    await act(async () => {
+      jest.runAllTimers();
+    });
+
+    // 3. Verify BANKNIFTY spot price is shown and NIFTY spot is NOT shown
+    texts = tree.root.findAllByType(require('react-native').Text).map((t) => {
+      const c = t.props.children;
+      return Array.isArray(c) ? c.join('') : String(c ?? '');
+    });
+    expect(texts.some((txt) => txt.includes('51,250'))).toBe(true);
+    expect(texts.some((txt) => txt.includes('25,010'))).toBe(false);
+
+    // 4. Tap SENSEX chip
+    const sensexChip = touchables.find((op) => {
+      const childTexts = op.findAllByType(require('react-native').Text).map((t) => t.props.children);
+      return childTexts.includes('SENSEX');
+    });
+    expect(sensexChip).toBeDefined();
+
+    await act(async () => {
+      sensexChip?.props.onPress();
+    });
+    await act(async () => {
+      jest.runAllTimers();
+    });
+
+    // 5. Verify SENSEX spot price is shown and NIFTY / BANKNIFTY spots are NOT shown
+    texts = tree.root.findAllByType(require('react-native').Text).map((t) => {
+      const c = t.props.children;
+      return Array.isArray(c) ? c.join('') : String(c ?? '');
+    });
+    expect(texts.some((txt) => txt.includes('81,400'))).toBe(true);
+    expect(texts.some((txt) => txt.includes('25,010'))).toBe(false);
+    expect(texts.some((txt) => txt.includes('51,250'))).toBe(false);
+
+    getOptionChainSpy.mockRestore();
+  });
 });
