@@ -6,6 +6,7 @@ import { AppNavigator } from './src/navigation/AppNavigator';
 import { dhanDirectService } from './src/services/dhanDirectService';
 import { AppUpdateModal } from './src/components/common';
 import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateService';
+import { formatDateKeyIST } from './src/constants/nseHolidays';
 
 export default function App() {
   const { refreshAll, setIstTime, initStreamer } = useRadarStore();
@@ -39,6 +40,13 @@ export default function App() {
       const istSeconds = now.getUTCSeconds();
       const timeStr = `${String(istHours).padStart(2, '0')}:${String(istMinutes).padStart(2, '0')}:${String(istSeconds).padStart(2, '0')} IST`;
       setIstTime(timeStr);
+
+      // Instant day change detection: triggers refreshAll the moment midnight IST strikes
+      const currentSession = useRadarStore.getState().sessionDate;
+      const todayDateKey = formatDateKeyIST();
+      if (currentSession && currentSession !== todayDateKey) {
+        refreshAll(false);
+      }
     }, 1000);
 
     // 5. Silent background app update check (runs after 2.5s to keep startup instantaneous)

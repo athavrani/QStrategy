@@ -14,6 +14,7 @@ import { StockRadarItem } from '../types/mobile';
 import { TacticalStrikeModal } from '../components/radar/TacticalStrikeModal';
 import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal';
 import { dhanDirectService } from '../services/dhanDirectService';
+import { avgVolumeService } from '../services/AvgVolumeService';
 import { resolvePrevClose, safeChangePct } from '../utils/marketDataUtils';
 import * as Haptics from 'expo-haptics';
 
@@ -49,7 +50,7 @@ const StockCard = React.memo(
       0,
       {},
       item.prevClose && item.prevClose > 0 ? item.prevClose : 0,
-      dhanDirectService.getPrevClose(item.ticker) || 0
+      avgVolumeService.getCachedPrevClose(item.ticker) || dhanDirectService.getPrevClose(item.ticker) || 0
     );
     const priceChangePct = effectivePrevClose > 0 && item.spotPrice > 0
       ? safeChangePct(item.spotPrice, effectivePrevClose, item.percentChange)

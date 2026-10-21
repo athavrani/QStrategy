@@ -110,8 +110,8 @@ export const apiService = {
       const ratio = todayShares > 0 ? +(todayShares / avgShares).toFixed(3) : 0;
       const hasCrossed = todayShares >= avgShares && todayShares > 0;
 
-      // Canonical prevClose resolution: live quote > dailyPrevCloseMap > catalog baseline
-      const dynamicPrev = dhanDirectService.getPrevClose(m.ticker);
+      // Canonical prevClose resolution: live quote > cached prevClose > dailyPrevCloseMap > catalog baseline
+      const dynamicPrev = avgVolumeService.getCachedPrevClose(m.ticker) || dhanDirectService.getPrevClose(m.ticker);
       const prevClose = resolvePrevClose(
         spotPrice,
         q?.netChange ?? 0,

@@ -143,6 +143,7 @@ describe('Issue 1: AvgVolumeService Dynamic 20D Volume Computation', () => {
 
   beforeEach(async () => {
     await avgVolumeService.clearCache();
+    dhanDirectService.resetPrevCloseIfNewDay(true);
     jest.clearAllMocks();
   });
 
@@ -226,9 +227,45 @@ describe('Issue 1: AvgVolumeService Dynamic 20D Volume Computation', () => {
     expect(result.avg20DVolume).toBe(catalogFallback);
     expect(result.sessionCount).toBe(0);
   });
+
+  test('onDayChange clears old session cache and recomputes for the new day', async () => {
+    // Day 1
+    const day1Volumes = Array.from({ length: 20 }, () => 1000000);
+    const day1Closes = Array.from({ length: 20 }, () => 2400);
+    jest.spyOn(dhanHqRestClient, 'fetchHistoricalDaily').mockResolvedValue({
+      volume: day1Volumes,
+      close: day1Closes,
+      timestamp: day1Volumes.map((_, i) => 1700000000 + i * 86400),
+    });
+
+    await avgVolumeService.getAvgVolume('RELIANCE', '2026-10-21', 2000000);
+    expect(avgVolumeService.getCachedAvg('RELIANCE')).toBe(1000000);
+    expect(avgVolumeService.getCachedPrevClose('RELIANCE')).toBe(2400);
+
+    // Day 2 (new day)
+    const day2Volumes = Array.from({ length: 20 }, () => 1500000);
+    const day2Closes = Array.from({ length: 20 }, () => 2450);
+    jest.spyOn(dhanHqRestClient, 'fetchHistoricalDaily').mockResolvedValue({
+      volume: day2Volumes,
+      close: day2Closes,
+      timestamp: day2Volumes.map((_, i) => 1700086400 + i * 86400),
+    });
+
+    // Call onDayChange for the new session
+    const day2Results = await avgVolumeService.onDayChange('2026-10-22');
+    const reliance = day2Results.get('RELIANCE');
+    expect(reliance?.avg20DVolume).toBe(1500000);
+    expect(reliance?.prevClose).toBe(2450);
+    expect(avgVolumeService.getCachedAvg('RELIANCE')).toBe(1500000);
+    expect(avgVolumeService.getCachedPrevClose('RELIANCE')).toBe(2450);
+  });
 });
 
 describe('Issue 4: dhanDirectService Session-Date Reset & Sanity Rejection', () => {
+  beforeEach(() => {
+    dhanDirectService.resetPrevCloseIfNewDay(true);
+  });
+
   test('updatePrevClose rejects unreasonable values against live LTP', () => {
     // Current catalog baseline for ADANIENT
     const catalogPrev = dhanDirectService.getPrevClose('ADANIENT');

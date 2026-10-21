@@ -77,15 +77,14 @@ class DhanDirectService {
   );
 
   /**
-   * Resets the dailyPrevCloseMap to catalog baselines at the start of each new trading day.
-   * Prevents stale discovered prevClose values from carrying over to the next session,
-   * which is the root cause of inflated percentage changes (e.g. ADANI ENT 1900%+ error).
+   * Resets the dailyPrevCloseMap at the start of each new trading day.
+   * Clears old session cache so fresh historical daily candles and quotes
+   * can discover today's authentic previous trading day closing price.
    */
-  private resetPrevCloseIfNewDay(): void {
+  public resetPrevCloseIfNewDay(force = false): void {
     const todayIST = formatDateKeyIST();
-    if (this.prevCloseSessionDate !== todayIST) {
+    if (force || this.prevCloseSessionDate !== todayIST) {
       this.prevCloseSessionDate = todayIST;
-      // Reset to catalog baselines — fresh start for today's session
       this.dailyPrevCloseMap = new Map<string, number>(
         SENSEX_NIFTY_MASTER_CATALOG.map((s) => [s.ticker.toUpperCase(), s.prevClose])
       );
@@ -93,10 +92,12 @@ class DhanDirectService {
   }
 
   public getPrevClose(ticker: string): number | undefined {
+    this.resetPrevCloseIfNewDay();
     return this.dailyPrevCloseMap.get(ticker.toUpperCase());
   }
 
   public updatePrevClose(ticker: string, prevClose: number, currentLtp?: number): void {
+    this.resetPrevCloseIfNewDay();
     if (prevClose > 0) {
       if (currentLtp && currentLtp > 0) {
         const pct = calcChangePct(currentLtp, prevClose);

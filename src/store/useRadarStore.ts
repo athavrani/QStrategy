@@ -194,10 +194,12 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
     // Day rollover detection: if sessionDate !== today, reset daily caches & journal
     const todayIST = formatDateKeyIST();
-    if (get().sessionDate !== todayIST) {
+    const isDayChange = get().sessionDate !== todayIST;
+    if (isDayChange) {
       niftyOptionFeedService.resetAnchor(true);
       niftyOptionFeedService.resetBreakout180(true);
       sensexOptionFeedService.resetAnchor(true);
+      dhanDirectService.resetPrevCloseIfNewDay(true);
       set({
         sessionDate: todayIST,
         journal: [],
@@ -217,7 +219,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
     // Daily 20D average volume & previous session close computation:
     // Runs on day change or first refresh of the day; served instantly from cache within same day.
-    avgVolumeService.refreshAll(todayIST).then((avgMap) => {
+    avgVolumeService.refreshAll(todayIST, isDayChange).then((avgMap) => {
       if (!avgMap || avgMap.size === 0) return;
       set((prev) => ({
         stocks: prev.stocks.map((s) => {
@@ -503,14 +505,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
             : (existing.spotPrice > 0 ? existing.spotPrice : newStock.spotPrice);
 
           // Issue 4 Fix: Canonical previous close resolution with sanity validation
-          const catalogBaseline = dhanDirectService.getPrevClose(newStock.ticker) || 0;
+          const catalogBaseline = avgVolumeService.getCachedPrevClose(newStock.ticker) || dhanDirectService.getPrevClose(newStock.ticker) || 0;
           const prevClose = resolvePrevClose(
             spotPrice,
             0,
             {
               close: newStock.prevClose && newStock.prevClose > 0 ? newStock.prevClose : undefined,
             },
-            existing.prevClose && existing.prevClose > 0 ? existing.prevClose : 0,
+            catalogBaseline > 0 ? catalogBaseline : (existing.prevClose && existing.prevClose > 0 ? existing.prevClose : 0),
             catalogBaseline
           );
 
@@ -529,7 +531,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const cachedAvg = avgVolumeService.getCachedAvg(newStock.ticker);
           const avgShares = (cachedAvg && cachedAvg > 0)
             ? cachedAvg
-            : (existing.avg20DTradedShares > 0 ? existing.avg20DTradedShares : (newStock.avg20DTradedShares || 1));
+            : (newStock.avg20DTradedShares > 0 ? newStock.avg20DTradedShares : (existing.avg20DTradedShares > 0 ? existing.avg20DTradedShares : 1));
           const volumeRatio = todayTradedShares > 0 ? +(todayTradedShares / avgShares).toFixed(3) : 0;
           const hasCrossed = todayTradedShares >= avgShares && todayTradedShares > 0;
 
@@ -748,7 +750,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const spotPrice = ('ltp' in tick && tick.ltp > 0) ? tick.ltp : stock.spotPrice;
           if ('ltp' in tick && tick.ltp > 0 && spotPrice !== stock.spotPrice) stockUpdated = true;
 
-          let prevClose = stock.prevClose || dhanDirectService.getPrevClose(stock.ticker) || 0;
+          let prevClose = stock.prevClose || avgVolumeService.getCachedPrevClose(stock.ticker) || dhanDirectService.getPrevClose(stock.ticker) || 0;
           if ('prevClose' in tick && tick.prevClose && tick.prevClose > 0) {
             prevClose = tick.prevClose;
             dhanDirectService.updatePrevClose(stock.ticker, prevClose, spotPrice);
@@ -781,13 +783,14 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           stockTickFound = true;
           hasChanged = true;
 
-          const avgShares = stock.avg20DTradedShares || 1;
+          const cachedAvg = avgVolumeService.getCachedAvg(stock.ticker);
+          const avgShares = (cachedAvg && cachedAvg > 0) ? cachedAvg : (stock.avg20DTradedShares || 1);
           const ratio = todayTradedShares > 0 ? +(todayTradedShares / avgShares).toFixed(3) : 0;
           const hasCrossed = todayTradedShares >= avgShares && todayTradedShares > 0;
 
           // Issue 3 Fix: Use canonical resolvePrevClose() with sanity-range check.
           // Prevents ADANI ENT-style 1900%+ errors from stale catalog / wrong mapping.
-          const catalogPrevClose = dhanDirectService.getPrevClose(stock.ticker) ?? 0;
+          const catalogPrevClose = (avgVolumeService.getCachedPrevClose(stock.ticker) || dhanDirectService.getPrevClose(stock.ticker)) ?? 0;
           const baselineClose = resolvePrevClose(
             spotPrice,
             0, // netChange not available directly from tick packet
@@ -795,7 +798,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
               // dayClose from tick is the prev session close during market hours
               close: ('dayClose' in tick && (tick as any).dayClose > 0) ? (tick as any).dayClose : undefined,
             },
-            prevClose > 0 ? prevClose : (stock.prevClose ?? 0),
+            catalogPrevClose > 0 ? catalogPrevClose : (prevClose > 0 ? prevClose : (stock.prevClose ?? 0)),
             catalogPrevClose
           );
           // safeChangePct applies ±25% sanity gate — returns existing value for garbage inputs

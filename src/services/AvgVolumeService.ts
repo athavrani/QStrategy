@@ -21,8 +21,8 @@ import { dhanDirectService } from './dhanDirectService';
 
 const AVG_VOLUME_CACHE_PREFIX = 'avgvol_v2:';
 const TARGET_SESSIONS = 20;
-const BATCH_SIZE = 3;
-const BATCH_DELAY_MS = 500;
+const BATCH_SIZE = 5;
+const BATCH_DELAY_MS = 250;
 // Fetch up to 40 calendar days back to ensure we get 20 valid trading sessions
 const LOOKBACK_CALENDAR_DAYS = 40;
 
@@ -173,7 +173,14 @@ class AvgVolumeService {
 
       // Return volumes sorted by date ascending
       const validVolumes = Array.from(dailyVolumeMap.values()).filter((v) => v > 0);
-      return { volumes: validVolumes };
+      let lastClose: number | undefined;
+      if (Array.isArray(data.close) && data.close.length > 0) {
+        const validCloses = data.close.filter((c) => typeof c === 'number' && c > 0);
+        if (validCloses.length > 0) {
+          lastClose = validCloses[validCloses.length - 1];
+        }
+      }
+      return { volumes: validVolumes, prevClose: lastClose };
     } catch {
       return { volumes: [] };
     }
@@ -189,6 +196,13 @@ class AvgVolumeService {
     catalogFallback: number
   ): Promise<AvgVolumeResult> {
     const key = this.cacheKey(ticker, sessionDate);
+
+    // If day changed, clear in-memory cache to force recomputation for the new session
+    if (this.lastComputedDate && this.lastComputedDate !== sessionDate) {
+      this.inMemoryAvgMap.clear();
+      this.inMemoryPrevCloseMap.clear();
+      this.lastComputedDate = null;
+    }
 
     // 1. Check in-memory cache first
     const inMem = this.inMemoryAvgMap.get(ticker.toUpperCase());
@@ -220,11 +234,10 @@ class AvgVolumeService {
     } catch {}
 
     // 3. Not cached — fetch from Dhan API
-    const today = new Date();
-    const toDate = this.formatDate(today);
-    const fromDateObj = new Date(today);
-    fromDateObj.setDate(fromDateObj.getDate() - LOOKBACK_CALENDAR_DAYS);
-    const fromDate = this.formatDate(fromDateObj);
+    const toDate = sessionDate;
+    const [y, m, d] = sessionDate.split('-').map(Number);
+    const fromDateObj = new Date(Date.UTC(y, m - 1, d - LOOKBACK_CALENDAR_DAYS));
+    const fromDate = `${fromDateObj.getUTCFullYear()}-${String(fromDateObj.getUTCMonth() + 1).padStart(2, '0')}-${String(fromDateObj.getUTCDate()).padStart(2, '0')}`;
 
     const { volumes: dailyVolumes, prevClose } = await this.fetchDailyVolumes(ticker, fromDate, toDate);
 
@@ -267,11 +280,21 @@ class AvgVolumeService {
    * Called on session start / day rollover.
    *
    * @param sessionDate  Today's trading session date ('YYYY-MM-DD')
+   * @param force        Force recalculation even if already computed for today
    * @returns            Map of ticker → { avg20DVolume, prevClose }
    */
   public async refreshAll(
-    sessionDate: string
+    sessionDate: string,
+    force = false
   ): Promise<Map<string, { avg20DVolume: number; prevClose?: number }>> {
+    // If day changed or force refresh requested, clear in-memory maps to recompute for the new day
+    if (force || (this.lastComputedDate && this.lastComputedDate !== sessionDate)) {
+      this.inMemoryAvgMap.clear();
+      this.inMemoryPrevCloseMap.clear();
+      this.inProgress = false;
+      this.lastComputedDate = null;
+    }
+
     if (this.inProgress && this.lastComputedDate === sessionDate) {
       const existing = new Map<string, { avg20DVolume: number; prevClose?: number }>();
       for (const [t, v] of this.inMemoryAvgMap.entries()) {
@@ -284,6 +307,28 @@ class AvgVolumeService {
 
     const results = new Map<string, { avg20DVolume: number; prevClose?: number }>();
     const stocks = SENSEX_NIFTY_MASTER_CATALOG;
+
+    // Fast-path: Pre-populate in-memory cache from AsyncStorage using multiGet (single I/O operation)
+    if (!force && this.inMemoryAvgMap.size === 0) {
+      try {
+        const keys = stocks.map((s) => this.cacheKey(s.ticker, sessionDate));
+        const entries = await AsyncStorage.multiGet(keys);
+        for (const [_, val] of entries) {
+          if (!val) continue;
+          const parsed = JSON.parse(val);
+          if (parsed && typeof parsed.avg20DVolume === 'number' && parsed.avg20DVolume > 0 && parsed.sessionCount > 0) {
+            const sym = (parsed.ticker || '').toUpperCase();
+            if (sym) {
+              this.inMemoryAvgMap.set(sym, parsed.avg20DVolume);
+              if (parsed.prevClose && parsed.prevClose > 0) {
+                this.inMemoryPrevCloseMap.set(sym, parsed.prevClose);
+                dhanDirectService.updatePrevClose(sym, parsed.prevClose);
+              }
+            }
+          }
+        }
+      } catch {}
+    }
 
     // Process in batches to avoid rate limits
     for (let i = 0; i < stocks.length; i += BATCH_SIZE) {
@@ -316,6 +361,17 @@ class AvgVolumeService {
 
     this.inProgress = false;
     return results;
+  }
+
+  /**
+   * Explicitly handles trading day change:
+   * Clears old session in-memory caches and recomputes fresh 20D average volume and previous day close
+   * for all 60 constituents over the new 20-day lookback window.
+   */
+  public async onDayChange(
+    sessionDate: string
+  ): Promise<Map<string, { avg20DVolume: number; prevClose?: number }>> {
+    return this.refreshAll(sessionDate, true);
   }
 
   /**
