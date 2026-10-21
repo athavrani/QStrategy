@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useTheme, createThemedStyles } from '../../theme';
 import { useRadarStore } from '../../store/useRadarStore';
+import { useSharedTick } from '../../hooks/useSharedTicker';
 import { StrategySignalOutput } from '../../strategies/types';
 import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
 import { DailyStrategyLockRecord } from '../../db/schema';
@@ -34,7 +35,6 @@ export function SensexOobtstDetailModal({
   const styles = useThemedStyles();
 
   // 300ms UI Refresh Loop per Requirement 3
-  const [refreshTick, setRefreshTick] = React.useState(0);
   const [isEditingCustomTarget, setIsEditingCustomTarget] = React.useState(false);
   const [customTargetText, setCustomTargetText] = React.useState('');
   const [targetError, setTargetError] = React.useState<string | null>(null);
@@ -61,13 +61,7 @@ export function SensexOobtstDetailModal({
     }
   };
 
-  React.useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(() => {
-      setRefreshTick((t) => t + 1);
-    }, 300);
-    return () => clearInterval(interval);
-  }, [visible]);
+  useSharedTick(visible, 300);
 
   const sensexOobtstLive = useRadarStore((s) => s.sensexOobtstState);
   const storeTarget = useRadarStore((s) => s.sensexOobtstTargetPremium);

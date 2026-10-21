@@ -9,7 +9,9 @@ import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateSer
 import { formatDateKeyIST } from './src/constants/nseHolidays';
 
 export default function App() {
-  const { refreshAll, setIstTime, initStreamer } = useRadarStore();
+  const refreshAll = useRadarStore((s) => s.refreshAll);
+  const setIstTime = useRadarStore((s) => s.setIstTime);
+  const initStreamer = useRadarStore((s) => s.initStreamer);
   const { initTheme } = useTheme();
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [isUpdateModalVisible, setIsUpdateModalVisible] = useState(false);

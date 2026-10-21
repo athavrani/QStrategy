@@ -8,7 +8,8 @@ import { StatusBadge } from '../components/common/StatusBadge';
 
 export function JournalScreen(): React.JSX.Element {
   const styles = useThemedStyles();
-  const { journal, netPointsCaptured } = useRadarStore();
+  const journal = useRadarStore((s) => s.journal);
+  const netPointsCaptured = useRadarStore((s) => s.netPointsCaptured);
 
   // Dynamic SEBI-compliant Win Rate calculation from real journal executions (Zero Fabrication)
   const completedTrades = journal.filter(

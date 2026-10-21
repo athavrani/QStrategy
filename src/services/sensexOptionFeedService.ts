@@ -13,8 +13,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { dhanDirectService } from './dhanDirectService';
-import { dhanHqFeedSocket } from './dhan/DhanHqFeedSocket';
+import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
 import { tradingCalendarService } from './TradingCalendarService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
@@ -89,26 +88,34 @@ export class SensexOptionFeedService {
   private targetPremium: number = SENSEX_DEFAULT_TARGET_PREMIUM;
   private isTargetPremiumLoaded: boolean = false;
 
-  private cachedLiveOptionChain: Record<
-    number,
-    {
-      ceLtp: number;
-      peLtp: number;
-      ceOi: number;
-      peOi: number;
-      ceBid?: number;
-      ceAsk?: number;
-      peBid?: number;
-      peAsk?: number;
-      ceSecId?: string;
-      peSecId?: string;
-      ceUpdatedTime?: number;
-      peUpdatedTime?: number;
-    }
-  > | null = null;
+  private chainFeed = new OptionChainFeed({
+    owner: 'sensex-options',
+    underlying: 'SENSEX',
+    optionSegment: 'BSE_FNO',
+    fallbackSpot: 81000,
+    resolveExpiryYmd: () => tradingCalendarService.getActiveWeeklySensexExpiry(new Date(), true).expiryDateYMD,
+    selectCandidates: (spot) => this.selectTopTwoCandidates(spot),
+  });
 
-  private lastLiveSpot: number | null = null;
-  private lastOptionChainSyncTime: number = 0;
+  // Chain state lives in the shared feed; accessors keep the existing field-style access working.
+  private get cachedLiveOptionChain(): OptionChainRows | null {
+    return this.chainFeed.chain;
+  }
+  private set cachedLiveOptionChain(value: OptionChainRows | null) {
+    this.chainFeed.chain = value;
+  }
+  private get lastLiveSpot(): number | null {
+    return this.chainFeed.lastSpot;
+  }
+  private set lastLiveSpot(value: number | null) {
+    this.chainFeed.lastSpot = value;
+  }
+  private get lastOptionChainSyncTime(): number {
+    return this.chainFeed.lastSyncTime;
+  }
+  private set lastOptionChainSyncTime(value: number) {
+    this.chainFeed.lastSyncTime = value;
+  }
   private cachedAnchor: SensexOobtstDayAnchor | null = null;
 
   // 09:20 candle open tick capture cache
@@ -153,8 +160,7 @@ export class SensexOptionFeedService {
   public async resetAnchor(clearStorage = false): Promise<void> {
     this.cachedAnchor = null;
     this.openingCandleTicks = {};
-    this.cachedLiveOptionChain = null;
-    this.lastOptionChainSyncTime = 0;
+    this.chainFeed.reset();
     if (clearStorage) {
       try {
         const today = formatDateKeyIST();
@@ -260,66 +266,18 @@ export class SensexOptionFeedService {
   }
 
   public getLastLiveSpot(): number | null {
-    return this.lastLiveSpot;
+    return this.chainFeed.lastSpot;
   }
 
   public getQuoteFreshness(): 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED' {
-    if (!dhanHqFeedSocket.isConnected()) {
-      return 'DISCONNECTED';
-    }
-    if (!this.lastOptionChainSyncTime || this.lastOptionChainSyncTime === 0) {
-      return 'STALE';
-    }
-    const ageMs = Date.now() - this.lastOptionChainSyncTime;
-    if (ageMs < 5000) return 'FRESH';
-    if (ageMs < 15000) return 'AGING';
-    return 'STALE';
+    return this.chainFeed.getQuoteFreshness();
   }
 
   /**
    * Syncs live SENSEX option chain directly from Dhan HQ API (/v2/optionchain)
    */
-  public async syncLiveOptionChain(): Promise<boolean> {
-    const { expiryDateYMD } = tradingCalendarService.getActiveWeeklySensexExpiry(new Date(), true);
-    try {
-      const ocData = await dhanDirectService.fetchOptionChain(expiryDateYMD, 'SENSEX');
-      if (ocData && ocData.oc && Object.keys(ocData.oc).length > 0) {
-        const now = Date.now();
-        for (const item of Object.values(ocData.oc)) {
-          item.ceUpdatedTime = now;
-          item.peUpdatedTime = now;
-        }
-        this.cachedLiveOptionChain = ocData.oc;
-        if (ocData.spotPrice && ocData.spotPrice > 0) {
-          this.lastLiveSpot = ocData.spotPrice;
-        }
-        this.lastOptionChainSyncTime = now;
-
-        // Register candidate option contracts to WebSocket streamer for live tick updates
-        try {
-          const { ceCandidates, peCandidates } = this.selectTopTwoCandidates(this.lastLiveSpot || 81000);
-          ceCandidates.forEach((c) => {
-            if (c.securityId) {
-              dhanHqFeedSocket.subscribe({
-                exchangeSegment: 'BSE_FNO',
-                securityId: String(c.securityId),
-              });
-            }
-          });
-          peCandidates.forEach((c) => {
-            if (c.securityId) {
-              dhanHqFeedSocket.subscribe({
-                exchangeSegment: 'BSE_FNO',
-                securityId: String(c.securityId),
-              });
-            }
-          });
-        } catch {}
-
-        return true;
-      }
-    } catch {}
-    return false;
+  public syncLiveOptionChain(): Promise<boolean> {
+    return this.chainFeed.sync();
   }
 
   public updateOptionPriceFromTick(
@@ -328,24 +286,7 @@ export class SensexOptionFeedService {
     bid?: number,
     ask?: number
   ): void {
-    if (!this.cachedLiveOptionChain || ltp <= 0) return;
-    const now = Date.now();
-    for (const item of Object.values(this.cachedLiveOptionChain)) {
-      if (item.ceSecId && item.ceSecId === securityId) {
-        item.ceLtp = ltp;
-        if (bid !== undefined && bid > 0) item.ceBid = bid;
-        if (ask !== undefined && ask > 0) item.ceAsk = ask;
-        item.ceUpdatedTime = now;
-        break;
-      }
-      if (item.peSecId && item.peSecId === securityId) {
-        item.peLtp = ltp;
-        if (bid !== undefined && bid > 0) item.peBid = bid;
-        if (ask !== undefined && ask > 0) item.peAsk = ask;
-        item.peUpdatedTime = now;
-        break;
-      }
-    }
+    this.chainFeed.updateFromTick(securityId, ltp, bid, ask);
   }
 
   /**
@@ -824,12 +765,7 @@ export class SensexOptionFeedService {
   }
 
   public getLiveOptionPrice(strike: number, type: 'CE' | 'PE'): number {
-    if (this.cachedLiveOptionChain && this.cachedLiveOptionChain[strike]) {
-      const item = this.cachedLiveOptionChain[strike];
-      const p = type === 'CE' ? item.ceLtp : item.peLtp;
-      if (p > 0) return p;
-    }
-    return 0;
+    return this.chainFeed.getLiveOptionPrice(strike, type);
   }
 }
 

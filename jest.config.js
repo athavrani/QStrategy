@@ -13,4 +13,13 @@ module.exports = {
     'src/**/*.{ts,tsx}',
     '!src/**/*.d.ts',
   ],
+  // Floors sit a few points below current coverage; raise them as tests are added.
+  coverageThreshold: {
+    './src/engine/': { lines: 85, branches: 75, functions: 70 },
+    './src/services/marketdata/': { lines: 85, branches: 75, functions: 80 },
+    './src/services/dhan/DhanRestGateway.ts': { lines: 80, branches: 80, functions: 65 },
+    './src/services/dhan/DhanBinaryCodec.ts': { lines: 90, branches: 70, functions: 90 },
+    './src/services/JournalRepository.ts': { lines: 90, branches: 80, functions: 90 },
+    './src/strategies/*Strategy.ts': { lines: 90, branches: 75, functions: 90 },
+  },
 };

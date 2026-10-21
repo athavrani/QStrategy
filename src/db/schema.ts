@@ -5,10 +5,11 @@
  * - alert_latches: Monotonic one-way notification latches (immutable per session)
  * - historical_baselines: 20-day average volume and reference baselines
  * - daily_strategy_locks: Immutable date-wise 09:20 / 09:25 strike locks (NIFTY OOBTST, SENSEX OOBTST, NIFTY BREAKOUT 180)
+ * - signal_journal: Audit trail of every signal the engine fired, per session date
  */
 
 export const DATABASE_NAME = 'qstrategy.db';
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export interface DailyStrategyLockRecord {
   trade_date: string;          // 'YYYY-MM-DD'
@@ -123,4 +124,25 @@ CREATE TABLE IF NOT EXISTS daily_strategy_locks (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_locks_date ON daily_strategy_locks(trade_date);
 CREATE INDEX IF NOT EXISTS idx_strategy_locks_status ON daily_strategy_locks(status);
+
+-- 5. Signal Journal Table (Persistent audit trail of fired signals)
+CREATE TABLE IF NOT EXISTS signal_journal (
+  id TEXT PRIMARY KEY,
+  trade_date TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  signal_type TEXT NOT NULL,
+  entry_price REAL NOT NULL,
+  exit_price REAL,
+  stop_loss REAL,
+  target REAL,
+  pnl_points REAL,
+  outcome TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_trade_date ON signal_journal(trade_date);
 `;

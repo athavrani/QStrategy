@@ -113,6 +113,17 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
         return { changes: 1, lastInsertRowId: table.size };
       }
 
+      if (sql.includes('signal_journal')) {
+        const table = this.getOrCreateTable('signal_journal');
+        const [id, trade_date, timestamp, strategy_id, strategy_name, symbol, signal_type, entry_price, exit_price, stop_loss, target, pnl_points, outcome, notes, created_at] = params;
+        if (table.has(id)) return { changes: 0 };
+        table.set(id, {
+          id, trade_date, timestamp, strategy_id, strategy_name, symbol, signal_type, entry_price,
+          exit_price, stop_loss, target, pnl_points, outcome, notes, created_at,
+        });
+        return { changes: 1, lastInsertRowId: table.size };
+      }
+
       if (sql.includes('strategy_positions')) {
         const table = this.getOrCreateTable('strategy_positions');
         const [id, strategy_id, symbol, side, entry_price, target_price, stop_loss, status, entry_time, exit_time, exit_price, pnl, metadata] = params;
@@ -137,6 +148,19 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
     }
 
     if (trimmed.startsWith('DELETE')) {
+      if (sql.includes('signal_journal')) {
+        const table = this.getOrCreateTable('signal_journal');
+        const [cutoff] = params;
+        let deletedCount = 0;
+        for (const [key, val] of table.entries()) {
+          if (cutoff === undefined || val.trade_date < cutoff) {
+            table.delete(key);
+            deletedCount++;
+          }
+        }
+        return { changes: deletedCount };
+      }
+
       if (sql.includes('daily_strategy_locks')) {
         const table = this.getOrCreateTable('daily_strategy_locks');
         if (params.length === 0) {
@@ -182,6 +206,13 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    if (sql.includes('signal_journal')) {
+      const rows = Array.from(this.getOrCreateTable('signal_journal').values());
+      const [trade_date] = params;
+      // Mirrors `ORDER BY rowid DESC`: newest insertion first
+      return rows.filter((r) => trade_date === undefined || r.trade_date === trade_date).reverse() as T[];
+    }
+
     if (sql.includes('daily_strategy_locks')) {
       const table = this.getOrCreateTable('daily_strategy_locks');
       const rows = Array.from(table.values());

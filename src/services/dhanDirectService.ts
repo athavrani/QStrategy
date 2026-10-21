@@ -9,7 +9,6 @@ import * as SecureStore from 'expo-secure-store';
 import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import {
-  DHAN_BASE_URL,
   getDhanSecurityId,
   DHAN_NIFTY_INDEX_ID,
   DHAN_BANKNIFTY_INDEX_ID,
@@ -19,8 +18,6 @@ import {
 import { SENSEX_NIFTY_MASTER_CATALOG } from '../constants/stockUniverse';
 import {
   secureVault,
-  DEFAULT_DHAN_CLIENT_ID,
-  DEFAULT_DHAN_TOKEN,
   isDhanJwtToken,
   isNumericClientId,
 } from './SecureCredentialVault';
@@ -31,6 +28,7 @@ import {
   isReasonableChangePct,
 } from '../utils/marketDataUtils';
 import { formatDateKeyIST } from '../constants/nseHolidays';
+import { dhanRestGateway, GatewayRequestOptions } from './dhan/DhanRestGateway';
 
 export interface DhanDirectQuote {
   securityId: string;
@@ -117,17 +115,13 @@ class DhanDirectService {
     clientId: null,
   };
 
-  /**
-   * Automatically switches in-memory session to verified default credentials
-   * when a custom token fails or is invalid.
-   */
-  public fallbackToDefaultCredentials(reason: string): void {
-    console.warn(`[DhanDirect] ${reason} — Automatically switching to verified default token (${DEFAULT_DHAN_CLIENT_ID}).`);
-    this.cachedClientId = DEFAULT_DHAN_CLIENT_ID;
-    this.cachedAccessToken = DEFAULT_DHAN_TOKEN;
-    this.feedTelemetry.clientId = DEFAULT_DHAN_CLIENT_ID;
-    this.feedTelemetry.status = 'ONLINE';
-    this.feedTelemetry.lastError = `Fell back to default token: ${reason}`;
+  private postDhan(endpoint: string, body: unknown, options?: GatewayRequestOptions) {
+    return dhanRestGateway.post(
+      endpoint,
+      body,
+      { clientId: this.cachedClientId!, token: this.cachedAccessToken! },
+      options
+    );
   }
 
   /**
@@ -147,10 +141,10 @@ class DhanDirectService {
         this.isInitialized = true;
       } catch (err: any) {
         this.feedTelemetry.lastError = `Keystore init error: ${err.message}`;
-        this.cachedClientId = DEFAULT_DHAN_CLIENT_ID;
-        this.cachedAccessToken = DEFAULT_DHAN_TOKEN;
-        this.feedTelemetry.clientId = DEFAULT_DHAN_CLIENT_ID;
-        this.feedTelemetry.status = 'ONLINE';
+        this.cachedClientId = null;
+        this.cachedAccessToken = null;
+        this.feedTelemetry.clientId = null;
+        this.feedTelemetry.status = 'UNCONFIGURED';
         this.isInitialized = true;
       } finally {
         this.initPromise = null;
@@ -253,7 +247,7 @@ class DhanDirectService {
       return {
         ok: false,
         latencyMs: 0,
-        error: `Invalid Client ID ("${clientId}"). Your Dhan Client ID is your 10-digit trading account number (e.g. 1113940120), NOT an API Key (e.g. 6b70a445).`,
+        error: `Invalid Client ID ("${clientId}"). Your Dhan Client ID is your 10-digit trading account number (e.g. 1234567890), NOT an API Key (e.g. 6b70a445).`,
       };
     }
 
@@ -269,19 +263,12 @@ class DhanDirectService {
     const startTime = Date.now();
     try {
       // Direct request to Dhan HQ Data API Market Feed LTP endpoint
-      const res = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
-        method: 'POST',
-        headers: {
-          'access-token': token,
-          'client-id': clientId,
-          'dhanClientId': clientId,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          IDX_I: [parseInt(DHAN_NIFTY_INDEX_ID, 10)],
-        }),
-      });
+      const res = await dhanRestGateway.post(
+        '/marketfeed/ltp',
+        { IDX_I: [parseInt(DHAN_NIFTY_INDEX_ID, 10)] },
+        { clientId, token },
+        { noCache: true }
+      );
 
       const latencyMs = Date.now() - startTime;
 
@@ -377,28 +364,12 @@ class DhanDirectService {
 
       // --- TIER 1: Try /marketfeed/quote ---
       try {
-        const res = await fetch(`${DHAN_BASE_URL}/marketfeed/quote`, {
-          method: 'POST',
-          headers: {
-            'access-token': this.cachedAccessToken!,
-            'client-id': this.cachedClientId!,
-            'dhanClientId': this.cachedClientId!,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({
-            NSE_EQ: chunk,
-          }),
-        });
+        const res = await this.postDhan('/marketfeed/quote', { NSE_EQ: chunk });
 
         if (res.ok) {
           const json = await res.json();
           nseData = json?.data?.NSE_EQ || json?.NSE_EQ || {};
         } else if (res.status === 401) {
-          if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
-            this.fallbackToDefaultCredentials('Custom token expired on batch quote (HTTP 401)');
-            return this.fetchDirectBatchQuotes(tickers);
-          }
           had401 = true;
         }
       } catch {
@@ -408,19 +379,7 @@ class DhanDirectService {
       // --- TIER 2: Fallback to /marketfeed/ohlc if /quote failed ---
       if (Object.keys(nseData).length === 0 && !had401) {
         try {
-          const resOhlc = await fetch(`${DHAN_BASE_URL}/marketfeed/ohlc`, {
-            method: 'POST',
-            headers: {
-              'access-token': this.cachedAccessToken!,
-              'client-id': this.cachedClientId!,
-              'dhanClientId': this.cachedClientId!,
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            body: JSON.stringify({
-              NSE_EQ: chunk,
-            }),
-          });
+          const resOhlc = await this.postDhan('/marketfeed/ohlc', { NSE_EQ: chunk });
 
           if (resOhlc.ok) {
             const jsonOhlc = await resOhlc.json();
@@ -432,19 +391,7 @@ class DhanDirectService {
       // --- TIER 3: Fallback to /marketfeed/ltp if both failed ---
       if (Object.keys(nseData).length === 0 && !had401) {
         try {
-          const resLtp = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
-            method: 'POST',
-            headers: {
-              'access-token': this.cachedAccessToken!,
-              'client-id': this.cachedClientId!,
-              'dhanClientId': this.cachedClientId!,
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            body: JSON.stringify({
-              NSE_EQ: chunk,
-            }),
-          });
+          const resLtp = await this.postDhan('/marketfeed/ltp', { NSE_EQ: chunk });
 
           if (resLtp.ok) {
             const jsonLtp = await resLtp.json();
@@ -520,13 +467,8 @@ class DhanDirectService {
     }
 
     if (had401) {
-      if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
-        this.fallbackToDefaultCredentials('Custom token expired or invalid (HTTP 401)');
-        return this.fetchDirectBatchQuotes(tickers);
-      } else {
-        this.feedTelemetry.status = 'ERROR';
-        this.feedTelemetry.lastError = 'Dhan Token Expired (401). Update in Settings.';
-      }
+      this.feedTelemetry.status = 'ERROR';
+      this.feedTelemetry.lastError = 'Dhan Token Expired (401). Update in Settings.';
     }
 
     if (Object.keys(quotes).length > 0) {
@@ -572,29 +514,15 @@ class DhanDirectService {
     }
 
     try {
-      const res = await fetch(`${DHAN_BASE_URL}/optionchain/expirylist`, {
-        method: 'POST',
-        headers: {
-          'access-token': this.cachedAccessToken,
-          'client-id': this.cachedClientId,
-          'dhanClientId': this.cachedClientId,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          UnderlyingScrip: scrip,
-          UnderlyingSeg: seg,
-        }),
+      const res = await this.postDhan('/optionchain/expirylist', {
+        UnderlyingScrip: scrip,
+        UnderlyingSeg: seg,
       });
 
       if (!res.ok) {
         if (res.status === 401) {
-          if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
-            this.fallbackToDefaultCredentials('Custom token expired on expiry list (HTTP 401)');
-            return this.fetchExpiryList(underlyingTicker);
-          }
           this.feedTelemetry.status = 'ERROR';
-          this.feedTelemetry.lastError = 'Dhan Token Expired (401). Tap Auto Sync in Settings.';
+          this.feedTelemetry.lastError = 'Dhan Token Expired (401). Update in Settings.';
         }
         return null;
       }
@@ -693,30 +621,16 @@ class DhanDirectService {
     if (!targetExpiry) return null;
 
     try {
-      const res = await fetch(`${DHAN_BASE_URL}/optionchain`, {
-        method: 'POST',
-        headers: {
-          'access-token': this.cachedAccessToken,
-          'client-id': this.cachedClientId,
-          'dhanClientId': this.cachedClientId,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          UnderlyingScrip: scrip,
-          UnderlyingSeg: seg,
-          Expiry: targetExpiry,
-        }),
+      const res = await this.postDhan('/optionchain', {
+        UnderlyingScrip: scrip,
+        UnderlyingSeg: seg,
+        Expiry: targetExpiry,
       });
 
       if (!res.ok) {
         if (res.status === 401) {
-          if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
-            this.fallbackToDefaultCredentials('Custom token expired on option chain (HTTP 401)');
-            return this.fetchOptionChain(expiryDate, underlyingTicker);
-          }
           this.feedTelemetry.status = 'ERROR';
-          this.feedTelemetry.lastError = 'Dhan Token Expired (401). Tap Auto Sync in Settings.';
+          this.feedTelemetry.lastError = 'Dhan Token Expired (401). Update in Settings.';
         }
         return null;
       }
@@ -793,22 +707,13 @@ class DhanDirectService {
 
     const idStr = String(scripId);
     const idNum = parseInt(idStr, 10);
+    // The four major indices share one request body, so concurrent per-index calls collapse into a single REST call.
+    const batchIds = [DHAN_NIFTY_INDEX_ID, DHAN_BANKNIFTY_INDEX_ID, DHAN_FINNIFTY_INDEX_ID, DHAN_SENSEX_INDEX_ID];
+    const requestIds = seg === 'IDX_I' && batchIds.includes(idStr) ? batchIds.map((id) => parseInt(id, 10)) : [idNum];
 
     // Try /marketfeed/ohlc
     try {
-      const res = await fetch(`${DHAN_BASE_URL}/marketfeed/ohlc`, {
-        method: 'POST',
-        headers: {
-          'access-token': this.cachedAccessToken,
-          'client-id': this.cachedClientId,
-          'dhanClientId': this.cachedClientId,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          [seg]: [idNum],
-        }),
-      });
+      const res = await this.postDhan('/marketfeed/ohlc', { [seg]: requestIds });
 
       if (res.ok) {
         const json = await res.json();
@@ -826,28 +731,14 @@ class DhanDirectService {
           }
         }
       } else if (res.status === 401) {
-        if (this.cachedAccessToken !== DEFAULT_DHAN_TOKEN) {
-          this.fallbackToDefaultCredentials('Custom token expired on index quote (HTTP 401)');
-          return this.fetchIndexQuote(scripId, seg);
-        }
+        this.feedTelemetry.status = 'ERROR';
+        this.feedTelemetry.lastError = 'Dhan Token Expired (401). Update in Settings.';
       }
     } catch {}
 
     // Fallback: Try /marketfeed/ltp
     try {
-      const resLtp = await fetch(`${DHAN_BASE_URL}/marketfeed/ltp`, {
-        method: 'POST',
-        headers: {
-          'access-token': this.cachedAccessToken,
-          'client-id': this.cachedClientId,
-          'dhanClientId': this.cachedClientId,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          [seg]: [idNum],
-        }),
-      });
+      const resLtp = await this.postDhan('/marketfeed/ltp', { [seg]: requestIds });
 
       if (resLtp.ok) {
         const jsonLtp = await resLtp.json();
@@ -914,23 +805,13 @@ class DhanDirectService {
     await this.initialize();
     if (!this.cachedClientId || !this.cachedAccessToken) return null;
     try {
-      const res = await fetch(`${DHAN_BASE_URL}/charts/intraday`, {
-        method: 'POST',
-        headers: {
-          'access-token': this.cachedAccessToken,
-          'client-id': this.cachedClientId,
-          'dhanClientId': this.cachedClientId,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          securityId: String(securityId),
-          exchangeSegment,
-          instrument,
-          interval,
-          fromDate,
-          toDate,
-        }),
+      const res = await this.postDhan('/charts/intraday', {
+        securityId: String(securityId),
+        exchangeSegment,
+        instrument,
+        interval,
+        fromDate,
+        toDate,
       });
       if (!res.ok) return null;
       const json = await res.json();

@@ -136,8 +136,16 @@ if (-not $SkipTests) {
     }
     Write-Host "[OK] Typecheck passed!" -ForegroundColor Green
 
-    Write-Host "-> Running Automated Unit Tests (npm test)..." -ForegroundColor Cyan
-    npm test
+    Write-Host "-> Running Secret Scan (npm run scan:secrets)..." -ForegroundColor Cyan
+    npm run scan:secrets -- --strict
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Secret scan found new credential-like values! Aborting release." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK] Secret scan passed." -ForegroundColor Green
+
+    Write-Host "-> Running Automated Unit Tests with coverage gates (npm run test:coverage)..." -ForegroundColor Cyan
+    npm run test:coverage
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Unit tests failed! Aborting release." -ForegroundColor Red
         exit 1

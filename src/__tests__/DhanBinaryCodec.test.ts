@@ -1,5 +1,6 @@
 import {
   decodeDhanBinaryPacket,
+  decodeDhanBinaryFrame,
   encodeDhanQuotePacket,
   encodeDhanTickerPacket,
   encodeDhanDisconnectPacket,
@@ -95,6 +96,46 @@ describe('DhanHQ v2 Binary Codec (Little-Endian Protocol)', () => {
       expect(getDhanDisconnectReason(806)).toContain('Data APIs');
       expect(getDhanDisconnectReason(807)).toContain('5 concurrent');
       expect(getDhanDisconnectReason(808)).toContain('rate limit');
+    });
+  });
+
+  describe('Multi-packet frames', () => {
+    const concat = (...bufs: ArrayBuffer[]): ArrayBuffer => {
+      const out = new Uint8Array(bufs.reduce((n, b) => n + b.byteLength, 0));
+      let off = 0;
+      for (const b of bufs) {
+        out.set(new Uint8Array(b), off);
+        off += b.byteLength;
+      }
+      return out.buffer;
+    };
+    const quote = (securityId: number, ltp: number) =>
+      encodeDhanQuotePacket({
+        securityId, ltp, ltq: 1, ltt: 1729320600, atp: ltp, volume: 10,
+        totalSellQty: 1, totalBuyQty: 1, dayOpen: ltp, dayClose: 0, dayHigh: ltp, dayLow: ltp,
+      });
+
+    it('decodes every packet in a concatenated frame', () => {
+      const frame = concat(
+        quote(1333, 1650.5),
+        encodeDhanTickerPacket({ securityId: 2885, ltp: 2945.5, ltt: 1729320600 }),
+        quote(25, 2650)
+      );
+      const packets = decodeDhanBinaryFrame(frame);
+      expect(packets.map((p) => p.securityId)).toEqual([1333, 2885, 25]);
+      expect(packets.map((p) => p.responseCode)).toEqual([4, 2, 4]);
+    });
+
+    it('keeps complete packets when the frame is truncated', () => {
+      const full = concat(quote(1333, 1650.5), quote(2885, 2945.5));
+      const packets = decodeDhanBinaryFrame(full.slice(0, 70));
+      expect(packets).toHaveLength(1);
+      expect(packets[0].securityId).toBe(1333);
+    });
+
+    it('decodes a single-packet frame and ignores empty input', () => {
+      expect(decodeDhanBinaryFrame(quote(1333, 10))).toHaveLength(1);
+      expect(decodeDhanBinaryFrame(new ArrayBuffer(0))).toEqual([]);
     });
   });
 

@@ -8,7 +8,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { OobtstLiveState, OobtstLegDetail, OobtstCandidateStrike } from '../strategies/types';
 import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
-import { dhanHqFeedSocket } from './dhan/DhanHqFeedSocket';
+import { marketData } from './marketdata/MarketDataService';
+import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
 
@@ -164,27 +165,34 @@ class NiftyOptionFeedService {
   private peakPeLtp: number = 0;
   private targetPremium: number = ANCHOR_TARGET_PREMIUM;
   private isTargetPremiumLoaded: boolean = false;
-  private cachedLiveOptionChain: Record<
-    number,
-    {
-      ceLtp: number;
-      peLtp: number;
-      ceOi: number;
-      peOi: number;
-      ceIv?: number;
-      peIv?: number;
-      ceBid?: number;
-      ceAsk?: number;
-      peBid?: number;
-      peAsk?: number;
-      ceSecId?: string;
-      peSecId?: string;
-      ceUpdatedTime?: number;
-      peUpdatedTime?: number;
-    }
-  > | null = null;
-  private lastLiveSpot: number | null = null;
-  private lastOptionChainSyncTime = 0;
+  private chainFeed = new OptionChainFeed({
+    owner: 'nifty-options',
+    underlying: 'NIFTY',
+    optionSegment: 'NSE_FNO',
+    fallbackSpot: 24850,
+    resolveExpiryYmd: () => getActiveWeeklyExpiry(new Date(), true).expiryDateYMD,
+    selectCandidates: (spot) => this.selectTopTwoCandidates(spot),
+  });
+
+  // Chain state lives in the shared feed; accessors keep the existing field-style access working.
+  private get cachedLiveOptionChain(): OptionChainRows | null {
+    return this.chainFeed.chain;
+  }
+  private set cachedLiveOptionChain(value: OptionChainRows | null) {
+    this.chainFeed.chain = value;
+  }
+  private get lastLiveSpot(): number | null {
+    return this.chainFeed.lastSpot;
+  }
+  private set lastLiveSpot(value: number | null) {
+    this.chainFeed.lastSpot = value;
+  }
+  private get lastOptionChainSyncTime(): number {
+    return this.chainFeed.lastSyncTime;
+  }
+  private set lastOptionChainSyncTime(value: number) {
+    this.chainFeed.lastSyncTime = value;
+  }
 
   public getTargetPremium(): number {
     return this.targetPremium;
@@ -263,95 +271,30 @@ class NiftyOptionFeedService {
   }
 
   public updateOptionPriceFromTick(securityId: string, ltp: number): void {
-    if (!this.cachedLiveOptionChain || ltp <= 0) return;
-    const now = Date.now();
-    for (const item of Object.values(this.cachedLiveOptionChain)) {
-      if (item.ceSecId && item.ceSecId === securityId) {
-        item.ceLtp = ltp;
-        item.ceUpdatedTime = now;
-        break;
-      }
-      if (item.peSecId && item.peSecId === securityId) {
-        item.peLtp = ltp;
-        item.peUpdatedTime = now;
-        break;
-      }
-    }
+    this.chainFeed.updateFromTick(securityId, ltp);
   }
 
   public getLastLiveSpot(): number | null {
-    return this.lastLiveSpot;
+    return this.chainFeed.lastSpot;
   }
 
   /**
-   * Syncs live option chain directly from Dhan HQ API (/v2/optionchain)
+   * Syncs live option chain directly from Dhan HQ API (/v2/optionchain).
+   * Tickers other than NIFTY are fetched but never stored in the NIFTY chain.
    */
-  public async syncLiveOptionChain(ticker: string = 'NIFTY'): Promise<boolean> {
-    const { expiryDateYMD } = getActiveWeeklyExpiry(new Date(), true);
-    try {
-      const ocData = await dhanDirectService.fetchOptionChain(expiryDateYMD, ticker);
-      if (ocData && ocData.oc && Object.keys(ocData.oc).length > 0) {
-        const now = Date.now();
-        for (const item of Object.values(ocData.oc)) {
-          item.ceUpdatedTime = now;
-          item.peUpdatedTime = now;
-        }
-        this.cachedLiveOptionChain = ocData.oc;
-        if (ocData.spotPrice && ocData.spotPrice > 0) {
-          this.lastLiveSpot = ocData.spotPrice;
-        }
-        this.lastOptionChainSyncTime = now;
-
-        // Register candidate option contracts to WebSocket streamer for live tick updates
-        try {
-          const { ceCandidates, peCandidates } = this.selectTopTwoCandidates(this.lastLiveSpot || 24850);
-          ceCandidates.forEach((c) => {
-            if (c.securityId) {
-              dhanHqFeedSocket.subscribe({
-                exchangeSegment: 'NSE_FNO',
-                securityId: String(c.securityId),
-              });
-            }
-          });
-          peCandidates.forEach((c) => {
-            if (c.securityId) {
-              dhanHqFeedSocket.subscribe({
-                exchangeSegment: 'NSE_FNO',
-                securityId: String(c.securityId),
-              });
-            }
-          });
-        } catch {}
-
-        return true;
-      }
-    } catch {}
-    return false;
+  public syncLiveOptionChain(ticker: string = 'NIFTY'): Promise<boolean> {
+    return this.chainFeed.sync(ticker);
   }
 
   public getLiveOptionPrice(strike: number, type: 'CE' | 'PE'): number {
-    if (this.cachedLiveOptionChain && this.cachedLiveOptionChain[strike]) {
-      const item = this.cachedLiveOptionChain[strike];
-      const p = type === 'CE' ? item.ceLtp : item.peLtp;
-      if (p > 0) return p;
-    }
-    return 0;
+    return this.chainFeed.getLiveOptionPrice(strike, type);
   }
 
   /**
    * Evaluates the quote freshness of the option chain feed.
    */
   public getQuoteFreshness(): 'FRESH' | 'AGING' | 'STALE' | 'DISCONNECTED' {
-    if (!dhanHqFeedSocket.isConnected()) {
-      return 'DISCONNECTED';
-    }
-    if (!this.lastOptionChainSyncTime || this.lastOptionChainSyncTime === 0) {
-      return 'STALE';
-    }
-    const ageMs = Date.now() - this.lastOptionChainSyncTime;
-    if (ageMs < 5000) return 'FRESH';
-    if (ageMs < 15000) return 'AGING';
-    return 'STALE';
+    return this.chainFeed.getQuoteFreshness();
   }
 
   /**
@@ -1566,12 +1509,12 @@ class NiftyOptionFeedService {
           status = 'CANDIDATES_LOCKED';
           this.persistBreakoutState(cache);
 
-          // Subscribe selected contracts to WebSocket feed without duplicate connections
-          if (bestCeSecId) {
-            dhanHqFeedSocket.subscribe({ exchangeSegment: 'NSE_FNO', securityId: bestCeSecId });
-          }
-          if (bestPeSecId) {
-            dhanHqFeedSocket.subscribe({ exchangeSegment: 'NSE_FNO', securityId: bestPeSecId });
+          // Locked contracts stay streamed for the session under their own owner
+          const lockedSubs = [bestCeSecId, bestPeSecId]
+            .filter((id): id is string => Boolean(id))
+            .map((securityId) => ({ exchangeSegment: 'NSE_FNO', securityId }));
+          if (lockedSubs.length > 0) {
+            marketData.acquire('nifty-breakout', lockedSubs);
           }
         }
       }
@@ -1754,8 +1697,7 @@ class NiftyOptionFeedService {
     this.cachedAnchor = null;
     this.peakCeLtp = 0;
     this.peakPeLtp = 0;
-    this.cachedLiveOptionChain = null;
-    this.lastOptionChainSyncTime = 0;
+    this.chainFeed.reset();
     if (clearStorage) {
       try {
         const today = formatDateKeyIST();
@@ -1769,6 +1711,7 @@ class NiftyOptionFeedService {
    */
   public async resetBreakout180(clearStorage = false) {
     this.cachedBreakout180 = null;
+    marketData.releaseOwner('nifty-breakout');
     if (clearStorage) {
       try {
         const today = formatDateKeyIST();

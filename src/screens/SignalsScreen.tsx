@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
+import { useShallow } from 'zustand/react/shallow';
 import { strategyRegistry } from '../strategies';
 import { StrategyCategory, StrategyContext } from '../strategies/types';
 import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal';
@@ -40,7 +41,22 @@ export function SignalsScreen({ onNavigateToOptions }: SignalsScreenProps = {}) 
     netPointsCaptured,
     isRefreshing,
     refreshAll,
-  } = useRadarStore();
+  } = useRadarStore(
+    useShallow((s) => ({
+      stocks: s.stocks,
+      marketStatus: s.marketStatus,
+      istTime: s.istTime,
+      niftySpot: s.niftySpot,
+      sensexSpot: s.sensexSpot,
+      oobtstState: s.oobtstState,
+      sensexOobtstState: s.sensexOobtstState,
+      niftyBreakout180: s.niftyBreakout180,
+      signalsTodayCount: s.signalsTodayCount,
+      netPointsCaptured: s.netPointsCaptured,
+      isRefreshing: s.isRefreshing,
+      refreshAll: s.refreshAll,
+    }))
+  );
 
   const [categoryFilter, setCategoryFilter] = useState<StrategyCategory | 'ALL'>('ALL');
   const [optionChainVisible, setOptionChainVisible] = useState(false);

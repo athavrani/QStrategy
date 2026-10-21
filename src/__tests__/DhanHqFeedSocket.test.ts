@@ -166,6 +166,68 @@ describe('DhanHqFeedSocket Service Suite', () => {
     jest.advanceTimersByTime(300);
   });
 
+  test('ref-counts subscriptions across owners', () => {
+    const sent: string[] = [];
+    (socketInstance as any).socket = { readyState: WebSocket.OPEN, send: (m: string) => sent.push(m) };
+    const instr = { exchangeSegment: 'NSE_FNO', securityId: '5001' };
+
+    socketInstance.subscribeOwned('nifty', [instr]);
+    socketInstance.subscribeOwned('sensex', [instr]);
+    expect(sent).toHaveLength(1);
+    expect(socketInstance.getSubscriptionCount()).toBe(1);
+
+    socketInstance.unsubscribeOwned('nifty', [instr]);
+    expect(sent).toHaveLength(1);
+    expect(socketInstance.getSubscriptionCount()).toBe(1);
+
+    socketInstance.releaseOwner('sensex');
+    expect(sent).toHaveLength(2);
+    expect(JSON.parse(sent[1]).RequestCode).toBe(DhanFeedRequestCode.UNSUBSCRIBE);
+    expect(socketInstance.getSubscriptionCount()).toBe(0);
+    (socketInstance as any).socket = null;
+  });
+
+  test('processes every packet of a concatenated frame and merges same-instrument packets', () => {
+    jest.useFakeTimers();
+    const quote = encodeDhanQuotePacket({
+      exchangeSegment: 2, securityId: 777, ltp: 88.5, ltq: 1, ltt: 1729321200, atp: 88, volume: 10,
+      totalSellQty: 1, totalBuyQty: 1, dayOpen: 80, dayClose: 0, dayHigh: 90, dayLow: 79,
+    });
+    const prev = new ArrayBuffer(16);
+    const v = new DataView(prev);
+    v.setUint8(0, 6);
+    v.setInt16(1, 16, true);
+    v.setUint8(3, 2);
+    v.setInt32(4, 777, true);
+    v.setFloat32(8, 70.25, true);
+    const other = encodeDhanTickerPacket({ exchangeSegment: 1, securityId: 1333, ltp: 1650, ltt: 1729321200 });
+    const frame = new Uint8Array(quote.byteLength + prev.byteLength + other.byteLength);
+    frame.set(new Uint8Array(quote), 0);
+    frame.set(new Uint8Array(prev), quote.byteLength);
+    frame.set(new Uint8Array(other), quote.byteLength + prev.byteLength);
+
+    let received: any = null;
+    const off = socketInstance.addTickListener((b) => (received = b));
+    (socketInstance as any).handleIncomingFrame(frame.buffer);
+    jest.advanceTimersByTime(300);
+    off();
+    jest.useRealTimers();
+
+    expect(received['2:777'].ltp).toBe(88.5);
+    expect(received['2:777'].prevClose).toBeCloseTo(70.25, 2);
+    expect(received['1:1333'].ltp).toBe(1650);
+  });
+
+  test('does not auto-reconnect after a 805 token/auth disconnect', () => {
+    const reconnect = jest.spyOn(socketInstance as any, 'scheduleReconnect');
+    (socketInstance as any).handleIncomingFrame(encodeDhanDisconnectPacket({ securityId: 0, disconnectCode: 805 }));
+    expect((socketInstance as any).reconnectHalted).toBe(true);
+    (socketInstance as any).reconnectAttempts = 0;
+    reconnect.mockRestore();
+    (socketInstance as any).scheduleReconnect();
+    expect((socketInstance as any).reconnectAttempts).toBe(0);
+  });
+
   test('launches Dhan mobile app via deep linking Intent or fallback URL', async () => {
     const canOpenSpy = jest.spyOn(Linking, 'canOpenURL').mockResolvedValue(true);
     const openSpy = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);

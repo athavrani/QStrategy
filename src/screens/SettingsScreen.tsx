@@ -29,15 +29,11 @@ export function SettingsScreen() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [broker, setBroker] = useState<'kite' | 'dhan'>('dhan');
 
-  const DEFAULT_DHAN_CLIENT_ID = '1113940120';
-  const DEFAULT_DHAN_TOKEN =
-    'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJ1c2VyUmVnaW9uIjoiUjEiLCJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzkyNDkxMDI1LCJpYXQiOjE3OTI0MDQ2MjUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTEzOTQwMTIwIn0.6bauKIj99epbsenC-FIkH6UTIHiOye4ViKQf1VZ-eH8RQCWdnGJ-U2PpUsUcDBt9RJl2ZQ_Tko6w26mNrYtHSw';
-
   // Direct Dhan Streamer State
-  const [dhanClientId, setDhanClientId] = useState(DEFAULT_DHAN_CLIENT_ID);
-  const [dhanAccessToken, setDhanAccessToken] = useState(DEFAULT_DHAN_TOKEN);
+  const [dhanClientId, setDhanClientId] = useState('');
+  const [dhanAccessToken, setDhanAccessToken] = useState('');
   const [isTokenVisible, setIsTokenVisible] = useState(false);
-  const [isConnected, setIsConnected] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -87,11 +83,11 @@ export function SettingsScreen() {
   };
 
   useEffect(() => {
-    // Load hardware Keystore credentials on mount, fallback to default
+    // Load hardware Keystore credentials on mount
     secureVault.getCredentials().then((creds) => {
-      setDhanClientId(creds.clientId || DEFAULT_DHAN_CLIENT_ID);
-      setDhanAccessToken(creds.token || DEFAULT_DHAN_TOKEN);
-      setIsConnected(true);
+      setDhanClientId(creds.clientId);
+      setDhanAccessToken(creds.token);
+      setIsConnected(Boolean(creds.clientId && creds.token));
     });
   }, []);
 
@@ -148,16 +144,7 @@ export function SettingsScreen() {
     if (!isDhanJwtToken(cleanToken)) {
       Alert.alert(
         '⚠️ API Secret Detected',
-        `The value entered ("${cleanToken.slice(0, 12)}...") is an API Secret or Key, NOT an Access Token.\n\nDhan Data APIs require an Access Token (JWT starting with "eyJ...").\n\nWould you like to load the verified working default token instead?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: '⚡ Load Verified Token',
-            onPress: async () => {
-              await handleResetToDefaultToken();
-            },
-          },
-        ]
+        `The value entered ("${cleanToken.slice(0, 12)}...") is an API Secret or Key, NOT an Access Token.\n\nDhan Data APIs require an Access Token (JWT starting with "eyJ...").`
       );
       return;
     }
@@ -165,7 +152,7 @@ export function SettingsScreen() {
     if (!isNumericClientId(cleanId)) {
       Alert.alert(
         '⚠️ Invalid Client ID',
-        `"${cleanId}" looks like an API Key. Dhan Client ID must be your 10-digit trading account number (e.g. 1113940120).`
+        `"${cleanId}" looks like an API Key. Dhan Client ID must be your 10-digit trading account number (e.g. 1234567890).`
       );
       return;
     }
@@ -193,20 +180,6 @@ export function SettingsScreen() {
     await handleTestWithParams(cleanId, cleanToken);
   };
 
-  const handleResetToDefaultToken = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setDhanClientId(DEFAULT_DHAN_CLIENT_ID);
-    setDhanAccessToken(DEFAULT_DHAN_TOKEN);
-    await secureVault.saveCredentials(DEFAULT_DHAN_CLIENT_ID, DEFAULT_DHAN_TOKEN);
-    await dhanDirectService.saveCredentials(DEFAULT_DHAN_CLIENT_ID, DEFAULT_DHAN_TOKEN);
-    setIsConnected(true);
-    await useRadarStore.getState().refreshAll();
-    Alert.alert(
-      'Verified Default Token Loaded',
-      `Restored verified working Dhan Client ID (${DEFAULT_DHAN_CLIENT_ID}) and token.\n\nLive quotes and option chain are active.`
-    );
-  };
-
   const handleSaveDhanCredentials = async () => {
     const cleanId = dhanClientId.replace(/\s+/g, '').trim();
     const cleanToken = dhanAccessToken.replace(/[\s\r\n]+/g, '').trim();
@@ -219,16 +192,7 @@ export function SettingsScreen() {
     if (!isDhanJwtToken(cleanToken)) {
       Alert.alert(
         '⚠️ API Secret Detected',
-        `You entered an API Secret instead of an Access Token.\n\nDhan REST & WebSocket Data APIs strictly require a JWT Access Token starting with "eyJ...". Direct API calls will fail with "Authentication Failed" if an API Secret is used.\n\nWould you like to switch to the verified working default token?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: '⚡ Use Verified Default Token',
-            onPress: async () => {
-              await handleResetToDefaultToken();
-            },
-          },
-        ]
+        `You entered an API Secret instead of an Access Token.\n\nDhan REST & WebSocket Data APIs strictly require a JWT Access Token starting with "eyJ...". Direct API calls will fail with "Authentication Failed" if an API Secret is used.`
       );
       return;
     }
@@ -390,7 +354,7 @@ export function SettingsScreen() {
           {dhanClientId.trim().length > 0 && !isNumericClientId(dhanClientId) && (
             <View style={styles.warningBox}>
               <Text style={styles.warningText}>
-                ⚠️ Dhan Client ID should be your 10-digit trading account number (e.g. 1113940120), NOT an API Key (e.g. 6b70a445).
+                ⚠️ Dhan Client ID should be your 10-digit trading account number (e.g. 1234567890), NOT an API Key (e.g. 6b70a445).
               </Text>
             </View>
           )}
@@ -415,7 +379,7 @@ export function SettingsScreen() {
           {dhanAccessToken.trim().length > 0 && !isDhanJwtToken(dhanAccessToken) && (
             <View style={styles.warningBox}>
               <Text style={styles.warningText}>
-                ⚠️ API Secret Detected: Dhan Data APIs require a JWT Access Token starting with "eyJ...". The app is automatically using the verified default token so market data continues loading.
+                ⚠️ API Secret Detected: Dhan Data APIs require a JWT Access Token starting with "eyJ...". Live data stays off until a valid Access Token is saved.
               </Text>
             </View>
           )}
@@ -464,13 +428,6 @@ export function SettingsScreen() {
             )}
           </TouchableOpacity>
         </View>
-
-        <TouchableOpacity
-          style={styles.resetDefaultBtn}
-          onPress={handleResetToDefaultToken}
-        >
-          <Text style={styles.resetDefaultBtnText}>⚡ Reset to Verified Built-in Token (1113940120)</Text>
-        </TouchableOpacity>
 
         {isConnected && (
           <TouchableOpacity style={styles.disconnectBtn} onPress={handleDisconnectDhan}>
@@ -835,20 +792,6 @@ const useThemedStyles = createThemedStyles((colors) => ({
   },
   actionBtnText: {
     color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  resetDefaultBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 6,
-    paddingVertical: 9,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  resetDefaultBtnText: {
-    color: colors.cyan,
     fontSize: 11,
     fontWeight: '700',
   },

@@ -20,7 +20,8 @@ import { SkeletonLoader } from '../components/common/SkeletonLoader';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
-import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
+import { marketData } from '../services/marketdata/MarketDataService';
+import { instrumentKey } from '../services/marketdata/types';
 import { InstrumentSubscription } from '../services/dhan/DhanBinaryCodec';
 import * as Haptics from 'expo-haptics';
 
@@ -85,6 +86,7 @@ export function OptionChainScreen(): React.JSX.Element {
   const feedStatus = useRadarStore((s) => s.feedStatus);
 
   const optionChainService = useMemo(() => new DhanOptionChainService(), []);
+  const releaseChainWatchRef = useRef<(() => void) | null>(null);
 
   // Compute time to expiry in years (e.g. 3 days / 365 = 0.0082)
   const timeToExpiryYears = useMemo(() => {
@@ -142,7 +144,9 @@ export function OptionChainScreen(): React.JSX.Element {
               }
             }
             if (subs.length > 0) {
-              dhanHqFeedSocket.subscribeBatch(subs);
+              // Replaces the previous chain's subscriptions so contracts do not accumulate across presets/expiries
+              releaseChainWatchRef.current?.();
+              releaseChainWatchRef.current = marketData.watch('option-chain', subs);
             }
           }
         }
@@ -163,7 +167,16 @@ export function OptionChainScreen(): React.JSX.Element {
   // Issue 2 Fix: Subscribe to live Dhan feed ticks for real-time option chain prices
   // Piggybacks on the existing 250ms WebSocket feed — zero extra REST calls.
   useEffect(() => {
-    const unsubscribe = dhanHqFeedSocket.addTickListener((tickBatch) => {
+    marketData.start();
+    return () => {
+      releaseChainWatchRef.current?.();
+      releaseChainWatchRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const optionSegment = selectedPreset.symbol === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
+    const unsubscribe = marketData.onBatch((tickBatch) => {
       setChainData((prev) => {
         if (!prev || !prev.strikes || prev.strikes.length === 0) return prev;
         if (prev.underlyingScrip !== selectedPreset.scripId) return prev;
@@ -172,8 +185,8 @@ export function OptionChainScreen(): React.JSX.Element {
         let updatedSpot = prev.spotPrice;
 
         // Check if underlying spot index updated from tick
-        const underlyingSecId = String(selectedPreset.scripId);
-        const spotTick = tickBatch[underlyingSecId];
+        const underlyingKey = instrumentKey(selectedPreset.segment, selectedPreset.scripId);
+        const spotTick = tickBatch[underlyingKey];
         if (spotTick && 'ltp' in spotTick && typeof spotTick.ltp === 'number' && spotTick.ltp > 0) {
           if (spotTick.ltp !== updatedSpot) {
             updatedSpot = spotTick.ltp;
@@ -187,7 +200,7 @@ export function OptionChainScreen(): React.JSX.Element {
           let legChanged = false;
 
           if (strike.ce?.securityId) {
-            const ceTick = tickBatch[strike.ce.securityId];
+            const ceTick = tickBatch[instrumentKey(optionSegment, strike.ce.securityId)];
             if (ceTick && 'ltp' in ceTick && typeof ceTick.ltp === 'number' && ceTick.ltp > 0) {
               if (ceTick.ltp !== ceLtp) {
                 ceLtp = ceTick.ltp;
@@ -197,7 +210,7 @@ export function OptionChainScreen(): React.JSX.Element {
           }
 
           if (strike.pe?.securityId) {
-            const peTick = tickBatch[strike.pe.securityId];
+            const peTick = tickBatch[instrumentKey(optionSegment, strike.pe.securityId)];
             if (peTick && 'ltp' in peTick && typeof peTick.ltp === 'number' && peTick.ltp > 0) {
               if (peTick.ltp !== peLtp) {
                 peLtp = peTick.ltp;
@@ -237,7 +250,7 @@ export function OptionChainScreen(): React.JSX.Element {
     return () => {
       unsubscribe();
     };
-  }, [selectedPreset.scripId, selectedPreset.strikeStep]);
+  }, [selectedPreset.scripId, selectedPreset.strikeStep, selectedPreset.symbol, selectedPreset.segment]);
 
   const storeSpot = useMemo(() => {
     switch (selectedPreset.symbol) {

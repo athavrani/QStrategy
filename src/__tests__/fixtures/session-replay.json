@@ -1,0 +1,30 @@
+{
+  "description": "Synthetic NIFTY option session: CE leg opens at 60 (trigger 1.5x = 90). Ticks are encoded to Dhan binary frames by the test.",
+  "legs": {
+    "ce": { "securityId": 5001, "strike": 24850, "open": 60 },
+    "pe": { "securityId": 5002, "strike": 24800, "open": 64 }
+  },
+  "ticks": [
+    { "t": 0, "seg": 2, "id": 5001, "ltp": 60.0 },
+    { "t": 0, "seg": 2, "id": 5002, "ltp": 64.0 },
+    { "t": 300, "seg": 2, "id": 5001, "ltp": 75.5 },
+    { "t": 600, "seg": 2, "id": 5001, "ltp": 89.9 },
+    { "t": 600, "seg": 0, "id": 13, "ltp": 24850.25 },
+    { "t": 900, "seg": 2, "id": 5001, "ltp": 90.5 },
+    { "t": 1200, "seg": 2, "id": 5001, "ltp": 95.0 },
+    { "t": 1500, "seg": 2, "id": 5001, "ltp": 101.0 }
+  ],
+  "expected": {
+    "signals": [
+      {
+        "firedAtT": 900,
+        "strategyId": "OOBTST_NIFTY",
+        "symbol": "NIFTY 24850 CE",
+        "signalType": "BUY",
+        "entryPrice": 90,
+        "stopLoss": 60
+      }
+    ],
+    "finalLtp": { "2:5001": 101, "2:5002": 64, "0:13": 24850.25 }
+  }
+}

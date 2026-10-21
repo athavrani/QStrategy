@@ -1,6 +1,6 @@
 import { DhanHqRestClient } from '../services/dhan/DhanHqRestClient';
 import { DhanOptionChainService } from '../services/dhan/DhanOptionChainService';
-import { secureVault, DEFAULT_DHAN_CLIENT_ID } from '../services/SecureCredentialVault';
+import { secureVault } from '../services/SecureCredentialVault';
 
 const VALID_MOCK_JWT =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMTAwMzQ1Njc4IiwiZXhwIjoxNzkyNDkxMDI1LCJkaGFuQ2xpZW50SWQiOiIxMTAwMzQ1Njc4In0.mock_signature_hash_bytes_for_valid_token_testing_50chars';
@@ -43,26 +43,25 @@ describe('DhanHqRestClient & OptionChainService Suite', () => {
   });
 
   describe('DhanHqRestClient', () => {
-    test('falls back to verified default credentials when custom credentials are cleared', async () => {
-      const mockFetch = jest.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          status: 'success',
-          data: {
-            NSE_EQ: {
-              '1333': { last_price: 1650.5 },
-            },
-          },
-        }),
-      });
+    test('makes no request and returns null when no credentials are configured (no built-in fallback account)', async () => {
+      const mockFetch = jest.fn();
       global.fetch = mockFetch as any;
 
       await secureVault.clearCredentials();
       const res = await restClient.fetchLtp({ NSE_EQ: [1333] });
-      expect(res).not.toBeNull();
-      const [, options] = mockFetch.mock.calls[0];
-      expect(options.headers['client-id']).toBe(DEFAULT_DHAN_CLIENT_ID);
+
+      expect(res).toBeNull();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    test('does not retry with another account after HTTP 401', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({ ok: false, status: 401 });
+      global.fetch = mockFetch as any;
+
+      const res = await restClient.fetchLtp({ NSE_EQ: [1333] });
+
+      expect(res).toBeNull();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     test('fetches LTP data successfully and injects correct auth headers', async () => {

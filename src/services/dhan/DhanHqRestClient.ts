@@ -5,7 +5,8 @@
  * and 401 token expiry handling.
  */
 
-import { secureVault, DEFAULT_DHAN_CLIENT_ID, DEFAULT_DHAN_TOKEN } from '../SecureCredentialVault';
+import { secureVault } from '../SecureCredentialVault';
+import { dhanRestGateway } from './DhanRestGateway';
 
 export const DHAN_HQ_REST_BASE_URL = 'https://api.dhan.co/v2';
 
@@ -66,67 +67,28 @@ export class DhanHqRestClient {
     this.timeoutMs = timeoutMs;
   }
 
-  private async getAuthHeaders(): Promise<Record<string, string> | null> {
+  /**
+   * Internal request wrapper with 401 detection; transport, pacing and caching live in the gateway
+   */
+  public async post<T>(endpoint: string, body: any): Promise<T | null> {
     const creds = await secureVault.getEffectiveCredentials();
     if (!creds.clientId || !creds.token) {
       return null;
     }
-    return {
-      'access-token': creds.token,
-      'client-id': creds.clientId,
-      'dhanClientId': creds.clientId,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
-  }
-
-  /**
-   * Internal request wrapper with timeout & 401 detection
-   */
-  public async post<T>(endpoint: string, body: any): Promise<T | null> {
-    const headers = await this.getAuthHeaders();
-    if (!headers) {
-      return null;
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const url = `${DHAN_HQ_REST_BASE_URL}${endpoint}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timer);
+      const response = await dhanRestGateway.post(
+        endpoint,
+        body,
+        { clientId: creds.clientId, token: creds.token },
+        { timeoutMs: this.timeoutMs }
+      );
 
       if (response.status === 401) {
         secureVault.updateTelemetry({
           status: 'TOKEN_EXPIRED',
           lastError: 'Access token expired or unauthorized (HTTP 401).',
         });
-
-        // Automatically fallback to verified default credentials if custom token failed
-        if (headers['access-token'] !== DEFAULT_DHAN_TOKEN) {
-          const fallbackHeaders = {
-            'access-token': DEFAULT_DHAN_TOKEN,
-            'client-id': DEFAULT_DHAN_CLIENT_ID,
-            'dhanClientId': DEFAULT_DHAN_CLIENT_ID,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          };
-          const fallbackRes = await fetch(url, {
-            method: 'POST',
-            headers: fallbackHeaders,
-            body: JSON.stringify(body),
-          });
-          if (fallbackRes.ok) {
-            return (await fallbackRes.json()) as T;
-          }
-        }
         return null;
       }
 
@@ -137,10 +99,8 @@ export class DhanHqRestClient {
         return null;
       }
 
-      const json = await response.json();
-      return json as T;
+      return response.data as T;
     } catch (err: any) {
-      clearTimeout(timer);
       const isAbort = err.name === 'AbortError';
       secureVault.updateTelemetry({
         lastError: isAbort ? 'Request timed out' : err.message,
@@ -148,7 +108,6 @@ export class DhanHqRestClient {
       return null;
     }
   }
-
   /**
    * Fetches Last Traded Price for instruments across exchange segments
    * POST /v2/marketfeed/ltp

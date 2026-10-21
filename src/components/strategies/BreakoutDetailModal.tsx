@@ -23,6 +23,7 @@ import { useTheme, createThemedStyles } from '../../theme';
 import { NiftyBreakout180State, Candidate180Contract } from '../../types/mobile';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { useRadarStore } from '../../store/useRadarStore';
+import { useSharedTick } from '../../hooks/useSharedTicker';
 import { StatusBadge } from '../common/StatusBadge';
 import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
 import { DailyStrategyLockRecord } from '../../db/schema';
@@ -52,15 +53,8 @@ export function BreakoutDetailModal({
   const setBreakoutThreshold = useRadarStore((s) => s.setBreakoutThreshold);
   const feedStatus = useRadarStore((s) => s.feedStatus);
 
-  // 300 ms UI monitoring refresh loop
-  const [, setRefreshTick] = useState(0);
-  useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(() => {
-      setRefreshTick((t) => t + 1);
-    }, 300);
-    return () => clearInterval(interval);
-  }, [visible]);
+  // 300 ms UI monitoring refresh loop (one interval shared across modals)
+  useSharedTick(visible, 300);
 
   // Threshold Configuration UI State
   const activeThreshold = data?.lockedThreshold ?? breakoutThreshold ?? data?.threshold ?? 180.0;

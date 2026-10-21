@@ -14,6 +14,7 @@ import {
 import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { useRadarStore } from '../../store/useRadarStore';
+import { useSharedTick } from '../../hooks/useSharedTicker';
 import { OobtstCandidateStrike, StrategySignalOutput } from '../../strategies/types';
 import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
 import { DailyStrategyLockRecord } from '../../db/schema';
@@ -36,7 +37,6 @@ export function OobtstDetailModal({
   const styles = useThemedStyles();
 
   // 300ms UI Refresh Loop per Requirement 3
-  const [refreshTick, setRefreshTick] = React.useState(0);
   const [isEditingCustomTarget, setIsEditingCustomTarget] = React.useState(false);
   const [customTargetText, setCustomTargetText] = React.useState('');
   const [targetError, setTargetError] = React.useState<string | null>(null);
@@ -63,13 +63,7 @@ export function OobtstDetailModal({
     }
   };
 
-  React.useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(() => {
-      setRefreshTick((t) => t + 1);
-    }, 300);
-    return () => clearInterval(interval);
-  }, [visible]);
+  useSharedTick(visible, 300);
 
   const oobtstLive = useRadarStore((s) => s.oobtstState);
   const storeTarget = useRadarStore((s) => s.oobtstTargetPremium);

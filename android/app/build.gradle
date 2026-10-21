@@ -131,6 +131,19 @@ def getAppVersionCode() {
     return 11
 }
 
+// Release signing secrets come from the environment or ~/.gradle/gradle.properties, never from the repo.
+def releaseStorePassword = System.getenv('QSTRATEGY_KEYSTORE_PASSWORD') ?: findProperty('QSTRATEGY_KEYSTORE_PASSWORD')
+def releaseKeyPassword = System.getenv('QSTRATEGY_KEY_PASSWORD') ?: findProperty('QSTRATEGY_KEY_PASSWORD') ?: releaseStorePassword
+def releaseKeyAlias = System.getenv('QSTRATEGY_KEY_ALIAS') ?: findProperty('QSTRATEGY_KEY_ALIAS') ?: 'qstrategy_release'
+def releaseStoreFile = System.getenv('QSTRATEGY_KEYSTORE_FILE') ?: findProperty('QSTRATEGY_KEYSTORE_FILE') ?: 'release.keystore'
+
+gradle.taskGraph.whenReady { graph ->
+    def buildsRelease = graph.allTasks.any { it.project == project && it.name =~ /^(assemble|bundle|package)Release$/ }
+    if (buildsRelease && !releaseStorePassword) {
+        throw new GradleException('Release signing is not configured. Set QSTRATEGY_KEYSTORE_PASSWORD (and optionally QSTRATEGY_KEY_PASSWORD, QSTRATEGY_KEY_ALIAS, QSTRATEGY_KEYSTORE_FILE) as environment variables or in ~/.gradle/gradle.properties.')
+    }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -153,10 +166,10 @@ android {
             keyPassword 'android'
         }
         release {
-            storeFile file('release.keystore')
-            storePassword 'qstrategy2026'
-            keyAlias 'qstrategy_release'
-            keyPassword 'qstrategy2026'
+            storeFile file(releaseStoreFile)
+            storePassword releaseStorePassword
+            keyAlias releaseKeyAlias
+            keyPassword releaseKeyPassword
             v1SigningEnabled true
             v2SigningEnabled true
         }

@@ -6,7 +6,7 @@
  */
 
 import {
-  decodeDhanBinaryPacket,
+  decodeDhanBinaryFrame,
   buildDhanSubscriptionMessage,
   buildDhanUnsubscriptionMessage,
   buildDhanDisconnectMessage,
@@ -23,6 +23,7 @@ import { secureVault, StreamerTelemetry } from '../SecureCredentialVault';
 import { getDhanSecurityId } from '../../constants/dhanSecurityMaster';
 
 export const OFFICIAL_DHAN_FEED_URL = 'wss://api-feed.dhan.co';
+const LEGACY_OWNER = '__legacy__';
 
 export type FeedTickListener = (ticks: Record<string, DhanParsedPacket>) => void;
 export type FeedTelemetryListener = (telemetry: StreamerTelemetry) => void;
@@ -30,6 +31,8 @@ export type FeedTelemetryListener = (telemetry: StreamerTelemetry) => void;
 export class DhanHqFeedSocket {
   private socket: WebSocket | null = null;
   private isExplicitlyStopped = false;
+  // Set on auth/subscription failures where retrying automatically would only loop
+  private reconnectHalted = false;
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT_ATTEMPTS = 10;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -42,6 +45,8 @@ export class DhanHqFeedSocket {
 
   // Registered instrument catalog
   private registeredInstruments = new Map<string, InstrumentSubscription>();
+  // Owners per instrument key; an instrument is unsubscribed only when its last owner leaves
+  private subscriptionOwners = new Map<string, Set<string>>();
   private lastPacketTimestamp = 0;
   private watchdogTimer: NodeJS.Timeout | null = null;
 
@@ -75,6 +80,7 @@ export class DhanHqFeedSocket {
    */
   public async start(): Promise<void> {
     this.isExplicitlyStopped = false;
+    this.reconnectHalted = false;
     const creds = await secureVault.getEffectiveCredentials();
 
     if (!creds.isStreamerEnabled || !creds.clientId || !creds.token) {
@@ -174,12 +180,84 @@ export class DhanHqFeedSocket {
       instrument = instrumentOrSecId;
     }
 
-    const key = `${instrument.exchangeSegment}:${instrument.securityId}`;
-    this.registeredInstruments.set(key, instrument);
+    this.addOwnedSubscriptions(LEGACY_OWNER, [instrument], requestCode);
+  }
 
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      const msg = buildDhanSubscriptionMessage([instrument], requestCode);
-      this.socket.send(msg);
+  /**
+   * Ref-counted subscribe: the same instrument may be requested by many owners.
+   */
+  public subscribeOwned(
+    owner: string,
+    instruments: InstrumentSubscription[],
+    requestCode = DhanFeedRequestCode.SUBSCRIBE_QUOTE
+  ): void {
+    this.addOwnedSubscriptions(owner, instruments, requestCode);
+  }
+
+  /**
+   * Releases an owner's instruments; the feed unsubscribes only those with no remaining owners.
+   */
+  public unsubscribeOwned(owner: string, instruments: InstrumentSubscription[]): void {
+    this.releaseOwnedSubscriptions(owner, instruments);
+  }
+
+  /**
+   * Releases every instrument held by an owner (e.g. on day rollover).
+   */
+  public releaseOwner(owner: string): void {
+    const held: InstrumentSubscription[] = [];
+    this.subscriptionOwners.forEach((owners, key) => {
+      const instr = this.registeredInstruments.get(key);
+      if (instr && owners.has(owner)) held.push(instr);
+    });
+    this.releaseOwnedSubscriptions(owner, held);
+  }
+
+  public getSubscriptionCount(): number {
+    return this.registeredInstruments.size;
+  }
+
+  private addOwnedSubscriptions(
+    owner: string,
+    instruments: InstrumentSubscription[],
+    requestCode: DhanFeedRequestCode
+  ): void {
+    const fresh: InstrumentSubscription[] = [];
+    for (const instr of instruments) {
+      const key = `${instr.exchangeSegment}:${instr.securityId}`;
+      let owners = this.subscriptionOwners.get(key);
+      if (!owners) {
+        owners = new Set();
+        this.subscriptionOwners.set(key, owners);
+      }
+      owners.add(owner);
+      if (!this.registeredInstruments.has(key)) {
+        this.registeredInstruments.set(key, instr);
+        fresh.push(instr);
+      }
+    }
+
+    if (this.socket && this.socket.readyState === WebSocket.OPEN && fresh.length > 0) {
+      this.socket.send(buildDhanSubscriptionMessage(fresh, requestCode));
+    }
+  }
+
+  private releaseOwnedSubscriptions(owner: string, instruments: InstrumentSubscription[]): void {
+    const dropped: InstrumentSubscription[] = [];
+    for (const instr of instruments) {
+      const key = `${instr.exchangeSegment}:${instr.securityId}`;
+      const owners = this.subscriptionOwners.get(key);
+      if (!owners) continue;
+      owners.delete(owner);
+      if (owners.size === 0) {
+        this.subscriptionOwners.delete(key);
+        this.registeredInstruments.delete(key);
+        dropped.push(instr);
+      }
+    }
+
+    if (this.socket && this.socket.readyState === WebSocket.OPEN && dropped.length > 0) {
+      this.socket.send(buildDhanUnsubscriptionMessage(dropped));
     }
   }
 
@@ -190,28 +268,14 @@ export class DhanHqFeedSocket {
     instruments: InstrumentSubscription[],
     requestCode = DhanFeedRequestCode.SUBSCRIBE_QUOTE
   ): void {
-    instruments.forEach((instr) => {
-      const key = `${instr.exchangeSegment}:${instr.securityId}`;
-      this.registeredInstruments.set(key, instr);
-    });
-
-    if (this.socket && this.socket.readyState === WebSocket.OPEN && instruments.length > 0) {
-      const msg = buildDhanSubscriptionMessage(instruments, requestCode);
-      this.socket.send(msg);
-    }
+    this.addOwnedSubscriptions(LEGACY_OWNER, instruments, requestCode);
   }
 
   /**
    * Unsubscribes from an instrument
    */
   public unsubscribe(instrument: InstrumentSubscription): void {
-    const key = `${instrument.exchangeSegment}:${instrument.securityId}`;
-    this.registeredInstruments.delete(key);
-
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      const msg = buildDhanUnsubscriptionMessage([instrument]);
-      this.socket.send(msg);
-    }
+    this.releaseOwnedSubscriptions(LEGACY_OWNER, [instrument]);
   }
 
   /**
@@ -247,31 +311,40 @@ export class DhanHqFeedSocket {
     if (data instanceof ArrayBuffer) {
       arrayBuffer = data;
     } else if (ArrayBuffer.isView(data)) {
-      arrayBuffer = data.buffer;
+      arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
     }
 
     if (!arrayBuffer) return;
 
-    const parsed = decodeDhanBinaryPacket(arrayBuffer);
-    if (!parsed) return;
+    const packets = decodeDhanBinaryFrame(arrayBuffer);
+    if (packets.length === 0) return;
 
     this.lastPacketTimestamp = Date.now();
-    this.packetsReceivedCount++;
 
-    if (parsed.responseCode === DhanFeedResponseCode.DISCONNECT) {
-      this.updateStatus('DISCONNECTED', parsed.reason);
-      if (parsed.disconnectCode === 805) {
-        this.updateStatus('TOKEN_EXPIRED', parsed.reason);
+    for (const parsed of packets) {
+      this.packetsReceivedCount++;
+
+      if (parsed.responseCode === DhanFeedResponseCode.DISCONNECT) {
+        this.updateStatus('DISCONNECTED', parsed.reason);
+        if (parsed.disconnectCode === 805) {
+          this.updateStatus('TOKEN_EXPIRED', parsed.reason);
+        }
+        // Auth, subscription and limit errors (805-807) will not heal by reconnecting
+        if (parsed.disconnectCode >= 805 && parsed.disconnectCode <= 807) {
+          this.reconnectHalted = true;
+        }
+        continue;
       }
-      return;
-    }
 
-    // Buffer Quote, Ticker, and OI by composite key (segment:secId) and securityId
-    // Composite key eliminates collisions between instruments sharing the same numeric securityId across segments
-    // (e.g., Bank Nifty Index [segment 0, secId 25] vs ADANIENT Equity [segment 1, secId 25]).
-    const compositeKey = `${parsed.exchangeSegment}:${parsed.securityId}`;
-    this.pendingTickBatch.set(compositeKey, parsed);
-    this.pendingTickBatch.set(String(parsed.securityId), parsed);
+      // Composite key (segment:secId) avoids collisions across segments, e.g. BANKNIFTY index vs ADANIENT equity.
+      // The bare securityId key is kept for legacy consumers.
+      // Same-instrument packets in one flush window are merged so a Prev-Close/OI packet never erases the quote.
+      const compositeKey = `${parsed.exchangeSegment}:${parsed.securityId}`;
+      const existing = this.pendingTickBatch.get(compositeKey);
+      const merged = (existing ? { ...existing, ...parsed } : parsed) as DhanParsedPacket;
+      this.pendingTickBatch.set(compositeKey, merged);
+      this.pendingTickBatch.set(String(parsed.securityId), merged);
+    }
     this.ensureFlushTimer();
   }
 
@@ -335,7 +408,7 @@ export class DhanHqFeedSocket {
    * Exponential backoff reconnection scheduler
    */
   private scheduleReconnect(): void {
-    if (this.isExplicitlyStopped) return;
+    if (this.isExplicitlyStopped || this.reconnectHalted) return;
     if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
       this.updateStatus('ERROR', 'Max reconnect attempts reached. Tap to retry.');
       return;
@@ -344,10 +417,14 @@ export class DhanHqFeedSocket {
     this.reconnectAttempts++;
     this.updateStatus('CONNECTING', `Reconnecting (Attempt ${this.reconnectAttempts})...`);
 
-    const delayMs = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 12000);
+    const baseDelayMs = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 12000);
+    const delayMs = Math.round(baseDelayMs * (0.8 + Math.random() * 0.4));
     this.reconnectTimer = setTimeout(() => {
       this.start();
     }, delayMs);
+    if (typeof (this.reconnectTimer as any).unref === 'function') {
+      (this.reconnectTimer as any).unref();
+    }
   }
 
   private clearTimers(): void {
@@ -383,6 +460,9 @@ export class DhanHqFeedSocket {
         }
       }
     }, 5000);
+    if (typeof (this.watchdogTimer as any).unref === 'function') {
+      (this.watchdogTimer as any).unref();
+    }
   }
 
   private updateStatus(

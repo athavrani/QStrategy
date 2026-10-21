@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar } from 'react-native';
 import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
-import { HeaderBar } from '../components/common/HeaderBar';
+import { ConnectedHeaderBar } from '../components/common/ConnectedHeaderBar';
+import { FeedHealthBanner } from '../components/common/FeedHealthBanner';
 import { SignalsScreen } from '../screens/SignalsScreen';
 import { RadarScreen } from '../screens/RadarScreen';
 import { JournalScreen } from '../screens/JournalScreen';
@@ -14,7 +15,7 @@ type Tab = 'SIGNALS' | 'RADAR' | 'OPTIONS' | 'JOURNAL' | 'SETTINGS';
 
 export function AppNavigator() {
   const [activeTab, setActiveTab] = useState<Tab>('SIGNALS');
-  const { istTime, marketStatus, signalsTodayCount } = useRadarStore();
+  const signalsTodayCount = useRadarStore((s) => s.signalsTodayCount);
   const { colors, isDark } = useTheme();
   const styles = useThemedStyles();
 
@@ -46,7 +47,8 @@ export function AppNavigator() {
       />
 
       {/* Top Application Header */}
-      <HeaderBar istTime={istTime} marketStatus={marketStatus} />
+      <ConnectedHeaderBar />
+      <FeedHealthBanner onOpenSettings={() => setActiveTab('SETTINGS')} />
 
       {/* Active Tab Screen Body */}
       <View style={styles.body}>{renderContent()}</View>

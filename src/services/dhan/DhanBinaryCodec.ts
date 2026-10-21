@@ -212,6 +212,33 @@ export function decodeDhanBinaryPacket(buffer: ArrayBuffer): DhanParsedPacket | 
 }
 
 /**
+ * Decodes every packet in a frame. Packets are walked by their header length field;
+ * a missing/invalid length falls back to decoding the remainder as one packet.
+ */
+export function decodeDhanBinaryFrame(buffer: ArrayBuffer): DhanParsedPacket[] {
+  const packets: DhanParsedPacket[] = [];
+  if (!buffer || buffer.byteLength < 8) return packets;
+
+  const view = new DataView(buffer);
+  let offset = 0;
+  while (offset + 8 <= buffer.byteLength) {
+    const remaining = buffer.byteLength - offset;
+    const length = view.getInt16(offset + 1, true);
+    if (length < 8 || length > remaining) {
+      const parsed = decodeDhanBinaryPacket(offset === 0 ? buffer : buffer.slice(offset));
+      if (parsed) packets.push(parsed);
+      break;
+    }
+    const parsed = decodeDhanBinaryPacket(
+      offset === 0 && length === buffer.byteLength ? buffer : buffer.slice(offset, offset + length)
+    );
+    if (parsed) packets.push(parsed);
+    offset += length;
+  }
+  return packets;
+}
+
+/**
  * Builds outbound JSON subscription string for DhanHQ WebSocket
  */
 export function buildDhanSubscriptionMessage(

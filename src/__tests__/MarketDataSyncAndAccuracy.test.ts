@@ -2,6 +2,17 @@ import { SENSEX_NIFTY_MASTER_CATALOG } from '../constants/stockUniverse';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { apiService } from '../services/apiService';
 import { useRadarStore } from '../store/useRadarStore';
+import { secureVault } from '../services/SecureCredentialVault';
+
+// There is no built-in fallback account, so tests supply their own credentials.
+beforeAll(() => {
+  jest.spyOn(secureVault, 'getEffectiveCredentials').mockResolvedValue({
+    clientId: '1100345678',
+    token: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlLWZvci10ZXN0cw',
+    tabId: '1',
+    isStreamerEnabled: true,
+  });
+});
 
 describe('Market Data Synchronization & Mathematical Accuracy', () => {
   describe('1. Static Universe Baselines', () => {
