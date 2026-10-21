@@ -7,7 +7,9 @@ export function applyClosedTrades(journal: SignalJournalItem[], closed: ClosedTr
   const remaining = [...closed];
   return journal.map((item) => {
     if (item.outcome !== 'OPEN') return item;
-    const idx = remaining.findIndex((c) => c.strategyId === item.strategyId && c.symbol === item.symbol);
+    const idx = remaining.findIndex((c) =>
+      c.journalId ? c.journalId === item.id : c.strategyId === item.strategyId && c.symbol === item.symbol
+    );
     if (idx < 0) return item;
     const [trade] = remaining.splice(idx, 1);
     return {

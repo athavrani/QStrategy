@@ -38,7 +38,50 @@ export class JournalRepository {
       'SELECT * FROM signal_journal WHERE trade_date = ? ORDER BY rowid DESC',
       [tradeDate]
     );
-    return rows.map((r) => ({
+    return rows.map((r) => this.toItem(r));
+  }
+
+  /** Marks the open entry of a trade as closed. Closed or missing rows are left untouched. */
+  async closeTrade(trade: ClosedTrade, tradeDate: string): Promise<void> {
+    const db = await dbManager.getDatabase();
+    const note = ` ${trade.notes}`;
+    if (trade.journalId) {
+      await db.run(
+        `UPDATE signal_journal
+           SET outcome = ?, exit_price = ?, pnl_points = ?, notes = COALESCE(notes, '') || ?
+         WHERE id = ? AND outcome = 'OPEN'`,
+        [trade.outcome, trade.exitPrice, trade.pnlPoints, note, trade.journalId]
+      );
+      return;
+    }
+    await db.run(
+      `UPDATE signal_journal
+         SET outcome = ?, exit_price = ?, pnl_points = ?, notes = COALESCE(notes, '') || ?
+       WHERE trade_date = ? AND strategy_id = ? AND symbol = ? AND outcome = 'OPEN'`,
+      [trade.outcome, trade.exitPrice, trade.pnlPoints, note, tradeDate, trade.strategyId, trade.symbol]
+    );
+  }
+
+  /** Open entries of the given strategies from sessions in [fromDate, beforeDate), newest first. */
+  async loadOpenTrades(
+    fromDate: string,
+    beforeDate: string,
+    strategyIds: string[]
+  ): Promise<Array<{ item: SignalJournalItem; tradeDate: string }>> {
+    if (strategyIds.length === 0) return [];
+    const db = await dbManager.getDatabase();
+    const marks = strategyIds.map(() => '?').join(', ');
+    const rows = await db.getAll<any>(
+      `SELECT * FROM signal_journal
+       WHERE trade_date >= ? AND trade_date < ? AND outcome = 'OPEN' AND strategy_id IN (${marks})
+       ORDER BY rowid DESC`,
+      [fromDate, beforeDate, ...strategyIds]
+    );
+    return rows.map((r) => ({ item: this.toItem(r), tradeDate: r.trade_date }));
+  }
+
+  private toItem(r: any): SignalJournalItem {
+    return {
       id: r.id,
       timestamp: r.timestamp,
       strategyId: r.strategy_id,
@@ -52,18 +95,7 @@ export class JournalRepository {
       ...(r.pnl_points != null ? { pnlPoints: r.pnl_points } : {}),
       outcome: r.outcome,
       ...(r.notes != null ? { notes: r.notes } : {}),
-    }));
-  }
-
-  /** Marks the open entry of a trade as closed. Closed or missing rows are left untouched. */
-  async closeTrade(trade: ClosedTrade, tradeDate: string): Promise<void> {
-    const db = await dbManager.getDatabase();
-    await db.run(
-      `UPDATE signal_journal
-         SET outcome = ?, exit_price = ?, pnl_points = ?, notes = COALESCE(notes, '') || ?
-       WHERE trade_date = ? AND strategy_id = ? AND symbol = ? AND outcome = 'OPEN'`,
-      [trade.outcome, trade.exitPrice, trade.pnlPoints, ` ${trade.notes}`, tradeDate, trade.strategyId, trade.symbol]
-    );
+    };
   }
 
   /** Drops sessions older than `cutoffDate` (YYYY-MM-DD). */

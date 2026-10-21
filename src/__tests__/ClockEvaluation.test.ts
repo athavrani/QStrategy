@@ -49,7 +49,7 @@ describe('runClockEvaluation', () => {
     expect(useRadarStore.getState().oobtstState).toEqual({ status: 'ARMED' });
     expect(evaluate).toHaveBeenCalledTimes(1);
     expect(evaluate.mock.calls[0][1]).toEqual([
-      STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX,
+      STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX, STRATEGY_IDS.BTST_CARRY,
     ]);
   });
 

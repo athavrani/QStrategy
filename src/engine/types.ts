@@ -2,6 +2,18 @@ import type { StockRadarItem, NiftyBreakout180State } from '../types/mobile';
 import type { OobtstLiveState } from '../strategies/types';
 import type { AcquireAlertLatchDetails, CrossoverTriggerState } from '../services/alertLatchService';
 
+/** An overnight (BTST) position carried from an earlier session that still needs its morning exit. */
+export interface CarryTrade {
+  journalId: string;
+  strategyId: string;
+  symbol: string;
+  tradeDate: string;
+  entryPrice: number;
+  slPrice: number;
+  securityId: string;
+  segment: 'NSE_FNO' | 'BSE_FNO';
+}
+
 /** Inputs a strategy may read. Missing inputs mean "nothing to detect" for that strategy. */
 export interface EngineContext {
   istTime: string;
@@ -9,6 +21,7 @@ export interface EngineContext {
   breakout?: NiftyBreakout180State | null;
   niftyOobtst?: OobtstLiveState | null;
   sensexOobtst?: OobtstLiveState | null;
+  carry?: CarryTrade[];
 }
 
 export interface SignalEvent {
@@ -48,6 +61,9 @@ export interface ClosedTrade {
   pnlPoints: number;
   timestamp: string;
   notes: string;
+  /** Set for trades carried from an earlier session; matches that session's journal row. */
+  tradeDate?: string;
+  journalId?: string;
 }
 
 export interface ExitEvent extends ClosedTrade {

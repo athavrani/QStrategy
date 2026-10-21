@@ -203,10 +203,19 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
     }
 
     if (trimmed.startsWith('UPDATE') && sql.includes('signal_journal')) {
-      // Params: [outcome, exit_price, pnl_points, note_suffix, trade_date, strategy_id, symbol]
+      const table = this.getOrCreateTable('signal_journal');
+      // By id: [outcome, exit_price, pnl_points, note_suffix, id]
+      if (params.length === 5) {
+        const [outcome, exit_price, pnl_points, noteSuffix, id] = params;
+        const row = table.get(id);
+        if (!row || row.outcome !== 'OPEN') return { changes: 0 };
+        Object.assign(row, { outcome, exit_price, pnl_points, notes: `${row.notes ?? ''}${noteSuffix}` });
+        return { changes: 1 };
+      }
+      // By trade: [outcome, exit_price, pnl_points, note_suffix, trade_date, strategy_id, symbol]
       const [outcome, exit_price, pnl_points, noteSuffix, trade_date, strategy_id, symbol] = params;
       let changes = 0;
-      for (const row of this.getOrCreateTable('signal_journal').values()) {
+      for (const row of table.values()) {
         if (
           row.trade_date === trade_date &&
           row.strategy_id === strategy_id &&
@@ -229,6 +238,13 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (sql.includes('signal_journal')) {
       const rows = Array.from(this.getOrCreateTable('signal_journal').values());
+      // Open trades window: [fromDate, beforeDate, ...strategyIds]
+      if (sql.includes('trade_date >= ?')) {
+        const [fromDate, beforeDate, ...ids] = params;
+        return rows
+          .filter((r) => r.trade_date >= fromDate && r.trade_date < beforeDate && r.outcome === 'OPEN' && ids.includes(r.strategy_id))
+          .reverse() as T[];
+      }
       const [trade_date] = params;
       // Mirrors `ORDER BY rowid DESC`: newest insertion first
       return rows.filter((r) => trade_date === undefined || r.trade_date === trade_date).reverse() as T[];

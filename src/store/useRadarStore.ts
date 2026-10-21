@@ -12,6 +12,8 @@ import { alertLatchService } from '../services/alertLatchService';
 import { strategyEngine, STRATEGY_IDS, applyClosedTrades, sumPoints } from '../engine';
 import { journalRepository } from '../services/JournalRepository';
 import { isNearTrigger } from '../engine/clockTriggers';
+import { btstCarryService } from '../services/BtstCarryService';
+import type { CarryTrade } from '../engine/types';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
 import { marketData } from '../services/marketdata/MarketDataService';
@@ -69,6 +71,8 @@ interface RadarStoreState {
 
   // Audit Journal
   journal: SignalJournalItem[];
+  /** Overnight OOBTST positions from earlier sessions awaiting their morning exit. */
+  carryTrades: CarryTrade[];
   signalsTodayCount: number;
   netPointsCaptured: number;
 
@@ -84,6 +88,7 @@ interface RadarStoreState {
   initStreamer: () => void;
   refreshAll: (isManual?: boolean) => Promise<void>;
   ensureLatchReady: () => Promise<void>;
+  loadCarryTrades: () => Promise<void>;
   selectStock: (ticker: string) => void;
   clearSelectedStock: () => void;
   setIstTime: (timeStr: string) => void;
@@ -133,6 +138,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   sensexOobtstTargetPremium: 100.00,
 
   journal: [],
+  carryTrades: [],
   signalsTodayCount: 0,
   netPointsCaptured: 0,
 
@@ -229,12 +235,26 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           }
         } catch {}
       }
+      await get().loadCarryTrades();
       })().catch((err) => {
         latchReadyPromise = null;
         throw err;
       });
     }
     return latchReadyPromise;
+  },
+
+  loadCarryTrades: async () => {
+    try {
+      const { trades, journal } = await btstCarryService.load(alertLatchService.getTodayISTDateString());
+      btstCarryService.watch(trades);
+      set((prev) => {
+        const known = new Set(prev.journal.map((j) => j.id));
+        return { carryTrades: trades, journal: [...prev.journal, ...journal.filter((j) => !known.has(j.id))] };
+      });
+    } catch {
+      // Carry data is best-effort; today's trading must not depend on it.
+    }
   },
 
   refreshAll: async (isManual = false) => {
@@ -257,6 +277,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         sessionDate: todayIST,
         avgLoaded: false,
         journal: [],
+        carryTrades: [],
         signalsTodayCount: 0,
         netPointsCaptured: 0,
         stocks: get().stocks.map((s) => ({
@@ -269,6 +290,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           circleIndicator: 'GREY',
         })),
       });
+      // A session left open overnight must still pick up yesterday's BTST positions
+      get().loadCarryTrades();
     }
 
     // Daily 20D average volume & previous session close computation:
@@ -372,6 +395,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         breakout,
         niftyOobtst: liveOobtst,
         sensexOobtst: liveSensexOobtst,
+        carry: get().carryTrades,
       });
 
       const isOvernightActive = overnight && (overnight.status === 'ACTIVE_HOLD' || overnight.status === 'OVERNIGHT_HOLD');
@@ -521,11 +545,12 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       .evaluate(
         {
           istTime: ist,
+          carry: state.carryTrades,
           breakout: state.niftyBreakout180,
           niftyOobtst: state.oobtstState,
           sensexOobtst: state.sensexOobtstState,
         },
-        [STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX]
+        [STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX, STRATEGY_IDS.BTST_CARRY]
       )
       .then((entries) => {
         if (entries.length > 0) set((prev) => withNewEntries(prev, entries));
@@ -831,13 +856,17 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         if ((optionsChanged || crossoverReady) && get().latchServiceInitialized) {
           const state = get();
           const only: string[] = [];
-          if (optionsChanged) only.push(STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX);
+          if (optionsChanged) {
+            only.push(STRATEGY_IDS.BREAKOUT_180, STRATEGY_IDS.OOBTST_NIFTY, STRATEGY_IDS.OOBTST_SENSEX);
+            if (state.carryTrades.length > 0) only.push(STRATEGY_IDS.BTST_CARRY);
+          }
           if (crossoverReady) only.push(STRATEGY_IDS.VOLUME_CROSSOVER);
           strategyEngine
             .evaluate(
               {
                 istTime: state.istTime !== '--:--:--' ? state.istTime : nowTime,
                 stocks: crossoverReady ? state.stocks : undefined,
+                carry: state.carryTrades,
                 breakout: state.niftyBreakout180,
                 niftyOobtst: state.oobtstState,
                 sensexOobtst: state.sensexOobtstState,
@@ -879,6 +908,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 strategyEngine.onClosed((closed) => {
   useRadarStore.setState((prev) => {
     const journal = applyClosedTrades(prev.journal, closed);
-    return { journal, netPointsCaptured: sumPoints(journal) };
+    const closedIds = new Set(closed.map((c) => c.journalId).filter(Boolean));
+    const carryTrades = closedIds.size > 0 ? prev.carryTrades.filter((t) => !closedIds.has(t.journalId)) : prev.carryTrades;
+    if (carryTrades !== prev.carryTrades) btstCarryService.watch(carryTrades);
+    return { journal, carryTrades, netPointsCaptured: sumPoints(journal) };
   });
 });

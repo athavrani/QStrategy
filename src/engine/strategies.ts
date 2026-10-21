@@ -1,12 +1,14 @@
 import type { StockRadarItem, TacticalStrikeSuggestion } from '../types/mobile';
 import type { OobtstLiveState } from '../strategies/types';
-import type { EngineContext, EngineStrategy, ExitEvent, SignalEvent } from './types';
+import type { CarryTrade, EngineContext, EngineStrategy, ExitEvent, SignalEvent } from './types';
+import { parseClockSeconds } from './clockTriggers';
 
 export const STRATEGY_IDS = {
   VOLUME_CROSSOVER: '20D_CROSSOVER',
   BREAKOUT_180: 'NIFTY_BREAKOUT_180',
   OOBTST_NIFTY: 'OOBTST_NIFTY',
   OOBTST_SENSEX: 'OOBTST_SENSEX',
+  BTST_CARRY: 'BTST_CARRY',
 } as const;
 
 export interface Notifier {
@@ -20,6 +22,73 @@ export interface Notifier {
 export interface StrategyDeps {
   notifier: Notifier;
   tacticalStrike: (stock: StockRadarItem) => Pick<TacticalStrikeSuggestion, 'recommendedCeStrike'>;
+  /** Latest traded price of a derivative contract, if one has been received. */
+  getLtp?: (segment: string, securityId: string) => number | undefined;
+}
+
+const SECONDS_0915 = 9 * 3600 + 15 * 60;
+const SECONDS_0925 = 9 * 3600 + 25 * 60;
+
+/** Morning exit of overnight OOBTST positions: stop-loss from 09:15, otherwise square off at 09:25. */
+export function createBtstCarryStrategy(deps: StrategyDeps): EngineStrategy {
+  return {
+    id: STRATEGY_IDS.BTST_CARRY,
+    detect: () => [],
+    detectExits(ctx: EngineContext): ExitEvent[] {
+      const now = parseClockSeconds(ctx.istTime);
+      if (now === null || now < SECONDS_0915) return [];
+
+      const exits: ExitEvent[] = [];
+      for (const t of ctx.carry ?? []) {
+        const ltp = deps.getLtp?.(t.segment, t.securityId);
+        if (!ltp || ltp <= 0) continue;
+
+        const stopped = ltp <= t.slPrice;
+        if (!stopped && now < SECONDS_0925) continue;
+
+        const exitPrice = stopped ? t.slPrice : ltp;
+        const pnlPoints = +(exitPrice - t.entryPrice).toFixed(2);
+        exits.push(buildCarryExit(t, exitPrice, pnlPoints, stopped, ctx.istTime, deps));
+      }
+      return exits;
+    },
+  };
+}
+
+function buildCarryExit(
+  t: CarryTrade,
+  exitPrice: number,
+  pnlPoints: number,
+  stopped: boolean,
+  istTime: string,
+  deps: StrategyDeps
+): ExitEvent {
+  const legType: 'CE' | 'PE' = t.symbol.trim().endsWith('PE') ? 'PE' : 'CE';
+  const strike = Number(/(\d+)\s+(?:CE|PE)$/.exec(t.symbol)?.[1] ?? 0);
+  return {
+    strategyId: t.strategyId,
+    symbol: t.symbol,
+    outcome: stopped ? 'LOSS' : 'TIME_EXIT',
+    exitPrice,
+    pnlPoints,
+    timestamp: istTime,
+    tradeDate: t.tradeDate,
+    journalId: t.journalId,
+    notes: `${stopped ? 'Overnight stop-loss hit' : 'BTST morning exit 09:25'} @ \u20b9${exitPrice.toFixed(2)} (${pnlPoints >= 0 ? '+' : ''}${pnlPoints.toFixed(2)} pts).`,
+    latch: {
+      key: `EXIT_BTST_${t.strategyId}_${t.symbol.replace(/\s+/g, '_')}_${t.tradeDate}`,
+      side: 'RED',
+      details: {
+        spotPrice: exitPrice,
+        todayTradedShares: 0,
+        avg20DTradedShares: 0,
+        volumeRatio: 1,
+        crossoverTime: istTime,
+        strategyId: t.strategyId,
+      },
+    },
+    notify: stopped ? () => deps.notifier.notify0920StopLossHit?.(legType, strike, exitPrice) : undefined,
+  };
 }
 
 const clock = () => new Date().toLocaleTimeString('en-IN');
@@ -274,5 +343,6 @@ export function createDefaultStrategies(deps: StrategyDeps): EngineStrategy[] {
     createBreakout180Strategy(deps),
     createNiftyOobtstStrategy(deps),
     createSensexOobtstStrategy(deps),
+    createBtstCarryStrategy(deps),
   ];
 }
