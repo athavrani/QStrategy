@@ -24,6 +24,68 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
     const trimmed = sql.trim().toUpperCase();
 
     if (trimmed.startsWith('INSERT')) {
+      if (sql.includes('daily_strategy_locks')) {
+        const table = this.getOrCreateTable('daily_strategy_locks');
+        const [
+          trade_date,
+          strategy_id,
+          lock_time,
+          underlying_symbol,
+          underlying_spot,
+          expiry_str,
+          target_param,
+          ce_strike,
+          ce_symbol,
+          ce_open_price,
+          ce_trigger_price,
+          ce_sec_id,
+          pe_strike,
+          pe_symbol,
+          pe_open_price,
+          pe_trigger_price,
+          pe_sec_id,
+          execution_side,
+          execution_price,
+          execution_time,
+          sl_price,
+          status,
+          lock_failure_reason,
+          raw_payload,
+          created_at,
+          updated_at,
+        ] = params;
+        const pk = `${trade_date}::${strategy_id}`;
+        table.set(pk, {
+          trade_date,
+          strategy_id,
+          lock_time,
+          underlying_symbol,
+          underlying_spot,
+          expiry_str,
+          target_param,
+          ce_strike,
+          ce_symbol,
+          ce_open_price,
+          ce_trigger_price,
+          ce_sec_id,
+          pe_strike,
+          pe_symbol,
+          pe_open_price,
+          pe_trigger_price,
+          pe_sec_id,
+          execution_side,
+          execution_price,
+          execution_time,
+          sl_price,
+          status,
+          lock_failure_reason,
+          raw_payload,
+          created_at,
+          updated_at,
+        });
+        return { changes: 1, lastInsertRowId: table.size };
+      }
+
       if (sql.includes('alert_latches')) {
         const table = this.getOrCreateTable('alert_latches');
         // Params: [trade_date, latch_key, strategy_id, ticker, trigger_state, spot_price, today_traded_shares, avg_20d_traded_shares, volume_ratio, latched_at]
@@ -75,6 +137,26 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
     }
 
     if (trimmed.startsWith('DELETE')) {
+      if (sql.includes('daily_strategy_locks')) {
+        const table = this.getOrCreateTable('daily_strategy_locks');
+        if (params.length === 0) {
+          const count = table.size;
+          table.clear();
+          return { changes: count };
+        }
+        if (params.length === 1) {
+          const [trade_date] = params;
+          let deletedCount = 0;
+          for (const [key, val] of table.entries()) {
+            if (val.trade_date === trade_date || val.trade_date < trade_date) {
+              table.delete(key);
+              deletedCount++;
+            }
+          }
+          return { changes: deletedCount };
+        }
+      }
+
       if (sql.includes('alert_latches')) {
         const table = this.getOrCreateTable('alert_latches');
         if (params.length === 0) {
@@ -100,6 +182,17 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    if (sql.includes('daily_strategy_locks')) {
+      const table = this.getOrCreateTable('daily_strategy_locks');
+      const rows = Array.from(table.values());
+
+      if (params.length === 1) {
+        const [trade_date] = params;
+        return rows.filter((r) => r.trade_date === trade_date) as T[];
+      }
+      return rows.sort((a, b) => b.trade_date.localeCompare(a.trade_date)) as T[];
+    }
+
     if (sql.includes('alert_latches')) {
       const table = this.getOrCreateTable('alert_latches');
       const rows = Array.from(table.values());
@@ -114,6 +207,15 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getFirst<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+    if (sql.includes('daily_strategy_locks')) {
+      const table = this.getOrCreateTable('daily_strategy_locks');
+      if (params.length === 2) {
+        const [trade_date, strategy_id] = params;
+        const pk = `${trade_date}::${strategy_id}`;
+        return (table.get(pk) as T) ?? null;
+      }
+    }
+
     if (sql.includes('alert_latches')) {
       const table = this.getOrCreateTable('alert_latches');
       if (params.length === 2) {

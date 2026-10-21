@@ -17,6 +17,7 @@ import { dhanDirectService } from './dhanDirectService';
 import { dhanHqFeedSocket } from './dhan/DhanHqFeedSocket';
 import { tradingCalendarService } from './TradingCalendarService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
+import { dailyStrategyLockService } from './DailyStrategyLockService';
 import { OobtstCandidateStrike, OobtstLiveState, OobtstLegDetail } from '../strategies/types';
 
 export const SENSEX_STRIKE_STEP = 100;
@@ -163,21 +164,89 @@ export class SensexOptionFeedService {
   }
 
   /**
-   * Persists confirmed 09:20 day anchor to AsyncStorage across app restarts
+   * Persists confirmed 09:20 day anchor to SQLite and AsyncStorage across app restarts
    */
   public async persistLockedAnchor(anchor = this.cachedAnchor): Promise<void> {
     if (!anchor || !anchor.isConfirmed || anchor.isLockFailed) return;
     try {
       await AsyncStorage.setItem(`@qstrategy_sensex_oobtst_anchor_${anchor.tradeDate}`, JSON.stringify(anchor));
+
+      await dailyStrategyLockService.saveLock({
+        trade_date: anchor.tradeDate,
+        strategy_id: 'SENSEX_OOBTST',
+        lock_time: '09:20:00 IST',
+        underlying_symbol: 'SENSEX',
+        underlying_spot: this.lastLiveSpot || 81000,
+        expiry_str: anchor.expiryStr,
+        target_param: anchor.targetPremium,
+        ce_strike: anchor.ceStrike,
+        ce_symbol: `SENSEX ${anchor.ceStrike} CE`,
+        ce_open_price: anchor.ceOpen0920,
+        ce_trigger_price: anchor.ceTriggerPrice,
+        ce_sec_id: anchor.ceSecId,
+        pe_strike: anchor.peStrike,
+        pe_symbol: `SENSEX ${anchor.peStrike} PE`,
+        pe_open_price: anchor.peOpen0920,
+        pe_trigger_price: anchor.peTriggerPrice,
+        pe_sec_id: anchor.peSecId,
+        execution_side: anchor.activeLeg,
+        execution_price: anchor.executedPrice,
+        execution_time: anchor.entryTime,
+        sl_price: anchor.slPrice,
+        status: anchor.status === 'SL_HIT' ? 'SL_HIT' : anchor.activeLeg ? 'TRIGGERED' : 'LOCKED',
+        lock_failure_reason: anchor.lockFailureReason,
+        raw_payload: JSON.stringify(anchor),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
     } catch {}
   }
 
   /**
-   * Restores locked 09:20 day anchor from AsyncStorage across app restarts
+   * Restores locked 09:20 day anchor from SQLite / AsyncStorage across app restarts
    */
   public async loadPersistedAnchor(dateKey?: string): Promise<SensexOobtstDayAnchor | null> {
     const today = dateKey || formatDateKeyIST();
     try {
+      // 1. Try SQLite multi-tier store
+      const record = await dailyStrategyLockService.getLock(today, 'SENSEX_OOBTST');
+      if (record && record.raw_payload) {
+        try {
+          const parsed: SensexOobtstDayAnchor = JSON.parse(record.raw_payload);
+          if (parsed && parsed.tradeDate === today && parsed.isConfirmed && !parsed.isLockFailed) {
+            this.cachedAnchor = parsed;
+            return this.cachedAnchor;
+          }
+        } catch {}
+
+        const reconstructed: SensexOobtstDayAnchor = {
+          tradeDate: record.trade_date,
+          expiryStr: record.expiry_str,
+          ceStrike: record.ce_strike,
+          peStrike: record.pe_strike,
+          ceOpen0920: record.ce_open_price,
+          peOpen0920: record.pe_open_price,
+          ceSecId: record.ce_sec_id,
+          peSecId: record.pe_sec_id,
+          ceTriggerPrice: record.ce_trigger_price || +(record.ce_open_price * 1.5).toFixed(2),
+          peTriggerPrice: record.pe_trigger_price || +(record.pe_open_price * 1.5).toFixed(2),
+          activeLeg: (record.execution_side as any) || null,
+          executedPrice: record.execution_price || null,
+          slPrice: record.sl_price || null,
+          isConfirmed: true,
+          isLockFailed: false,
+          peakPrice: record.ce_open_price,
+          troughPrice: record.pe_open_price,
+          status: (record.status as any) || 'ARMED',
+          entryTime: record.execution_time || null,
+          exitTime: null,
+          targetPremium: record.target_param,
+        };
+        this.cachedAnchor = reconstructed;
+        return reconstructed;
+      }
+
+      // 2. Fallback to AsyncStorage
       const json = await AsyncStorage.getItem(`@qstrategy_sensex_oobtst_anchor_${today}`);
       if (json) {
         const parsed: SensexOobtstDayAnchor = JSON.parse(json);

@@ -27,6 +27,8 @@ import { OobtstLiveState } from '../strategies/types';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { resolvePrevClose, safeChangePct } from '../utils/marketDataUtils';
 import { avgVolumeService } from '../services/AvgVolumeService';
+import { DailyStrategyLockRecord } from '../db/schema';
+import { dailyStrategyLockService } from '../services/DailyStrategyLockService';
 
 interface RadarStoreState {
   // Market Global State
@@ -68,6 +70,11 @@ interface RadarStoreState {
   // Streamer Engine
   isStreamerInitialized: boolean;
 
+  // Date-wise Historical Strike Locks
+  availableLockDates: string[];
+  selectedLockDate: string | null;
+  historicalLocks: DailyStrategyLockRecord[];
+
   // Actions
   initStreamer: () => void;
   refreshAll: (isManual?: boolean) => Promise<void>;
@@ -77,6 +84,8 @@ interface RadarStoreState {
   setOobtstTargetPremium: (target: number) => Promise<boolean>;
   setBreakoutThreshold: (target: number) => Promise<boolean>;
   setSensexOobtstTargetPremium: (target: number) => Promise<boolean>;
+  fetchAvailableLockDates: () => Promise<string[]>;
+  selectLockDate: (date: string | null) => Promise<void>;
 }
 
 export const useRadarStore = create<RadarStoreState>((set, get) => ({
@@ -108,6 +117,10 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   journal: [],
   signalsTodayCount: 0,
   netPointsCaptured: 0,
+
+  availableLockDates: [],
+  selectedLockDate: null,
+  historicalLocks: [],
 
   refreshAll: async (isManual = false) => {
     // Only show pull-to-refresh spinner when user manually pulls down the list
@@ -255,6 +268,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       await niftyOptionFeedService.loadPersistedBreakoutState();
       await sensexOptionFeedService.loadSavedTargetPremium();
       await sensexOptionFeedService.loadPersistedAnchor();
+      await get().fetchAvailableLockDates();
       const [
         sessionRes,
         stocksRes,
@@ -640,6 +654,21 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       set({ sensexOobtstTargetPremium: target, sensexOobtstState: updated });
     }
     return ok;
+  },
+
+  fetchAvailableLockDates: async () => {
+    const dates = await dailyStrategyLockService.getAvailableLockDates();
+    set({ availableLockDates: dates });
+    return dates;
+  },
+
+  selectLockDate: async (date: string | null) => {
+    if (!date) {
+      set({ selectedLockDate: null, historicalLocks: [] });
+      return;
+    }
+    const locks = await dailyStrategyLockService.getLocksForDate(date);
+    set({ selectedLockDate: date, historicalLocks: locks });
   },
 
   initStreamer: () => {

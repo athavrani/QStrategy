@@ -10,6 +10,7 @@ import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
 import { dhanHqFeedSocket } from './dhan/DhanHqFeedSocket';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
+import { dailyStrategyLockService } from './DailyStrategyLockService';
 
 const NIFTY_LOT_SIZE = 25;
 const NIFTY_STRIKE_STEP = 50;
@@ -603,7 +604,7 @@ class NiftyOptionFeedService {
   }
 
   /**
-   * Persists confirmed 09:20 day anchor and peak quote memory to AsyncStorage
+   * Persists confirmed 09:20 day anchor and peak quote memory to SQLite and AsyncStorage
    */
   public async persistLockedAnchor(anchor: OobtstDayAnchor): Promise<void> {
     if (!anchor || !anchor.isConfirmed) return;
@@ -614,15 +615,76 @@ class NiftyOptionFeedService {
         peakPeLtp: this.peakPeLtp,
       };
       await AsyncStorage.setItem(`@qstrategy_oobtst_anchor_${anchor.tradeDate}`, JSON.stringify(payload));
+
+      await dailyStrategyLockService.saveLock({
+        trade_date: anchor.tradeDate,
+        strategy_id: 'NIFTY_OOBTST',
+        lock_time: anchor.confirmedAt || '09:20:00 IST',
+        underlying_symbol: 'NIFTY',
+        underlying_spot: anchor.anchorSpot,
+        expiry_str: anchor.expiryStr,
+        target_param: anchor.targetPremium,
+        ce_strike: anchor.ceStrike,
+        ce_symbol: `NIFTY ${anchor.ceStrike} CE`,
+        ce_open_price: anchor.ceOpen,
+        ce_trigger_price: anchor.ceTrigger,
+        ce_sec_id: anchor.ceCandidates?.[0]?.securityId,
+        pe_strike: anchor.peStrike,
+        pe_symbol: `NIFTY ${anchor.peStrike} PE`,
+        pe_open_price: anchor.peOpen,
+        pe_trigger_price: anchor.peTrigger,
+        pe_sec_id: anchor.peCandidates?.[0]?.securityId,
+        status: anchor.isLockFailed ? 'LOCK_FAILED' : 'LOCKED',
+        lock_failure_reason: anchor.lockFailureReason,
+        raw_payload: JSON.stringify(payload),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
     } catch {}
   }
 
   /**
-   * Restores locked 09:20 day anchor from AsyncStorage across app restarts
+   * Restores locked 09:20 day anchor from SQLite / AsyncStorage across app restarts
    */
   public async loadPersistedAnchor(dateKey?: string): Promise<OobtstDayAnchor | null> {
     const today = dateKey || formatDateKeyIST();
     try {
+      // 1. Try SQLite multi-tier store
+      const record = await dailyStrategyLockService.getLock(today, 'NIFTY_OOBTST');
+      if (record && record.raw_payload) {
+        try {
+          const parsed = JSON.parse(record.raw_payload);
+          if (parsed && parsed.anchor && parsed.anchor.tradeDate === today && parsed.anchor.isConfirmed) {
+            this.cachedAnchor = parsed.anchor;
+            if (typeof parsed.peakCeLtp === 'number') this.peakCeLtp = parsed.peakCeLtp;
+            if (typeof parsed.peakPeLtp === 'number') this.peakPeLtp = parsed.peakPeLtp;
+            return this.cachedAnchor;
+          }
+        } catch {}
+
+        const reconstructed: OobtstDayAnchor = {
+          tradeDate: record.trade_date,
+          anchorSpot: record.underlying_spot,
+          ceStrike: record.ce_strike,
+          ceOpen: record.ce_open_price,
+          ceTrigger: record.ce_trigger_price || +(record.ce_open_price * 1.5).toFixed(2),
+          peStrike: record.pe_strike,
+          peOpen: record.pe_open_price,
+          peTrigger: record.pe_trigger_price || +(record.pe_open_price * 1.5).toFixed(2),
+          expiryStr: record.expiry_str,
+          isConfirmed: true,
+          isProvisional: false,
+          isMarketClosed: false,
+          confirmedAt: record.lock_time,
+          targetPremium: record.target_param,
+          ceCandidates: [],
+          peCandidates: [],
+        };
+        this.cachedAnchor = reconstructed;
+        return reconstructed;
+      }
+
+      // 2. Fallback to AsyncStorage
       const json = await AsyncStorage.getItem(`@qstrategy_oobtst_anchor_${today}`);
       if (json) {
         const parsed = JSON.parse(json);
@@ -1135,15 +1197,42 @@ class NiftyOptionFeedService {
     if (!state || (!state.isLocked && !state.isLockFailed)) return;
     try {
       await AsyncStorage.setItem(`@qstrategy_breakout180_state_${state.date}`, JSON.stringify(state));
+
+      await dailyStrategyLockService.saveLock({
+        trade_date: state.date,
+        strategy_id: 'NIFTY_BREAKOUT_180',
+        lock_time: '09:25:00 IST',
+        underlying_symbol: 'NIFTY',
+        underlying_spot: this.lastLiveSpot || 24850,
+        expiry_str: state.expiryStr || '',
+        target_param: state.lockedThreshold || this.breakoutThreshold,
+        ce_strike: state.ceStrike,
+        ce_symbol: `NIFTY ${state.ceStrike} CE`,
+        ce_open_price: state.ceOpen0925,
+        ce_trigger_price: state.lockedThreshold || this.breakoutThreshold,
+        pe_strike: state.peStrike,
+        pe_symbol: `NIFTY ${state.peStrike} PE`,
+        pe_open_price: state.peOpen0925,
+        pe_trigger_price: state.lockedThreshold || this.breakoutThreshold,
+        execution_side: state.triggeredSide,
+        execution_price: state.entryPrice,
+        execution_time: state.entryTime,
+        status: state.isLockFailed ? 'LOCK_FAILED' : state.triggeredSide ? 'TRIGGERED' : 'LOCKED',
+        lock_failure_reason: state.lockFailureReason,
+        raw_payload: JSON.stringify(state),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
     } catch {}
   }
 
   /**
-   * Restores 09:25 Breakout Engine state from AsyncStorage across app restarts
+   * Restores 09:25 Breakout Engine state from SQLite / AsyncStorage across app restarts
    */
   public async loadPersistedBreakoutState(dateKey?: string): Promise<any> {
     const today = dateKey || formatDateKeyIST();
     try {
+      // 1. Check AsyncStorage for instant exact state
       const json = await AsyncStorage.getItem(`@qstrategy_breakout180_state_${today}`);
       if (json) {
         const parsed = JSON.parse(json);
@@ -1151,6 +1240,18 @@ class NiftyOptionFeedService {
           this.cachedBreakout180 = parsed;
           return this.cachedBreakout180;
         }
+      }
+
+      // 2. Check SQLite multi-tier store
+      const record = await dailyStrategyLockService.getLock(today, 'NIFTY_BREAKOUT_180');
+      if (record && record.raw_payload) {
+        try {
+          const parsed = JSON.parse(record.raw_payload);
+          if (parsed && parsed.date === today && (parsed.isLocked || parsed.isLockFailed)) {
+            this.cachedBreakout180 = parsed;
+            return this.cachedBreakout180;
+          }
+        } catch {}
       }
     } catch {}
     return null;

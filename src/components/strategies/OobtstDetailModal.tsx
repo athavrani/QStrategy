@@ -15,6 +15,8 @@ import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { useRadarStore } from '../../store/useRadarStore';
 import { OobtstCandidateStrike, StrategySignalOutput } from '../../strategies/types';
+import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
+import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
 
 interface OobtstDetailModalProps {
@@ -38,6 +40,28 @@ export function OobtstDetailModal({
   const [isEditingCustomTarget, setIsEditingCustomTarget] = React.useState(false);
   const [customTargetText, setCustomTargetText] = React.useState('');
   const [targetError, setTargetError] = React.useState<string | null>(null);
+
+  // Date-wise Historical Inspection State
+  const availableLockDates = useRadarStore((s) => s.availableLockDates);
+  const fetchAvailableLockDates = useRadarStore((s) => s.fetchAvailableLockDates);
+  const [selectedHistoryDate, setSelectedHistoryDate] = React.useState<string | null>(null);
+  const [historyRecord, setHistoryRecord] = React.useState<DailyStrategyLockRecord | null>(null);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    fetchAvailableLockDates();
+  }, [visible, fetchAvailableLockDates]);
+
+  const handleSelectHistoryDate = async (date: string | null) => {
+    Haptics.selectionAsync();
+    setSelectedHistoryDate(date);
+    if (!date) {
+      setHistoryRecord(null);
+    } else {
+      const rec = await dailyStrategyLockService.getLock(date, 'NIFTY_OOBTST');
+      setHistoryRecord(rec);
+    }
+  };
 
   React.useEffect(() => {
     if (!visible) return;
@@ -180,6 +204,63 @@ export function OobtstDetailModal({
 
         {/* Content ScrollView */}
         <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
+          {/* Date-Wise Session Selector */}
+          <View style={styles.dateSelectorContainer}>
+            <Text style={styles.dateSelectorLabel}>SESSION DATE (09:20 STRIKE LOCK)</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateChipsRow}>
+              <TouchableOpacity
+                style={[styles.dateChip, !selectedHistoryDate && styles.dateChipActive]}
+                onPress={() => handleSelectHistoryDate(null)}
+              >
+                <Text style={[styles.dateChipText, !selectedHistoryDate && styles.dateChipTextActive]}>
+                  ⚡ Today (Live)
+                </Text>
+              </TouchableOpacity>
+              {availableLockDates.map((d) => (
+                <TouchableOpacity
+                  key={d}
+                  style={[styles.dateChip, selectedHistoryDate === d && styles.dateChipActive]}
+                  onPress={() => handleSelectHistoryDate(d)}
+                >
+                  <Text style={[styles.dateChipText, selectedHistoryDate === d && styles.dateChipTextActive]}>
+                    📅 {d}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* Historical Record Banner (When past date is selected) */}
+          {selectedHistoryDate && (
+            <View style={styles.historyCard}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <Text style={styles.historyTitle}>🗓️ ARCHIVED 09:20 LOCK • {selectedHistoryDate}</Text>
+                <TouchableOpacity onPress={() => handleSelectHistoryDate(null)}>
+                  <Text style={{ fontSize: 10, color: colors.cyan, fontWeight: '700' }}>↺ Back to Live</Text>
+                </TouchableOpacity>
+              </View>
+              {historyRecord ? (
+                <View>
+                  <Text style={styles.historyText}>
+                    Spot at Lock: <Text style={{ fontWeight: '800' }}>₹{historyRecord.underlying_spot}</Text> • Time: <Text style={{ fontWeight: '800' }}>{historyRecord.lock_time}</Text>
+                  </Text>
+                  <Text style={styles.historyText}>
+                    CE: <Text style={{ fontWeight: '800', color: colors.bullish }}>{historyRecord.ce_symbol}</Text> @ ₹{historyRecord.ce_open_price} (Trigger: ₹{historyRecord.ce_trigger_price})
+                  </Text>
+                  <Text style={styles.historyText}>
+                    PE: <Text style={{ fontWeight: '800', color: colors.bearish }}>{historyRecord.pe_symbol}</Text> @ ₹{historyRecord.pe_open_price} (Trigger: ₹{historyRecord.pe_trigger_price})
+                  </Text>
+                  <Text style={styles.historySubText}>
+                    Session Status: <Text style={{ fontWeight: '800', color: colors.cyan }}>{historyRecord.status}</Text>
+                    {historyRecord.execution_side ? ` • Executed: ${historyRecord.execution_side} @ ₹${historyRecord.execution_price}` : ''}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.historySubText}>No locked strikes recorded for {selectedHistoryDate}.</Text>
+              )}
+            </View>
+          )}
+
           {/* Strategy Meta Summary */}
           <View style={styles.metaBanner}>
             <View>
@@ -1494,5 +1575,67 @@ const useThemedStyles = createThemedStyles((colors) => ({
     color: colors.textMuted,
     fontSize: 8,
     fontWeight: '500',
+  },
+  dateSelectorContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.cardBorder,
+  },
+  dateSelectorLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginBottom: 6,
+    letterSpacing: 0.5,
+  },
+  dateChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  dateChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.card,
+  },
+  dateChipActive: {
+    backgroundColor: colors.cyanGlow,
+    borderColor: colors.cyan,
+  },
+  dateChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  dateChipTextActive: {
+    color: colors.cyan,
+    fontWeight: '800',
+  },
+  historyCard: {
+    margin: 16,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.cyan,
+  },
+  historyTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.cyan,
+    marginBottom: 8,
+  },
+  historyText: {
+    fontSize: 12,
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  historySubText: {
+    fontSize: 11,
+    color: colors.textMuted,
   },
 }));
