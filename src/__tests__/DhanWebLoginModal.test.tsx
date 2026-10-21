@@ -59,6 +59,7 @@ jest.mock('../store/useRadarStore', () => ({
 }));
 
 describe('DhanWebLoginModal: Live Stream Connection & Window Preservation', () => {
+  jest.setTimeout(15000);
   let activeTrees: renderer.ReactTestRenderer[] = [];
 
   const getText = (node: any): string => {

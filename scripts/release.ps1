@@ -34,6 +34,9 @@ param (
     [switch]$SkipTests,
 
     [Parameter(Mandatory = $false)]
+    [switch]$Clean,
+
+    [Parameter(Mandatory = $false)]
     [switch]$SkipBuild,
 
     [Parameter(Mandatory = $false)]
@@ -162,6 +165,10 @@ if (-not $SkipBuild) {
 
     Push-Location "android"
     try {
+        if ($Clean) {
+            Write-Host "-> Cleaning previous Gradle build caches and outputs (gradlew clean)..." -ForegroundColor Cyan
+            .\gradlew.bat clean
+        }
         .\gradlew.bat assembleRelease
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Gradle compilation failed!" -ForegroundColor Red
@@ -174,12 +181,15 @@ if (-not $SkipBuild) {
 
     $sourceApk = "android\app\build\outputs\apk\release\app-release.apk"
     $targetApk = "QStrategy.apk"
+    $versionedApk = ("QStrategy v{0}.apk" -f $targetVer)
 
     if (Test-Path $sourceApk) {
         Copy-Item -Path $sourceApk -Destination $targetApk -Force
-        $apkItem = Get-Item $targetApk
+        Copy-Item -Path $sourceApk -Destination $versionedApk -Force
+        $apkItem = Get-Item $versionedApk
         $apkSizeMb = [math]::Round($apkItem.Length / 1MB, 2)
-        Write-Host ("Standlone APK ready: {0} ({1} MB)" -f $targetApk, $apkSizeMb) -ForegroundColor Green
+        Write-Host ("Standalone versioned APK ready: {0} ({1} MB)" -f $versionedApk, $apkSizeMb) -ForegroundColor Green
+        Write-Host ("Standard APK ready:             {0} ({1} MB)" -f $targetApk, $apkSizeMb) -ForegroundColor Green
     } else {
         Write-Host ("Could not find compiled APK at {0}" -f $sourceApk) -ForegroundColor Red
         exit 1
@@ -249,6 +259,13 @@ if ($token) {
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/athavrani/QStrategy/releases" -Method Post -Headers $headers -Body $releasePayload
         Write-Host ("GitHub Release created: {0}" -f $release.html_url) -ForegroundColor Green
 
+        if (Test-Path $versionedApk) {
+            Write-Host ("-> Uploading {0} asset to GitHub Release..." -f $versionedApk) -ForegroundColor Cyan
+            $uploadUriVer = $release.upload_url -replace '\{\?name,label\}', ("?name=" + [uri]::EscapeDataString($versionedApk))
+            & curl.exe -s -X POST -H ("Authorization: Bearer {0}" -f $token) -H "Content-Type: application/vnd.android.package-archive" --data-binary "@$versionedApk" $uploadUriVer
+            Write-Host ("[{0}] successfully attached to release!" -f $versionedApk) -ForegroundColor Green
+        }
+
         if (Test-Path "QStrategy.apk") {
             Write-Host "-> Uploading QStrategy.apk asset to GitHub Release..." -ForegroundColor Cyan
             $uploadUri = $release.upload_url -replace '\{\?name,label\}', "?name=QStrategy.apk"
@@ -279,9 +296,11 @@ Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ("           RELEASE v{0} COMPLETED!                 " -f $targetVer) -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
-Write-Host ("Version:       v{0} (Build {1})" -f $targetVer, $targetCode)
-Write-Host ("APK File:      {0}\QStrategy.apk" -f $ProjectRoot)
-Write-Host ("Git Tag:       v{0}" -f $targetVer)
+Write-Host ("Version:          v{0} (Build {1})" -f $targetVer, $targetCode)
+Write-Host ("Versioned APK:    {0}\{1}" -f $ProjectRoot, $versionedApk)
+Write-Host ("Standard APK:     {0}\QStrategy.apk" -f $ProjectRoot)
+Write-Host ("Git Tag:          v{0}" -f $targetVer)
+Write-Host ("GitHub Release:   {0}" -f $release.html_url)
 Write-Host "Auto-Update:   Live! Installed mobile apps will receive this update."
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
