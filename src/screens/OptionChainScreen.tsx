@@ -23,6 +23,12 @@ import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { marketData } from '../services/marketdata/MarketDataService';
 import { instrumentKey } from '../services/marketdata/types';
 import { InstrumentSubscription } from '../services/dhan/DhanBinaryCodec';
+import {
+  CHAIN_REFRESH_INTERVAL_MS,
+  chainSubscriptions,
+  diffSubscriptions,
+  mergeRefreshedChain,
+} from '../utils/optionChainRefresh';
 import * as Haptics from 'expo-haptics';
 
 export interface UnderlyingPreset {
@@ -78,6 +84,7 @@ export function OptionChainScreen(): React.JSX.Element {
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [chainData, setChainData] = useState<OptionChainResult | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const niftySpotFromStore = useRadarStore((s) => s.niftySpot);
   const bankNiftySpotFromStore = useRadarStore((s) => s.bankNiftySpot);
@@ -86,7 +93,9 @@ export function OptionChainScreen(): React.JSX.Element {
   const feedStatus = useRadarStore((s) => s.feedStatus);
 
   const optionChainService = useMemo(() => new DhanOptionChainService(), []);
-  const releaseChainWatchRef = useRef<(() => void) | null>(null);
+  const streamedRef = useRef<Map<string, InstrumentSubscription>>(new Map());
+  const lastTickAtRef = useRef<Map<string, number>>(new Map());
+  const requestSeqRef = useRef(0);
 
   // Compute time to expiry in years (e.g. 3 days / 365 = 0.0082)
   const timeToExpiryYears = useMemo(() => {
@@ -95,8 +104,11 @@ export function OptionChainScreen(): React.JSX.Element {
   }, []);
 
   const loadOptionChain = useCallback(
-    async (isManualRefresh = false) => {
-      if (isManualRefresh) {
+    async (isManualRefresh = false, background = false) => {
+      const seq = ++requestSeqRef.current;
+      if (background) {
+        // Silent refresh: no spinner, keeps the current chain on failure
+      } else if (isManualRefresh) {
         setIsRefreshing(true);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       } else {
@@ -126,35 +138,37 @@ export function OptionChainScreen(): React.JSX.Element {
           );
         }
 
-        if (result) {
-          setChainData(result);
+        if (seq !== requestSeqRef.current) return;
+
+        if (result && result.strikes && result.strikes.length > 0) {
+          setLoadError(null);
+          const now = Date.now();
+          setChainData((prev) => mergeRefreshedChain(prev, result as OptionChainResult, lastTickAtRef.current, now));
           if (result.expiry && !selectedExpiry) {
             setSelectedExpiry(result.expiry);
           }
-          // Issue 2 Fix: Subscribe option contracts to the WebSocket feed so live ticks arrive
-          if (result.strikes && result.strikes.length > 0) {
-            const seg = selectedPreset.symbol === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
-            const subs: InstrumentSubscription[] = [];
-            for (const s of result.strikes) {
-              if (s.ce?.securityId) {
-                subs.push({ exchangeSegment: seg, securityId: s.ce.securityId });
-              }
-              if (s.pe?.securityId) {
-                subs.push({ exchangeSegment: seg, securityId: s.pe.securityId });
-              }
-            }
-            if (subs.length > 0) {
-              // Replaces the previous chain's subscriptions so contracts do not accumulate across presets/expiries
-              releaseChainWatchRef.current?.();
-              releaseChainWatchRef.current = marketData.watch('option-chain', subs);
-            }
+          const seg = selectedPreset.symbol === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
+          const { toAdd, toDrop } = diffSubscriptions(streamedRef.current, chainSubscriptions(result, seg));
+          if (toDrop.length > 0) {
+            marketData.release('option-chain', toDrop);
+            toDrop.forEach((s) => streamedRef.current.delete(instrumentKey(s.exchangeSegment, s.securityId)));
           }
+          if (toAdd.length > 0) {
+            marketData.acquire('option-chain', toAdd);
+            toAdd.forEach((s) => streamedRef.current.set(instrumentKey(s.exchangeSegment, s.securityId), s));
+          }
+        } else if (!background) {
+          setLoadError('No option chain data returned. Check your Dhan token and connection, then retry.');
         }
       } catch (err) {
-        // Handled silently
+        if (seq === requestSeqRef.current && !background) {
+          setLoadError(err instanceof Error && err.message ? err.message : 'Could not load the option chain.');
+        }
       } finally {
-        setIsLoading(false);
-        setIsRefreshing(false);
+        if (seq === requestSeqRef.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
       }
     },
     [selectedPreset, selectedExpiry, optionChainService]
@@ -168,11 +182,21 @@ export function OptionChainScreen(): React.JSX.Element {
   // Piggybacks on the existing 250ms WebSocket feed — zero extra REST calls.
   useEffect(() => {
     marketData.start();
+    const streamed = streamedRef.current;
     return () => {
-      releaseChainWatchRef.current?.();
-      releaseChainWatchRef.current = null;
+      const held = [...streamed.values()];
+      streamed.clear();
+      if (held.length > 0) marketData.release('option-chain', held);
     };
   }, []);
+
+  // Keeps strikes that rarely trade from freezing at their load-time REST price
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadOptionChain(false, true);
+    }, CHAIN_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [loadOptionChain]);
 
   useEffect(() => {
     const optionSegment = selectedPreset.symbol === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
@@ -202,6 +226,7 @@ export function OptionChainScreen(): React.JSX.Element {
           if (strike.ce?.securityId) {
             const ceTick = tickBatch[instrumentKey(optionSegment, strike.ce.securityId)];
             if (ceTick && 'ltp' in ceTick && typeof ceTick.ltp === 'number' && ceTick.ltp > 0) {
+              lastTickAtRef.current.set(strike.ce.securityId, Date.now());
               if (ceTick.ltp !== ceLtp) {
                 ceLtp = ceTick.ltp;
                 legChanged = true;
@@ -212,6 +237,7 @@ export function OptionChainScreen(): React.JSX.Element {
           if (strike.pe?.securityId) {
             const peTick = tickBatch[instrumentKey(optionSegment, strike.pe.securityId)];
             if (peTick && 'ltp' in peTick && typeof peTick.ltp === 'number' && peTick.ltp > 0) {
+              lastTickAtRef.current.set(strike.pe.securityId, Date.now());
               if (peTick.ltp !== peLtp) {
                 peLtp = peTick.ltp;
                 legChanged = true;
@@ -328,6 +354,7 @@ export function OptionChainScreen(): React.JSX.Element {
     setSelectedPreset(preset);
     setSelectedExpiry('');
     setChainData(null);
+    setLoadError(null);
   };
 
   const handleSelectExpiry = (exp: string) => {
@@ -653,14 +680,18 @@ export function OptionChainScreen(): React.JSX.Element {
         >
           <Text style={styles.emptyIcon}>📊</Text>
           <Text style={styles.emptyTitle}>
-            {dhanDirectService.isConfigured() || feedStatus === 'ONLINE'
-              ? 'Connecting to Option Chain'
-              : 'Live Option Chain Ready'}
+            {loadError
+              ? 'Option Chain Unavailable'
+              : dhanDirectService.isConfigured() || feedStatus === 'ONLINE'
+                ? 'Connecting to Option Chain'
+                : 'Live Option Chain Ready'}
           </Text>
           <Text style={styles.emptySubtitle}>
-            {dhanDirectService.isConfigured() || feedStatus === 'ONLINE'
-              ? 'Retrieving live DhanHQ v2 institutional strike data & Greeks...'
-              : 'Configure your Dhan Client ID & Token in Settings to stream institutional DhanHQ v2 Option Chain & Greeks.'}
+            {loadError
+              ? loadError
+              : dhanDirectService.isConfigured() || feedStatus === 'ONLINE'
+                ? 'Retrieving live DhanHQ v2 institutional strike data & Greeks...'
+                : 'Configure your Dhan Client ID & Token in Settings to stream institutional DhanHQ v2 Option Chain & Greeks.'}
           </Text>
           <StatusBadge
             label={dhanDirectService.isConfigured() || feedStatus === 'ONLINE' ? 'FEED CONNECTED' : 'AWAITING DHAN CREDENTIALS'}

@@ -93,7 +93,7 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
 
     // Let the effect resolve
     await act(async () => {
-      jest.runAllTimers();
+      jest.advanceTimersByTime(1000);
     });
 
     const flatList = tree.root.findByType(require('react-native').FlatList);
@@ -146,7 +146,7 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
     activeTrees.push(tree);
 
     await act(async () => {
-      jest.runAllTimers();
+      jest.advanceTimersByTime(1000);
     });
 
     const flatList = tree.root.findByType(require('react-native').FlatList);
@@ -231,7 +231,7 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
     activeTrees.push(tree);
 
     await act(async () => {
-      jest.runAllTimers();
+      jest.advanceTimersByTime(1000);
     });
 
     // 1. Initial NIFTY check
@@ -253,7 +253,7 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
       bankNiftyChip?.props.onPress();
     });
     await act(async () => {
-      jest.runAllTimers();
+      jest.advanceTimersByTime(1000);
     });
 
     // 3. Verify BANKNIFTY spot price is shown and NIFTY spot is NOT shown
@@ -275,7 +275,7 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
       sensexChip?.props.onPress();
     });
     await act(async () => {
-      jest.runAllTimers();
+      jest.advanceTimersByTime(1000);
     });
 
     // 5. Verify SENSEX spot price is shown and NIFTY / BANKNIFTY spots are NOT shown
