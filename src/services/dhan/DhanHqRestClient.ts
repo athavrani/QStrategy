@@ -246,6 +246,45 @@ export class DhanHqRestClient {
     });
     return res?.data ?? null;
   }
+
+  /**
+   * Fetches daily historical OHLC candle data (1 candle per trading day)
+   * POST /v2/charts/historical
+   */
+  public async fetchHistoricalDaily(
+    securityId: string | number,
+    exchangeSegment: string,
+    instrument: string,
+    fromDate: string,
+    toDate: string
+  ): Promise<{
+    open?: number[];
+    high?: number[];
+    low?: number[];
+    close?: number[];
+    volume?: number[];
+    timestamp?: number[];
+  } | null> {
+    const res = await this.post<{
+      data?: {
+        open?: number[];
+        high?: number[];
+        low?: number[];
+        close?: number[];
+        volume?: number[];
+        timestamp?: number[];
+      };
+    }>('/charts/historical', {
+      securityId: String(securityId),
+      exchangeSegment,
+      instrument,
+      expiryCode: 0,
+      oi: false,
+      fromDate,
+      toDate,
+    });
+    return res?.data ?? null;
+  }
 }
 
 export const dhanHqRestClient = new DhanHqRestClient();

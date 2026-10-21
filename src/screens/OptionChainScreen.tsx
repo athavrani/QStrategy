@@ -1,5 +1,5 @@
 // Dhan-Grade Option Chain Screen with On-Device Black-Scholes Greeks Engine
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,8 @@ import { SkeletonLoader } from '../components/common/SkeletonLoader';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
+import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
+import { InstrumentSubscription } from '../services/dhan/DhanBinaryCodec';
 import * as Haptics from 'expo-haptics';
 
 export interface UnderlyingPreset {
@@ -127,6 +129,22 @@ export function OptionChainScreen(): React.JSX.Element {
           if (result.expiry && !selectedExpiry) {
             setSelectedExpiry(result.expiry);
           }
+          // Issue 2 Fix: Subscribe option contracts to the WebSocket feed so live ticks arrive
+          if (result.strikes && result.strikes.length > 0) {
+            const seg = selectedPreset.symbol === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
+            const subs: InstrumentSubscription[] = [];
+            for (const s of result.strikes) {
+              if (s.ce?.securityId) {
+                subs.push({ exchangeSegment: seg, securityId: s.ce.securityId });
+              }
+              if (s.pe?.securityId) {
+                subs.push({ exchangeSegment: seg, securityId: s.pe.securityId });
+              }
+            }
+            if (subs.length > 0) {
+              dhanHqFeedSocket.subscribeBatch(subs);
+            }
+          }
         }
       } catch (err) {
         // Handled silently
@@ -141,6 +159,80 @@ export function OptionChainScreen(): React.JSX.Element {
   useEffect(() => {
     loadOptionChain();
   }, [loadOptionChain]);
+
+  // Issue 2 Fix: Subscribe to live Dhan feed ticks for real-time option chain prices
+  // Piggybacks on the existing 250ms WebSocket feed — zero extra REST calls.
+  useEffect(() => {
+    const unsubscribe = dhanHqFeedSocket.addTickListener((tickBatch) => {
+      setChainData((prev) => {
+        if (!prev || !prev.strikes || prev.strikes.length === 0) return prev;
+        if (prev.underlyingScrip !== selectedPreset.scripId) return prev;
+
+        let hasUpdate = false;
+        let updatedSpot = prev.spotPrice;
+
+        // Check if underlying spot index updated from tick
+        const underlyingSecId = String(selectedPreset.scripId);
+        if (tickBatch[underlyingSecId]?.ltp && tickBatch[underlyingSecId].ltp > 0) {
+          if (tickBatch[underlyingSecId].ltp !== updatedSpot) {
+            updatedSpot = tickBatch[underlyingSecId].ltp;
+            hasUpdate = true;
+          }
+        }
+
+        const nextStrikes = prev.strikes.map((strike) => {
+          let ceLtp = strike.ce?.ltp ?? null;
+          let peLtp = strike.pe?.ltp ?? null;
+          let legChanged = false;
+
+          if (strike.ce?.securityId && tickBatch[strike.ce.securityId]?.ltp) {
+            const tickLtp = tickBatch[strike.ce.securityId].ltp;
+            if (tickLtp > 0 && tickLtp !== ceLtp) {
+              ceLtp = tickLtp;
+              legChanged = true;
+            }
+          }
+
+          if (strike.pe?.securityId && tickBatch[strike.pe.securityId]?.ltp) {
+            const tickLtp = tickBatch[strike.pe.securityId].ltp;
+            if (tickLtp > 0 && tickLtp !== peLtp) {
+              peLtp = tickLtp;
+              legChanged = true;
+            }
+          }
+
+          if (legChanged) {
+            hasUpdate = true;
+            return {
+              ...strike,
+              ce: { ...strike.ce, ltp: ceLtp },
+              pe: { ...strike.pe, ltp: peLtp },
+            };
+          }
+
+          return strike;
+        });
+
+        if (!hasUpdate) return prev;
+
+        let newAtm = prev.atmStrike;
+        if (updatedSpot && updatedSpot > 0 && updatedSpot !== prev.spotPrice) {
+          newAtm = Math.round(updatedSpot / selectedPreset.strikeStep) * selectedPreset.strikeStep;
+        }
+
+        return {
+          ...prev,
+          spotPrice: updatedSpot,
+          atmStrike: newAtm,
+          strikes: nextStrikes,
+        };
+      });
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [selectedPreset.scripId, selectedPreset.strikeStep]);
 
   const storeSpot = useMemo(() => {
     switch (selectedPreset.symbol) {

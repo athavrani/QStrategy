@@ -14,6 +14,7 @@ import { StockRadarItem } from '../types/mobile';
 import { TacticalStrikeModal } from '../components/radar/TacticalStrikeModal';
 import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal';
 import { dhanDirectService } from '../services/dhanDirectService';
+import { resolvePrevClose, safeChangePct } from '../utils/marketDataUtils';
 import * as Haptics from 'expo-haptics';
 
 type FilterType = 'ALL' | 'NIFTY50' | 'SENSEX' | 'GREEN' | 'RED' | 'NEAR';
@@ -42,12 +43,17 @@ const StockCard = React.memo(
     const { colors } = useTheme();
     const styles = useThemedStyles();
     const ratioPercent = Math.min(150, Math.round(item.volumeRatio * 100));
-    const effectivePrevClose = (item.prevClose && item.prevClose > 0)
-      ? item.prevClose
-      : (dhanDirectService.getPrevClose(item.ticker) || 0);
-    const priceChangePct = (effectivePrevClose > 0 && item.spotPrice > 0)
-      ? +(((item.spotPrice - effectivePrevClose) / effectivePrevClose) * 100).toFixed(2)
-      : item.percentChange;
+    // Issue 3 & 4 Fix: Canonical prevClose resolution with ±25% sanity boundary
+    const effectivePrevClose = resolvePrevClose(
+      item.spotPrice,
+      0,
+      {},
+      item.prevClose && item.prevClose > 0 ? item.prevClose : 0,
+      dhanDirectService.getPrevClose(item.ticker) || 0
+    );
+    const priceChangePct = effectivePrevClose > 0 && item.spotPrice > 0
+      ? safeChangePct(item.spotPrice, effectivePrevClose, item.percentChange)
+      : safeChangePct(item.spotPrice, 0, item.percentChange);
     const isBullish = priceChangePct >= 0;
     const isPositive = priceChangePct > 0;
     const isNegative = priceChangePct < 0;

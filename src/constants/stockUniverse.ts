@@ -1,5 +1,20 @@
 // Complete Master Universe of ALL NIFTY 50 & BSE SENSEX Constituents (60 Unique Stocks)
 // Includes Official Tickers, Names, ISIN, Sector, Indices, 20D Baseline Average Shares, and Strike Steps
+//
+// ARCHITECTURE NOTE:
+// 1. Dynamic 20D Average Volume:
+//    The `avg20DTradedShares` values below represent verified cold-start / offline baselines.
+//    At runtime, `AvgVolumeService` fetches live historical daily candles from Dhan HQ API
+//    (/charts/historical and /charts/intraday fallback), computes rolling 20-session averages,
+//    and persists them to AsyncStorage per trading day. The store automatically refreshes these
+//    at the start of each new trading day.
+//
+// 2. Dynamic Previous Close & Sanity Bounds:
+//    The `prevClose` values below serve as initial fallbacks for cold starts.
+//    Live previous close is resolved dynamically by `resolvePrevClose()` in `marketDataUtils.ts`
+//    from Dhan REST quotes (net_change, ohlc.close, previous_close) and WebSocket tick packets.
+//    A strict ±25% sanity boundary (`safeChangePct`) prevents stale catalog values from producing
+//    abnormal percentage swings (e.g., ADANI ENT split / reorganization adjustments).
 
 export interface MasterStockDefinition {
   ticker: string;
@@ -9,8 +24,10 @@ export interface MasterStockDefinition {
   sector: string;
   indices: ('NIFTY 50' | 'SENSEX')[];
   approxLtp: number;
+  /** Verified cold-start baseline closing price. Overridden at runtime by live Dhan quote/tick data. */
   prevClose: number;
-  avg20DTradedShares: number; // Exact integer shares baseline
+  /** Cold-start baseline 20-day traded shares. Recomputed dynamically daily via AvgVolumeService. */
+  avg20DTradedShares: number;
   strikeStep: number;
   lotSize: number;
 }

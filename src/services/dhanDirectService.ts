@@ -24,6 +24,13 @@ import {
   isDhanJwtToken,
   isNumericClientId,
 } from './SecureCredentialVault';
+import {
+  resolvePrevClose,
+  safeChangePct,
+  calcChangePct,
+  isReasonableChangePct,
+} from '../utils/marketDataUtils';
+import { formatDateKeyIST } from '../constants/nseHolidays';
 
 export interface DhanDirectQuote {
   securityId: string;
@@ -61,18 +68,43 @@ class DhanDirectService {
   private cachedAccessToken: string | null = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
+  // Session-date tracker: resets dailyPrevCloseMap at each new trading day
+  private prevCloseSessionDate: string = '';
 
   // Authentic previous day close cache initialized from verified baseline catalog
   private dailyPrevCloseMap = new Map<string, number>(
     SENSEX_NIFTY_MASTER_CATALOG.map((s) => [s.ticker.toUpperCase(), s.prevClose])
   );
 
+  /**
+   * Resets the dailyPrevCloseMap to catalog baselines at the start of each new trading day.
+   * Prevents stale discovered prevClose values from carrying over to the next session,
+   * which is the root cause of inflated percentage changes (e.g. ADANI ENT 1900%+ error).
+   */
+  private resetPrevCloseIfNewDay(): void {
+    const todayIST = formatDateKeyIST();
+    if (this.prevCloseSessionDate !== todayIST) {
+      this.prevCloseSessionDate = todayIST;
+      // Reset to catalog baselines — fresh start for today's session
+      this.dailyPrevCloseMap = new Map<string, number>(
+        SENSEX_NIFTY_MASTER_CATALOG.map((s) => [s.ticker.toUpperCase(), s.prevClose])
+      );
+    }
+  }
+
   public getPrevClose(ticker: string): number | undefined {
     return this.dailyPrevCloseMap.get(ticker.toUpperCase());
   }
 
-  public updatePrevClose(ticker: string, prevClose: number): void {
+  public updatePrevClose(ticker: string, prevClose: number, currentLtp?: number): void {
     if (prevClose > 0) {
+      if (currentLtp && currentLtp > 0) {
+        const pct = calcChangePct(currentLtp, prevClose);
+        if (pct === null || !isReasonableChangePct(pct)) {
+          // Reject candidate to avoid corrupting session cache with split/stale numbers
+          return;
+        }
+      }
       this.dailyPrevCloseMap.set(ticker.toUpperCase(), prevClose);
     }
   }
@@ -420,6 +452,9 @@ class DhanDirectService {
         } catch {}
       }
 
+      // Reset dailyPrevCloseMap at new trading day before processing any quotes
+      this.resetPrevCloseIfNewDay();
+
       // Map parsed nseData items back to tickers
       chunk.forEach((secId) => {
         const sym = secIdToTicker.get(secId);
@@ -431,28 +466,26 @@ class DhanDirectService {
           const low = Number(item.ohlc?.low || item.low || ltp);
           const rawNetChange = Number(item.net_change ?? item.change ?? 0);
 
-          // Resolve authentic previous day close:
-          // 1. If net_change is non-zero, previous close is strictly (ltp - net_change)
-          // 2. If item.previous_close or item.prev_close is provided, use it
-          // 3. Dhan post-market behavior: item.ohlc.close is set to today's close (equal to ltp).
-          //    Only use item.ohlc.close or item.close if it is strictly different from ltp.
-          // 4. Otherwise, fall back to the verified dailyPrevCloseMap.
-          let prevClose = 0;
-          if (rawNetChange !== 0 && ltp > 0) {
-            prevClose = +(ltp - rawNetChange).toFixed(2);
-          } else if (item.previous_close && Number(item.previous_close) > 0) {
-            prevClose = Number(item.previous_close);
-          } else if (item.prev_close && Number(item.prev_close) > 0) {
-            prevClose = Number(item.prev_close);
-          } else if (item.ohlc?.close && Number(item.ohlc.close) > 0 && Number(item.ohlc.close) !== ltp) {
-            prevClose = Number(item.ohlc.close);
-          } else if (item.close && Number(item.close) > 0 && Number(item.close) !== ltp) {
-            prevClose = Number(item.close);
-          } else {
-            prevClose = this.dailyPrevCloseMap.get(sym) || (Number(item.ohlc?.close) > 0 ? Number(item.ohlc.close) : 0);
-          }
+          // Use canonical resolvePrevClose() — handles all priority tiers with sanity checks.
+          // Prevents ADANI ENT-style 1900%+ errors from stale catalog baseline values.
+          const catalogPrevClose = SENSEX_NIFTY_MASTER_CATALOG.find(
+            (s) => s.ticker.toUpperCase() === sym
+          )?.prevClose ?? 0;
 
-          // Cache discovered genuine prevClose
+          const prevClose = resolvePrevClose(
+            ltp,
+            rawNetChange,
+            {
+              previous_close: item.previous_close ? Number(item.previous_close) : undefined,
+              prev_close: item.prev_close ? Number(item.prev_close) : undefined,
+              ohlcClose: item.ohlc?.close ? Number(item.ohlc.close) : undefined,
+              close: item.close ? Number(item.close) : undefined,
+            },
+            this.dailyPrevCloseMap.get(sym) ?? 0,
+            catalogPrevClose
+          );
+
+          // Cache genuinely discovered prevClose for use by tick listener and RadarScreen
           if (prevClose > 0) {
             this.dailyPrevCloseMap.set(sym, prevClose);
           }
@@ -462,9 +495,8 @@ class DhanDirectService {
             ? rawNetChange
             : (prevClose > 0 && ltp > 0 ? +(ltp - prevClose).toFixed(2) : 0);
 
-          const changePercent = (prevClose > 0 && ltp > 0)
-            ? +(((ltp - prevClose) / prevClose) * 100).toFixed(2)
-            : 0;
+          // safeChangePct applies ±25% sanity gate — returns 0 for garbage values
+          const changePercent = safeChangePct(ltp, prevClose, 0);
 
           const volume = Number(item.volume || 0);
 
