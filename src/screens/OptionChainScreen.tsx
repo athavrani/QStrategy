@@ -173,9 +173,10 @@ export function OptionChainScreen(): React.JSX.Element {
 
         // Check if underlying spot index updated from tick
         const underlyingSecId = String(selectedPreset.scripId);
-        if (tickBatch[underlyingSecId]?.ltp && tickBatch[underlyingSecId].ltp > 0) {
-          if (tickBatch[underlyingSecId].ltp !== updatedSpot) {
-            updatedSpot = tickBatch[underlyingSecId].ltp;
+        const spotTick = tickBatch[underlyingSecId];
+        if (spotTick && 'ltp' in spotTick && typeof spotTick.ltp === 'number' && spotTick.ltp > 0) {
+          if (spotTick.ltp !== updatedSpot) {
+            updatedSpot = spotTick.ltp;
             hasUpdate = true;
           }
         }
@@ -185,19 +186,23 @@ export function OptionChainScreen(): React.JSX.Element {
           let peLtp = strike.pe?.ltp ?? null;
           let legChanged = false;
 
-          if (strike.ce?.securityId && tickBatch[strike.ce.securityId]?.ltp) {
-            const tickLtp = tickBatch[strike.ce.securityId].ltp;
-            if (tickLtp > 0 && tickLtp !== ceLtp) {
-              ceLtp = tickLtp;
-              legChanged = true;
+          if (strike.ce?.securityId) {
+            const ceTick = tickBatch[strike.ce.securityId];
+            if (ceTick && 'ltp' in ceTick && typeof ceTick.ltp === 'number' && ceTick.ltp > 0) {
+              if (ceTick.ltp !== ceLtp) {
+                ceLtp = ceTick.ltp;
+                legChanged = true;
+              }
             }
           }
 
-          if (strike.pe?.securityId && tickBatch[strike.pe.securityId]?.ltp) {
-            const tickLtp = tickBatch[strike.pe.securityId].ltp;
-            if (tickLtp > 0 && tickLtp !== peLtp) {
-              peLtp = tickLtp;
-              legChanged = true;
+          if (strike.pe?.securityId) {
+            const peTick = tickBatch[strike.pe.securityId];
+            if (peTick && 'ltp' in peTick && typeof peTick.ltp === 'number' && peTick.ltp > 0) {
+              if (peTick.ltp !== peLtp) {
+                peLtp = peTick.ltp;
+                legChanged = true;
+              }
             }
           }
 
