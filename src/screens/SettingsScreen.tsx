@@ -19,6 +19,7 @@ import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { useRadarStore } from '../store/useRadarStore';
 import { API_CONFIG } from '../config/apiConfig';
 import { appUpdateService, UpdateCheckResult } from '../services/appUpdateService';
+import { prevCloseBook } from '../services/marketdata/PrevCloseBook';
 import {
   isBackgroundMonitorEnabled,
   setBackgroundMonitorEnabled,
@@ -652,6 +653,18 @@ export function SettingsScreen() {
       <View style={styles.card}>
         <TouchableOpacity style={styles.testBtn} onPress={handleTestNotification}>
           <Text style={styles.testBtnText}>🔔 Send Test BUY Signal Notification</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.testBtn}
+          onPress={() =>
+            Alert.alert(
+              `Prev-close log (${prevCloseBook.conflictCount()} conflicts)`,
+              prevCloseBook.formatLog(15)
+            )
+          }
+        >
+          <Text style={styles.testBtnText}>🧾 Show Previous-Close Diagnostics</Text>
         </TouchableOpacity>
 
         <View style={styles.infoRow}>

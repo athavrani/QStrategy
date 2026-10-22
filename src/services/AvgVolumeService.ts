@@ -156,6 +156,7 @@ class AvgVolumeService {
 
       // Group & sum bar volumes by trading day (start_Time is Unix epoch seconds)
       const dailyVolumeMap = new Map<string, number>();
+      const lastCloseByDay = new Map<string, number>();
       for (let i = 0; i < data.volume.length; i++) {
         const vol = data.volume[i];
         const ts = data.start_Time[i];
@@ -169,17 +170,15 @@ class AvgVolumeService {
 
         // Sum periodic 1-minute bar volumes to get total day volume
         dailyVolumeMap.set(dateKey, (dailyVolumeMap.get(dateKey) ?? 0) + vol);
+        const barClose = Array.isArray(data.close) ? data.close[i] : undefined;
+        if (typeof barClose === 'number' && barClose > 0) lastCloseByDay.set(dateKey, barClose);
       }
 
       // Return volumes sorted by date ascending
       const validVolumes = Array.from(dailyVolumeMap.values()).filter((v) => v > 0);
-      let lastClose: number | undefined;
-      if (Array.isArray(data.close) && data.close.length > 0) {
-        const validCloses = data.close.filter((c) => typeof c === 'number' && c > 0);
-        if (validCloses.length > 0) {
-          lastClose = validCloses[validCloses.length - 1];
-        }
-      }
+      // The previous close is the last bar of the latest completed day, never today's moving bars
+      const priorDays = Array.from(lastCloseByDay.keys()).filter((day) => day < toDate).sort();
+      const lastClose = priorDays.length > 0 ? lastCloseByDay.get(priorDays[priorDays.length - 1]) : undefined;
       return { volumes: validVolumes, prevClose: lastClose };
     } catch {
       return { volumes: [] };

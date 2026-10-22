@@ -30,8 +30,8 @@ import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { OobtstLiveState } from '../strategies/types';
 import { formatDateKeyIST } from '../constants/nseHolidays';
-import { resolvePrevClose, safeChangePct } from '../utils/marketDataUtils';
 import { avgVolumeService } from '../services/AvgVolumeService';
+import { prevCloseBook } from '../services/marketdata/PrevCloseBook';
 import { DailyStrategyLockRecord } from '../db/schema';
 import { dailyStrategyLockService } from '../services/DailyStrategyLockService';
 
@@ -101,6 +101,8 @@ interface RadarStoreState {
 }
 
 let latchReadyPromise: Promise<void> | null = null;
+const lastStockTickAt = new Map<string, number>();
+const STOCK_TICK_FRESH_MS = 15_000;
 const LOCK_WINDOW_START_SEC = 9 * 3600 + 19 * 60 + 58;
 const LOCK_WINDOW_END_SEC = 9 * 3600 + 20 * 60 + 20;
 const LOCK_SYNC_INTERVAL_MS = 2000;
@@ -308,14 +310,13 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const entry = avgMap.get(s.ticker.toUpperCase());
           if (!entry) return s;
           const newAvg = entry.avg20DVolume;
-          const dynamicPrev = entry.prevClose || dhanDirectService.getPrevClose(s.ticker);
+          if (entry.prevClose) prevCloseBook.set(s.ticker, entry.prevClose, 'HISTORY', s.spotPrice);
+          const dynamicPrev = prevCloseBook.get(s.ticker)?.value;
           const avgShares = (newAvg && newAvg > 0) ? newAvg : s.avg20DTradedShares;
           const updatedPrevClose = (dynamicPrev && dynamicPrev > 0) ? dynamicPrev : s.prevClose;
           const ratio = s.todayTradedShares > 0 ? +(s.todayTradedShares / avgShares).toFixed(3) : 0;
           const hasCrossed = s.todayTradedShares >= avgShares && s.todayTradedShares > 0;
-          const pctChange = (updatedPrevClose && updatedPrevClose > 0 && s.spotPrice > 0)
-            ? safeChangePct(s.spotPrice, updatedPrevClose, s.percentChange)
-            : s.percentChange;
+          const pctChange = prevCloseBook.percent(s.ticker, s.spotPrice, s.percentChange);
           return {
             ...s,
             avg20DTradedShares: avgShares,
@@ -416,22 +417,16 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const existing = existingMap.get(newStock.ticker);
           if (!existing) return newStock;
 
-          // Preserve live non-zero spot price against placeholder approxLtp
-          const spotPrice = (newStock.isLiveQuote && newStock.spotPrice > 0)
-            ? newStock.spotPrice
-            : (existing.spotPrice > 0 ? existing.spotPrice : newStock.spotPrice);
+          // Websocket price wins while it is fresh; the REST snapshot is older and would pull the price back
+          const tickAge = Date.now() - (lastStockTickAt.get(newStock.ticker) ?? 0);
+          const spotPrice = (existing.spotPrice > 0 && tickAge < STOCK_TICK_FRESH_MS)
+            ? existing.spotPrice
+            : (newStock.isLiveQuote && newStock.spotPrice > 0)
+              ? newStock.spotPrice
+              : (existing.spotPrice > 0 ? existing.spotPrice : newStock.spotPrice);
 
-          // Issue 4 Fix: Canonical previous close resolution with sanity validation
-          const catalogBaseline = avgVolumeService.getCachedPrevClose(newStock.ticker) || dhanDirectService.getPrevClose(newStock.ticker) || 0;
-          const prevClose = resolvePrevClose(
-            spotPrice,
-            0,
-            {
-              close: newStock.prevClose && newStock.prevClose > 0 ? newStock.prevClose : undefined,
-            },
-            catalogBaseline > 0 ? catalogBaseline : (existing.prevClose && existing.prevClose > 0 ? existing.prevClose : 0),
-            catalogBaseline
-          );
+          // One owner for the previous close: the REST refresh can offer a value but never overrides a better source
+          const prevClose = prevCloseBook.get(newStock.ticker)?.value ?? existing.prevClose ?? newStock.prevClose ?? 0;
 
           const dayOpen = (newStock.dayOpen && newStock.dayOpen > 0 && newStock.isLiveQuote)
             ? newStock.dayOpen
@@ -454,9 +449,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
           // Issue 3 Fix: Compute genuine price percentage change strictly with safe bounds (±25% max)
           const fallbackPct = existing.percentChange !== 0 ? existing.percentChange : newStock.percentChange;
-          const percentChange = prevClose > 0
-            ? safeChangePct(spotPrice, prevClose, fallbackPct)
-            : fallbackPct;
+          const percentChange = prevCloseBook.percent(newStock.ticker, spotPrice, fallbackPct);
 
           const isBullish = percentChange >= 0 || spotPrice >= dayOpen;
           let circleIndicator: 'GREEN' | 'RED' | 'AMBER' | 'GREY' = 'GREY';
@@ -733,19 +726,16 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
             const deviationPct = Math.abs((tick.ltp - baseline) / baseline * 100);
             if (baseline <= 0 || deviationPct <= 50) {
               spotPrice = tick.ltp;
+              lastStockTickAt.set(stock.ticker, Date.now());
               if (spotPrice !== stock.spotPrice) stockUpdated = true;
             }
           }
 
-          let prevClose = stock.prevClose || avgVolumeService.getCachedPrevClose(stock.ticker) || dhanDirectService.getPrevClose(stock.ticker) || 0;
+          // Previous close: exchange packet first, then the quote packet's close; the book keeps the best source
           if ('prevClose' in tick && tick.prevClose && tick.prevClose > 0) {
-            prevClose = tick.prevClose;
-            dhanDirectService.updatePrevClose(stock.ticker, prevClose, spotPrice);
-            stockUpdated = true;
-          } else if ('dayClose' in tick && tick.dayClose > 0 && prevClose <= 0 && tick.dayClose !== spotPrice) {
-            prevClose = tick.dayClose;
-            dhanDirectService.updatePrevClose(stock.ticker, prevClose, spotPrice);
-            stockUpdated = true;
+            if (prevCloseBook.set(stock.ticker, tick.prevClose, 'EXCHANGE', spotPrice)) stockUpdated = true;
+          } else if ('dayClose' in tick && tick.dayClose > 0 && tick.dayClose !== spotPrice) {
+            if (prevCloseBook.set(stock.ticker, tick.dayClose, 'QUOTE', spotPrice)) stockUpdated = true;
           }
 
           // 2. Capture day open, high, low from Quote
@@ -775,22 +765,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           const ratio = todayTradedShares > 0 ? +(todayTradedShares / avgShares).toFixed(3) : 0;
           const hasCrossed = todayTradedShares >= avgShares && todayTradedShares > 0;
 
-          // Issue 3 Fix: Use canonical resolvePrevClose() with sanity-range check.
-          // Prevents ADANI ENT-style 1900%+ errors from stale catalog / wrong mapping.
-          const catalogPrevClose = (avgVolumeService.getCachedPrevClose(stock.ticker) || dhanDirectService.getPrevClose(stock.ticker)) ?? 0;
-          const baselineClose = resolvePrevClose(
-            spotPrice,
-            0, // netChange not available directly from tick packet
-            {
-              // dayClose from tick is the prev session close during market hours
-              close: ('dayClose' in tick && (tick as any).dayClose > 0) ? (tick as any).dayClose : undefined,
-            },
-            catalogPrevClose > 0 ? catalogPrevClose : (prevClose > 0 ? prevClose : (stock.prevClose ?? 0)),
-            catalogPrevClose
-          );
-          // safeChangePct applies ±25% sanity gate — returns existing value for garbage inputs
+          const baselineClose = prevCloseBook.get(stock.ticker)?.value ?? 0;
           const pctChange = baselineClose > 0
-            ? safeChangePct(spotPrice, baselineClose, stock.percentChange)
+            ? prevCloseBook.percent(stock.ticker, spotPrice, stock.percentChange)
             : stock.percentChange;
 
           const isBullish = pctChange >= 0 || spotPrice >= dayOpen;

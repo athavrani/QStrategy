@@ -9,6 +9,7 @@ import {
 } from '../types/mobile';
 import { SENSEX_NIFTY_MASTER_CATALOG } from '../constants/stockUniverse';
 import { dhanDirectService } from './dhanDirectService';
+import { prevCloseBook } from './marketdata/PrevCloseBook';
 import { avgVolumeService } from './AvgVolumeService';
 import { safeChangePct, resolvePrevClose } from '../utils/marketDataUtils';
 import { niftyOptionFeedService, getActiveWeeklyExpiry } from './niftyOptionFeedService';
@@ -110,22 +111,11 @@ export const apiService = {
       const ratio = todayShares > 0 ? +(todayShares / avgShares).toFixed(3) : 0;
       const hasCrossed = todayShares >= avgShares && todayShares > 0;
 
-      // Canonical prevClose resolution: live quote > cached prevClose > dailyPrevCloseMap > catalog baseline
-      const dynamicPrev = avgVolumeService.getCachedPrevClose(m.ticker) || dhanDirectService.getPrevClose(m.ticker);
-      const prevClose = resolvePrevClose(
-        spotPrice,
-        q?.netChange ?? 0,
-        {
-          previous_close: q?.prevClose,
-          close: q?.close,
-        },
-        dynamicPrev && dynamicPrev > 0 ? dynamicPrev : 0,
-        m.prevClose || 0
-      );
+      // The book holds the best previous close seen today; the quote path above has already offered its value
+      const prevClose = prevCloseBook.get(m.ticker)?.value ?? 0;
 
-      // Safe percentage change within ±25% circuit bounds
       const pctChange = prevClose > 0 && spotPrice > 0
-        ? safeChangePct(spotPrice, prevClose, q?.changePercent ?? 0)
+        ? prevCloseBook.percent(m.ticker, spotPrice, q?.changePercent ?? 0)
         : (q && q.changePercent !== undefined ? q.changePercent : 0);
       const isBullish = pctChange >= 0 || spotPrice >= dayOpen;
 

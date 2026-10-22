@@ -29,6 +29,7 @@ import {
 } from '../utils/marketDataUtils';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dhanRestGateway, GatewayRequestOptions } from './dhan/DhanRestGateway';
+import { prevCloseBook, PrevCloseSource } from './marketdata/PrevCloseBook';
 
 export interface DhanDirectQuote {
   securityId: string;
@@ -66,46 +67,27 @@ class DhanDirectService {
   private cachedAccessToken: string | null = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
-  // Session-date tracker: resets dailyPrevCloseMap at each new trading day
-  private prevCloseSessionDate: string = '';
-
-  // Authentic previous day close cache initialized from verified baseline catalog
-  private dailyPrevCloseMap = new Map<string, number>(
-    SENSEX_NIFTY_MASTER_CATALOG.map((s) => [s.ticker.toUpperCase(), s.prevClose])
-  );
 
   /**
-   * Resets the dailyPrevCloseMap at the start of each new trading day.
-   * Clears old session cache so fresh historical daily candles and quotes
-   * can discover today's authentic previous trading day closing price.
+   * Resets the previous-close book at the start of each new trading day so fresh quotes and
+   * historical candles can discover today's authentic previous close.
    */
   public resetPrevCloseIfNewDay(force = false): void {
-    const todayIST = formatDateKeyIST();
-    if (force || this.prevCloseSessionDate !== todayIST) {
-      this.prevCloseSessionDate = todayIST;
-      this.dailyPrevCloseMap = new Map<string, number>(
-        SENSEX_NIFTY_MASTER_CATALOG.map((s) => [s.ticker.toUpperCase(), s.prevClose])
-      );
-    }
+    prevCloseBook.ensureDay(force);
   }
 
   public getPrevClose(ticker: string): number | undefined {
-    this.resetPrevCloseIfNewDay();
-    return this.dailyPrevCloseMap.get(ticker.toUpperCase());
+    return prevCloseBook.get(ticker)?.value;
   }
 
-  public updatePrevClose(ticker: string, prevClose: number, currentLtp?: number): void {
-    this.resetPrevCloseIfNewDay();
-    if (prevClose > 0) {
-      if (currentLtp && currentLtp > 0) {
-        const pct = calcChangePct(currentLtp, prevClose);
-        if (pct === null || !isReasonableChangePct(pct)) {
-          // Reject candidate to avoid corrupting session cache with split/stale numbers
-          return;
-        }
-      }
-      this.dailyPrevCloseMap.set(ticker.toUpperCase(), prevClose);
-    }
+  /** Offers a previous close; a lower-ranked source never replaces a higher-ranked one. */
+  public updatePrevClose(
+    ticker: string,
+    prevClose: number,
+    currentLtp?: number,
+    source: PrevCloseSource = 'HISTORY'
+  ): void {
+    prevCloseBook.set(ticker, prevClose, source, currentLtp);
   }
 
   private feedTelemetry: DhanFeedTelemetry = {
@@ -429,13 +411,19 @@ class DhanDirectService {
               ohlcClose: item.ohlc?.close ? Number(item.ohlc.close) : undefined,
               close: item.close ? Number(item.close) : undefined,
             },
-            this.dailyPrevCloseMap.get(sym) ?? 0,
+            prevCloseBook.get(sym)?.value ?? 0,
             catalogPrevClose
           );
 
-          // Cache genuinely discovered prevClose for use by tick listener and RadarScreen
-          if (prevClose > 0) {
-            this.dailyPrevCloseMap.set(sym, prevClose);
+          // Only values the API actually supplied are stored as REST; cached fallbacks must not be promoted.
+          const apiSuppliedPrev =
+            rawNetChange !== 0 ||
+            Boolean(item.previous_close) ||
+            Boolean(item.prev_close) ||
+            (Boolean(item.ohlc?.close) && Number(item.ohlc.close) !== ltp) ||
+            (Boolean(item.close) && Number(item.close) !== ltp);
+          if (prevClose > 0 && apiSuppliedPrev) {
+            prevCloseBook.set(sym, prevClose, 'REST', ltp);
           }
 
           // Calculate mathematically sound netChange & changePercent
