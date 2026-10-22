@@ -22,6 +22,7 @@ import {
 import { useTheme, createThemedStyles } from '../../theme';
 import { NiftyBreakout180State, Candidate180Contract } from '../../types/mobile';
 import { dhanDirectService } from '../../services/dhanDirectService';
+import { NIFTY_LOT_SIZE } from '../../constants/lotSizes';
 import { useRadarStore } from '../../store/useRadarStore';
 import { useSharedTick } from '../../hooks/useSharedTicker';
 import { StatusBadge } from '../common/StatusBadge';
@@ -159,7 +160,7 @@ export function BreakoutDetailModal({
   const slPrice = data?.fixedStopLoss ?? 160.0;
 
   const pnlPerShare = data?.pnlPoints ?? (isActive ? +(activeLtp - entryPrice).toFixed(2) : 0);
-  const pnlPerLot = +(pnlPerShare * 25).toFixed(2); // NIFTY lot size = 25
+  const pnlPerLot = +(pnlPerShare * NIFTY_LOT_SIZE).toFixed(2);
 
   const handleOpenBroker = (broker: 'kite' | 'dhan', symbol: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -801,7 +802,7 @@ export function BreakoutDetailModal({
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={styles.pnlLabel}>NET P&amp;L (1 LOT = 25 SH)</Text>
+                    <Text style={styles.pnlLabel}>NET P&amp;L (1 LOT = {NIFTY_LOT_SIZE} SH)</Text>
                     <Text
                       style={[
                         styles.pnlValue,

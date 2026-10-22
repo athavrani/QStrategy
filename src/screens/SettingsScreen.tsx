@@ -19,6 +19,11 @@ import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { useRadarStore } from '../store/useRadarStore';
 import { API_CONFIG } from '../config/apiConfig';
 import { appUpdateService, UpdateCheckResult } from '../services/appUpdateService';
+import {
+  isBackgroundMonitorEnabled,
+  setBackgroundMonitorEnabled,
+  openBatterySettings,
+} from '../services/backgroundMonitorService';
 import * as Haptics from 'expo-haptics';
 
 export function SettingsScreen() {
@@ -27,6 +32,20 @@ export function SettingsScreen() {
   const [pushEnabled, setPushEnabled] = useState(true);
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [backgroundEnabled, setBackgroundEnabled] = useState(true);
+
+  useEffect(() => {
+    isBackgroundMonitorEnabled().then(setBackgroundEnabled).catch(() => {});
+  }, []);
+
+  const handleToggleBackground = async (value: boolean) => {
+    setBackgroundEnabled(value);
+    const running = await setBackgroundMonitorEnabled(value);
+    if (value && !running) {
+      setBackgroundEnabled(false);
+      Alert.alert('Background monitoring', 'Could not start the background service on this device.');
+    }
+  };
   const [broker, setBroker] = useState<'kite' | 'dhan'>('dhan');
 
   // Direct Dhan Streamer State
@@ -472,6 +491,35 @@ export function SettingsScreen() {
 
         <TouchableOpacity style={styles.testAppLaunchBtn} onPress={handleTestLaunchDhanApp}>
           <Text style={styles.testAppLaunchText}>📱 Test 1-Tap Launch Dhan Mobile App</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* BACKGROUND MONITORING */}
+      <Text style={styles.sectionHeader}>BACKGROUND MONITORING</Text>
+
+      <View style={styles.card}>
+        <View style={styles.settingRow}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <Text style={styles.settingTitle}>Keep running in background</Text>
+            <Text style={styles.settingSub}>
+              Shows a persistent notification and keeps the live feed so locks, breakouts and exits alert with the app minimised
+            </Text>
+          </View>
+          <Switch
+            value={backgroundEnabled}
+            onValueChange={handleToggleBackground}
+            trackColor={{ false: colors.surfaceSubtle, true: colors.bullish }}
+          />
+        </View>
+
+        <View style={styles.divider} />
+
+        <TouchableOpacity style={styles.settingRow} onPress={openBatterySettings}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <Text style={styles.settingTitle}>Battery settings</Text>
+            <Text style={styles.settingSub}>Set QStrategy to Unrestricted so Android does not stop it</Text>
+          </View>
+          <Text style={styles.settingTitle}>Open</Text>
         </TouchableOpacity>
       </View>
 

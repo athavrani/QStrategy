@@ -4,6 +4,7 @@ import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../ty
 import { useTheme, createThemedStyles } from '../../theme';
 import { sensexOptionFeedService } from '../../services/sensexOptionFeedService';
 import * as Haptics from 'expo-haptics';
+import { SENSEX_LOT_SIZE } from '../../constants/lotSizes';
 
 export const SensexOobtstPlugin: BaseStrategyPlugin = {
   id: 'SENSEX_OOBTST',
@@ -37,7 +38,7 @@ export const SensexOobtstPlugin: BaseStrategyPlugin = {
     const executedSymbol = live.executedSymbol || (live.activeLeg === 'PE' ? peSymbol : ceSymbol);
     const executedPrice = live.executedPrice || (live.activeLeg === 'PE' ? peTrigger : ceTrigger);
     const slPrice = live.slPrice || (executedPrice > 0 ? +(executedPrice / 2).toFixed(2) : 0);
-    const riskPerLot = live.riskPerLot || (executedPrice > 0 ? +((executedPrice - slPrice) * 10).toFixed(2) : 0);
+    const riskPerLot = live.riskPerLot || (executedPrice > 0 ? +((executedPrice - slPrice) * SENSEX_LOT_SIZE).toFixed(2) : 0);
     const pnlLot = live.pnlPerLot ?? 0;
 
     let badgeTone: 'purple' | 'bullish' | 'bearish' | 'warning' | 'cyan' = 'cyan';

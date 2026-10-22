@@ -17,6 +17,7 @@ import { StrategySignalOutput } from '../../strategies/types';
 import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
 import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
+import { SENSEX_LOT_SIZE } from '../../constants/lotSizes';
 
 interface SensexOobtstDetailModalProps {
   visible: boolean;
@@ -153,7 +154,7 @@ export function SensexOobtstDetailModal({
 
   const activeLtp = isPeExecuted ? step2.peLtp : step2.ceLtp;
   const pnlPerShare = currentStep === 3 && step3.executedPrice > 0 ? (activeLtp - step3.executedPrice) : 0;
-  const pnlPerLot = pnlPerShare * 10; // BSE SENSEX lot size = 10
+  const pnlPerLot = pnlPerShare * SENSEX_LOT_SIZE;
 
   const ceProgress = step2.ceTrigger > 0 ? Math.min(100, Math.round((step2.ceLtp / step2.ceTrigger) * 100)) : 0;
   const peProgress = step2.peTrigger > 0 ? Math.min(100, Math.round((step2.peLtp / step2.peTrigger) * 100)) : 0;
@@ -643,7 +644,7 @@ export function SensexOobtstDetailModal({
 
             <View style={styles.quantExplainer}>
               <Text style={styles.quantExplainerText}>
-                💡 <Text style={{ fontWeight: '700' }}>Quant Rationale:</Text> ₹{targetPremium.toFixed(2)} target premium identifies BSE Sensex strikes (~0.20-0.25 Delta) in the ₹90–₹120 range with low entry premium (~₹1,000/lot) and high gamma acceleration potential.
+                💡 <Text style={{ fontWeight: '700' }}>Quant Rationale:</Text> ₹{targetPremium.toFixed(2)} target premium identifies BSE Sensex strikes (~0.20-0.25 Delta) in the ₹90–₹120 range with low entry premium (~₹{Math.round(targetPremium * SENSEX_LOT_SIZE).toLocaleString('en-IN')}/lot) and high gamma acceleration potential.
               </Text>
             </View>
           </View>
@@ -867,7 +868,7 @@ export function SensexOobtstDetailModal({
                     <Text style={[styles.cellValue, { color: colors.bearish }]}>₹{step3.slPrice.toFixed(2)}</Text>
                   </View>
                   <View style={styles.oobtstCell}>
-                    <Text style={styles.cellLabel}>MAX RISK / LOT (10)</Text>
+                    <Text style={styles.cellLabel}>MAX RISK / LOT ({SENSEX_LOT_SIZE})</Text>
                     <Text style={[styles.cellValue, { color: colors.bearish }]}>₹{step3.riskPerLot.toFixed(2)}</Text>
                   </View>
                   <View style={styles.oobtstCell}>

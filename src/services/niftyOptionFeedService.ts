@@ -13,8 +13,8 @@ import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
 import { assessLockFreshness, RANK_WINDOW_STRIKES } from './marketdata/lockFreshness';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
+import { NIFTY_LOT_SIZE } from '../constants/lotSizes';
 
-const NIFTY_LOT_SIZE = 25;
 const NIFTY_STRIKE_STEP = 50;
 const ANCHOR_TARGET_PREMIUM = 62.50;
 

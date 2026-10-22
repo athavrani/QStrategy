@@ -7,6 +7,7 @@ import { dhanDirectService } from './src/services/dhanDirectService';
 import { AppUpdateModal } from './src/components/common';
 import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateService';
 import { formatDateKeyIST } from './src/constants/nseHolidays';
+import { syncBackgroundMonitor } from './src/services/backgroundMonitorService';
 
 export default function App() {
   const refreshAll = useRadarStore((s) => s.refreshAll);
@@ -24,6 +25,9 @@ export default function App() {
 
     // 1. Initialize notification channel permissions
     notificationService.registerForPushNotifications();
+
+    // Foreground service keeps timers and the Dhan socket alive while the app is minimised
+    syncBackgroundMonitor().catch(() => {});
 
     // 2. Restore latches and today's journal first, then load data and launch the live streamer.
     // The streamer starts even if the first refresh fails, so ticks are never blocked by one bad REST call.

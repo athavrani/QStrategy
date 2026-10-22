@@ -19,6 +19,7 @@ import { OobtstCandidateStrike, StrategySignalOutput } from '../../strategies/ty
 import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
 import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
+import { NIFTY_LOT_SIZE } from '../../constants/lotSizes';
 
 interface OobtstDetailModalProps {
   visible: boolean;
@@ -151,7 +152,7 @@ export function OobtstDetailModal({
 
   const activeLtp = isPeExecuted ? step2.peLtp : step2.ceLtp;
   const pnlPerShare = currentStep === 3 && step3.executedPrice > 0 ? (activeLtp - step3.executedPrice) : 0;
-  const pnlPerLot = pnlPerShare * 25; // NIFTY lot size = 25
+  const pnlPerLot = pnlPerShare * NIFTY_LOT_SIZE;
 
   const handleOpenBroker = (broker: 'kite' | 'dhan', symbol: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -655,7 +656,7 @@ export function OobtstDetailModal({
 
             <View style={styles.quantExplainer}>
               <Text style={styles.quantExplainerText}>
-                💡 <Text style={{ fontWeight: '700' }}>Quant Rationale:</Text> ₹{targetPremium.toFixed(2)} target premium identifies OTM strikes (~0.20-0.25 Delta) with low entry premium (~₹1,500/lot) and high gamma acceleration potential.
+                💡 <Text style={{ fontWeight: '700' }}>Quant Rationale:</Text> ₹{targetPremium.toFixed(2)} target premium identifies OTM strikes (~0.20-0.25 Delta) with low entry premium (~₹{Math.round(targetPremium * NIFTY_LOT_SIZE).toLocaleString('en-IN')}/lot) and high gamma acceleration potential.
               </Text>
             </View>
           </View>
@@ -879,7 +880,7 @@ export function OobtstDetailModal({
                     <Text style={[styles.cellValue, { color: colors.bearish }]}>₹{step3.slPrice.toFixed(2)}</Text>
                   </View>
                   <View style={styles.oobtstCell}>
-                    <Text style={styles.cellLabel}>MAX RISK / LOT (25)</Text>
+                    <Text style={styles.cellLabel}>MAX RISK / LOT ({NIFTY_LOT_SIZE})</Text>
                     <Text style={[styles.cellValue, { color: colors.bearish }]}>₹{step3.riskPerLot.toFixed(2)}</Text>
                   </View>
                   <View style={styles.oobtstCell}>

@@ -5,6 +5,7 @@ import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { niftyOptionFeedService } from '../../services/niftyOptionFeedService';
 import * as Haptics from 'expo-haptics';
+import { NIFTY_LOT_SIZE } from '../../constants/lotSizes';
 
 export const NiftyOvernightPlugin: BaseStrategyPlugin = {
   id: 'NIFTY_OVERNIGHT',
@@ -38,7 +39,7 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
     const executedSymbol = live.executedSymbol || (live.activeLeg === 'PE' ? peSymbol : ceSymbol);
     const executedPrice = live.executedPrice || (live.activeLeg === 'PE' ? peTrigger : ceTrigger);
     const slPrice = live.slPrice || (executedPrice > 0 ? +(executedPrice / 2).toFixed(2) : 0);
-    const riskPerLot = live.riskPerLot || (executedPrice > 0 ? +((executedPrice - slPrice) * 25).toFixed(2) : 0);
+    const riskPerLot = live.riskPerLot || (executedPrice > 0 ? +((executedPrice - slPrice) * NIFTY_LOT_SIZE).toFixed(2) : 0);
     const pnlLot = live.pnlPerLot ?? 0;
 
     let badgeTone: 'purple' | 'bullish' | 'bearish' | 'warning' | 'cyan' = 'cyan';

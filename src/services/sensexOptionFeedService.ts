@@ -19,9 +19,10 @@ import { tradingCalendarService } from './TradingCalendarService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
 import { OobtstCandidateStrike, OobtstLiveState, OobtstLegDetail } from '../strategies/types';
+import { SENSEX_LOT_SIZE } from '../constants/lotSizes';
 
+export { SENSEX_LOT_SIZE };
 export const SENSEX_STRIKE_STEP = 100;
-export const SENSEX_LOT_SIZE = 10;
 export const SENSEX_DEFAULT_TARGET_PREMIUM = 100.0;
 export const SENSEX_MIN_ELIGIBLE_PREMIUM = 90.0;
 export const SENSEX_MAX_ELIGIBLE_PREMIUM = 120.0;
