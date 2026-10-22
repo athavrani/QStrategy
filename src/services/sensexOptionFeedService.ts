@@ -14,6 +14,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
+import { assessLockFreshness, RANK_WINDOW_STRIKES } from './marketdata/lockFreshness';
 import { tradingCalendarService } from './TradingCalendarService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
@@ -93,6 +94,7 @@ export class SensexOptionFeedService {
     underlying: 'SENSEX',
     optionSegment: 'BSE_FNO',
     fallbackSpot: 81000,
+    streamWindow: { step: SENSEX_STRIKE_STEP, strikes: RANK_WINDOW_STRIKES },
     resolveExpiryYmd: () => tradingCalendarService.getActiveWeeklySensexExpiry(new Date(), true).expiryDateYMD,
     selectCandidates: (spot) => this.selectTopTwoCandidates(spot),
   });
@@ -332,7 +334,7 @@ export class SensexOptionFeedService {
 
         // CE check: ₹90 <= premium <= ₹120
         if (data.ceLtp >= SENSEX_MIN_ELIGIBLE_PREMIUM && data.ceLtp <= SENSEX_MAX_ELIGIBLE_PREMIUM) {
-          const ageMs = data.ceUpdatedTime ? nowMs - data.ceUpdatedTime : 999999;
+          const ageMs = nowMs - (data.ceUpdatedTime || this.lastOptionChainSyncTime || nowMs);
           const diff = Number(Math.abs(data.ceLtp - target).toFixed(2));
           const spread = data.ceBid && data.ceAsk ? Math.abs(data.ceAsk - data.ceBid) : 999;
           eligibleCe.push({
@@ -351,7 +353,7 @@ export class SensexOptionFeedService {
 
         // PE check: ₹90 <= premium <= ₹120
         if (data.peLtp >= SENSEX_MIN_ELIGIBLE_PREMIUM && data.peLtp <= SENSEX_MAX_ELIGIBLE_PREMIUM) {
-          const ageMs = data.peUpdatedTime ? nowMs - data.peUpdatedTime : 999999;
+          const ageMs = nowMs - (data.peUpdatedTime || this.lastOptionChainSyncTime || nowMs);
           const diff = Number(Math.abs(data.peLtp - target).toFixed(2));
           const spread = data.peBid && data.peAsk ? Math.abs(data.peAsk - data.peBid) : 999;
           eligiblePe.push({
@@ -475,13 +477,20 @@ export class SensexOptionFeedService {
 
     let isConfirmed = false;
     let isLockFailed = false;
+    let isLockPending = false;
     let lockFailureReason: string | undefined = undefined;
 
     if (isConfirmationTime) {
       const ceValid = rank1Ce !== null && rank1Ce.ltp > 0;
       const peValid = rank1Pe !== null && rank1Pe.ltp > 0;
+      const freshness = ceValid && peValid
+        ? assessLockFreshness([rank1Ce!.quoteAgeMs, rank1Pe!.quoteAgeMs], totalSeconds - gate0920)
+        : 'FRESH';
 
-      if (ceValid && peValid) {
+      if (ceValid && peValid && freshness === 'WAIT') {
+        // Keep re-ranking on fresh quotes; lock as soon as both legs are current.
+        isLockPending = true;
+      } else if (ceValid && peValid && freshness === 'FRESH') {
         isConfirmed = true;
         isLockFailed = false;
       } else {
@@ -489,9 +498,14 @@ export class SensexOptionFeedService {
         isLockFailed = true;
         lockFailureReason = !rank1Ce || rank1Ce.ltp <= 0
           ? 'Sensex CE quote unavailable at 09:20'
-          : 'Sensex PE quote unavailable at 09:20';
+          : !rank1Pe || rank1Pe.ltp <= 0
+          ? 'Sensex PE quote unavailable at 09:20'
+          : 'Stale Sensex quote data at 09:20 lock point';
       }
     }
+
+    // The 09:20 open is captured only once the lock can actually be taken
+    const captureOpen = isConfirmationTime && !isLockPending;
 
     // Capture exact 09:20 candle open price
     let ceOpen = 0;
@@ -504,7 +518,7 @@ export class SensexOptionFeedService {
         this.openingCandleTicks[secKey] = ceOpen;
       } else if (this.openingCandleTicks[secKey] && this.openingCandleTicks[secKey] > 0) {
         ceOpen = this.openingCandleTicks[secKey];
-      } else if (isConfirmationTime && rank1Ce.ltp > 0) {
+      } else if (captureOpen && rank1Ce.ltp > 0) {
         ceOpen = rank1Ce.ltp;
         this.openingCandleTicks[secKey] = ceOpen;
       } else {
@@ -519,7 +533,7 @@ export class SensexOptionFeedService {
         this.openingCandleTicks[secKey] = peOpen;
       } else if (this.openingCandleTicks[secKey] && this.openingCandleTicks[secKey] > 0) {
         peOpen = this.openingCandleTicks[secKey];
-      } else if (isConfirmationTime && rank1Pe.ltp > 0) {
+      } else if (captureOpen && rank1Pe.ltp > 0) {
         peOpen = rank1Pe.ltp;
         this.openingCandleTicks[secKey] = peOpen;
       } else {
@@ -528,7 +542,7 @@ export class SensexOptionFeedService {
     }
 
     // Validate 90 <= 09:20 Candle Open <= 120 at lock point
-    if (isConfirmationTime && !isLockFailed) {
+    if (isConfirmationTime && !isLockFailed && !isLockPending) {
       if (ceOpen < SENSEX_MIN_ELIGIBLE_PREMIUM || ceOpen > SENSEX_MAX_ELIGIBLE_PREMIUM) {
         isLockFailed = true;
         isConfirmed = false;

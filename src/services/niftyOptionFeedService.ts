@@ -10,6 +10,7 @@ import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
 import { marketData } from './marketdata/MarketDataService';
 import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
+import { assessLockFreshness, RANK_WINDOW_STRIKES } from './marketdata/lockFreshness';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
 
@@ -170,6 +171,7 @@ class NiftyOptionFeedService {
     underlying: 'NIFTY',
     optionSegment: 'NSE_FNO',
     fallbackSpot: 24850,
+    streamWindow: { step: NIFTY_STRIKE_STEP, strikes: RANK_WINDOW_STRIKES },
     resolveExpiryYmd: () => getActiveWeeklyExpiry(new Date(), true).expiryDateYMD,
     selectCandidates: (spot) => this.selectTopTwoCandidates(spot),
   });
@@ -309,7 +311,7 @@ class NiftyOptionFeedService {
     peCandidates: OobtstCandidateStrike[];
     previewAvailable: boolean;
   } {
-    const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
+    const reach = RANK_WINDOW_STRIKES * NIFTY_STRIKE_STEP;
 
     if (!this.cachedLiveOptionChain || Object.keys(this.cachedLiveOptionChain).length === 0) {
       return { ceCandidates: [], peCandidates: [], previewAvailable: false };
@@ -321,8 +323,9 @@ class NiftyOptionFeedService {
 
     for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
       const strike = Number(strikeStr);
-      // CE Candidates: OTM or near-ATM (strike >= atm) with valid price > 0
-      if (strike >= atm && data.ceLtp > 0) {
+      // Every strike near spot competes on premium distance alone; there is no ATM cut-off.
+      if (Math.abs(strike - spot) > reach) continue;
+      if (data.ceLtp > 0) {
         ceList.push({
           strike,
           ltp: data.ceLtp,
@@ -331,8 +334,7 @@ class NiftyOptionFeedService {
           lastUpdated: data.ceUpdatedTime || this.lastOptionChainSyncTime || now,
         });
       }
-      // PE Candidates: OTM or near-ATM (strike <= atm) with valid price > 0
-      if (strike <= atm && data.peLtp > 0) {
+      if (data.peLtp > 0) {
         peList.push({
           strike,
           ltp: data.peLtp,
@@ -343,7 +345,7 @@ class NiftyOptionFeedService {
       }
     }
 
-    // Fallback if not enough strikes on OTM side: search all strikes with price > 0
+    // Fallback if the window has too few priced strikes: search all strikes with price > 0
     if (ceList.length < 2) {
       for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
         const strike = Number(strikeStr);
@@ -486,14 +488,21 @@ class NiftyOptionFeedService {
 
     let isConfirmed = false;
     let isLockFailed = false;
+    let isProvisionalLock = false;
     let lockFailureReason: string | undefined = undefined;
 
     if (isConfirmationTime) {
       // Validate that valid quotes exist for both selected contracts
       const ceValid = rank1Ce !== null && rank1Ce.ltp > 0;
       const peValid = rank1Pe !== null && rank1Pe.ltp > 0;
+      const freshness = ceValid && peValid
+        ? assessLockFreshness([rank1Ce!.quoteAgeMs, rank1Pe!.quoteAgeMs], totalSeconds - gate0920)
+        : 'FRESH';
 
-      if (ceValid && peValid) {
+      if (ceValid && peValid && freshness === 'WAIT') {
+        // Keep re-ranking on fresh quotes; the lock is taken as soon as both legs are current.
+        isProvisionalLock = true;
+      } else if (ceValid && peValid && freshness === 'FRESH') {
         isConfirmed = true;
         isLockFailed = false;
       } else {
@@ -524,7 +533,7 @@ class NiftyOptionFeedService {
       peTrigger,
       expiryStr,
       isConfirmed,
-      isProvisional,
+      isProvisional: isProvisional || isProvisionalLock,
       isMarketClosed,
       isLockFailed,
       lockFailureReason,

@@ -11,7 +11,7 @@ import { apiService } from '../services/apiService';
 import { alertLatchService } from '../services/alertLatchService';
 import { strategyEngine, STRATEGY_IDS, applyClosedTrades, sumPoints } from '../engine';
 import { journalRepository } from '../services/JournalRepository';
-import { isNearTrigger } from '../engine/clockTriggers';
+import { isNearTrigger, parseClockSeconds } from '../engine/clockTriggers';
 import { btstCarryService } from '../services/BtstCarryService';
 import type { CarryTrade } from '../engine/types';
 import { dhanDirectService } from '../services/dhanDirectService';
@@ -101,6 +101,10 @@ interface RadarStoreState {
 }
 
 let latchReadyPromise: Promise<void> | null = null;
+const LOCK_WINDOW_START_SEC = 9 * 3600 + 19 * 60 + 58;
+const LOCK_WINDOW_END_SEC = 9 * 3600 + 20 * 60 + 20;
+const LOCK_SYNC_INTERVAL_MS = 2000;
+let lastLockSyncAt = 0;
 
 function withNewEntries(prev: RadarStoreState, entries: SignalJournalItem[]): Partial<RadarStoreState> {
   return {
@@ -526,7 +530,16 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   // Time-based triggers (09:20 lock, 09:25 lock, 09:45 exit, 15:30 BTST) must not wait for a tick or the 10 s poll.
   runClockEvaluation: () => {
     const s = get();
-    if (!s.latchServiceInitialized || !isNearTrigger(s.istTime)) return;
+    const sec = parseClockSeconds(s.istTime);
+    // 09:19:58 to 09:20:20 IST: the strike lock needs quotes fresher than the 10 s poll provides
+    const inLockWindow = sec !== null && sec >= LOCK_WINDOW_START_SEC && sec <= LOCK_WINDOW_END_SEC;
+    if (!s.latchServiceInitialized || !(inLockWindow || isNearTrigger(s.istTime))) return;
+
+    if (inLockWindow && Date.now() - lastLockSyncAt >= LOCK_SYNC_INTERVAL_MS) {
+      lastLockSyncAt = Date.now();
+      niftyOptionFeedService.syncLiveOptionChain().catch(() => {});
+      sensexOptionFeedService.syncLiveOptionChain().catch(() => {});
+    }
 
     const ist = s.istTime;
     const updates: Partial<RadarStoreState> = {};

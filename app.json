@@ -3,7 +3,7 @@
     "name": "QStrategy",
     "slug": "qstrategy",
     "scheme": "qstrategy",
-    "version": "1.0.12",
+    "version": "1.0.13",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "platforms": [
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.qstrategy.app",
-      "versionCode": 13,
+      "versionCode": 14,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#080A0F"
@@ -54,7 +54,7 @@
       },
       "updateManifestUrl": "https://raw.githubusercontent.com/athavrani/QStrategy/main/app.json",
       "apkDownloadUrl": "https://github.com/athavrani/QStrategy/releases/latest/download/QStrategy.apk",
-      "releaseNotes": "Option chain: 12s background refresh keeps illiquid strikes current, diff-based contract subscriptions, error and retry state"
+      "releaseNotes": "Strike selection: rank by premium distance with no ATM cut-off, stream +-10 strikes live, lock 09:20 only on fresh quotes (NIFTY and SENSEX)"
     },
     "owner": "quantpulse"
   }

@@ -40,6 +40,8 @@ export interface OptionChainFeedConfig {
   optionSegment: 'NSE_FNO' | 'BSE_FNO';
   /** Spot used to pick candidate contracts to stream when no live spot is known yet. */
   fallbackSpot: number;
+  /** Also streams every contract within `strikes` steps of spot so candidate ranking compares live prices. */
+  streamWindow?: { step: number; strikes: number };
   resolveExpiryYmd: () => string;
   selectCandidates: (spot: number) => {
     ceCandidates: Array<{ securityId?: string | number }>;
@@ -141,13 +143,27 @@ export class OptionChainFeed {
 
   private async doSync(): Promise<boolean> {
     try {
+      const startedAt = this.now();
       const res = await this.fetchChain(this.config.resolveExpiryYmd(), this.config.underlying);
       if (!res || !res.oc || Object.keys(res.oc).length === 0) return false;
 
       const now = this.now();
-      for (const row of Object.values(res.oc)) {
+      const previous = this.chain;
+      for (const [strikeKey, row] of Object.entries(res.oc)) {
         row.ceUpdatedTime = now;
         row.peUpdatedTime = now;
+        // A tick that landed while the request was in flight is newer than the REST snapshot.
+        const old = previous?.[Number(strikeKey)];
+        if (old) {
+          if (old.ceUpdatedTime !== undefined && old.ceUpdatedTime >= startedAt && old.ceLtp > 0) {
+            row.ceLtp = old.ceLtp;
+            row.ceUpdatedTime = old.ceUpdatedTime;
+          }
+          if (old.peUpdatedTime !== undefined && old.peUpdatedTime >= startedAt && old.peLtp > 0) {
+            row.peLtp = old.peLtp;
+            row.peUpdatedTime = old.peUpdatedTime;
+          }
+        }
       }
       this.chain = res.oc;
       if (res.spotPrice && res.spotPrice > 0) this.lastSpot = res.spotPrice;
@@ -168,10 +184,22 @@ export class OptionChainFeed {
   private streamCandidates(): void {
     const { ceCandidates, peCandidates } = this.config.selectCandidates(this.lastSpot || this.config.fallbackSpot);
     const wanted = new Map<string, InstrumentSubscription>();
-    for (const c of [...ceCandidates, ...peCandidates]) {
-      if (!c.securityId) continue;
-      const sub = { exchangeSegment: this.config.optionSegment, securityId: String(c.securityId) };
+    const add = (securityId?: string | number) => {
+      if (!securityId) return;
+      const sub = { exchangeSegment: this.config.optionSegment, securityId: String(securityId) };
       wanted.set(`${sub.exchangeSegment}:${sub.securityId}`, sub);
+    };
+    for (const c of [...ceCandidates, ...peCandidates]) add(c.securityId);
+
+    const win = this.config.streamWindow;
+    if (win && this.chain) {
+      const spot = this.lastSpot || this.config.fallbackSpot;
+      const reach = win.strikes * win.step;
+      for (const [strikeKey, row] of Object.entries(this.chain)) {
+        if (Math.abs(Number(strikeKey) - spot) > reach) continue;
+        add(row.ceSecId);
+        add(row.peSecId);
+      }
     }
 
     const toAdd = [...wanted].filter(([key]) => !this.streamed.has(key));
