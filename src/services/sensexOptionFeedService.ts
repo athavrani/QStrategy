@@ -650,23 +650,30 @@ export class SensexOptionFeedService {
       status = 'ARMED';
       statusBadgeText = 'LOCKED / ARMED_1.5X';
 
+      // The high keeps rising after entry too, so Day High never falls behind the live price
+      const prevCeHigh = anchor.ceArmedHigh ?? 0;
+      const prevPeHigh = anchor.peArmedHigh ?? 0;
+      const ceArmedHigh = Math.max(prevCeHigh, ceLtp);
+      const peArmedHigh = Math.max(prevPeHigh, peLtp);
+      anchor.ceArmedHigh = ceArmedHigh;
+      anchor.peArmedHigh = peArmedHigh;
+      if (ceArmedHigh > prevCeHigh || peArmedHigh > prevPeHigh) {
+        this.persistLockedAnchor(anchor);
+      }
+      this.chainFeed.pin([
+        { strike: anchor.ceStrike, type: 'CE' },
+        { strike: anchor.peStrike, type: 'PE' },
+      ]);
+
       // Check Directional Breakout Trigger under OCO
       if (!activeLeg) {
-        const prevCeHigh = anchor.ceArmedHigh ?? 0;
-        const prevPeHigh = anchor.peArmedHigh ?? 0;
-        anchor.ceArmedHigh = Math.max(prevCeHigh, ceLtp);
-        anchor.peArmedHigh = Math.max(prevPeHigh, peLtp);
-        if (anchor.ceArmedHigh > prevCeHigh || anchor.peArmedHigh > prevPeHigh) {
-          this.persistLockedAnchor(anchor);
-        }
-
-        const ceCrossed = anchor.ceTriggerPrice > 0 && anchor.ceArmedHigh >= anchor.ceTriggerPrice;
-        const peCrossed = anchor.peTriggerPrice > 0 && anchor.peArmedHigh >= anchor.peTriggerPrice;
+        const ceCrossed = anchor.ceTriggerPrice > 0 && ceArmedHigh >= anchor.ceTriggerPrice;
+        const peCrossed = anchor.peTriggerPrice > 0 && peArmedHigh >= anchor.peTriggerPrice;
 
         if (ceCrossed && peCrossed) {
           // Simultaneous cross tie-breaker: larger percentage breakout over trigger
-          const cePct = (anchor.ceArmedHigh - anchor.ceTriggerPrice) / anchor.ceTriggerPrice;
-          const pePct = (anchor.peArmedHigh - anchor.peTriggerPrice) / anchor.peTriggerPrice;
+          const cePct = (ceArmedHigh - anchor.ceTriggerPrice) / anchor.ceTriggerPrice;
+          const pePct = (peArmedHigh - anchor.peTriggerPrice) / anchor.peTriggerPrice;
           activeLeg = cePct >= pePct ? 'CE' : 'PE';
         } else if (ceCrossed) {
           activeLeg = 'CE';
@@ -741,7 +748,7 @@ export class SensexOptionFeedService {
       currentLtp: ceLtp,
       progressPct: ceProgressPct,
       armedHigh: ceHigh,
-      dayHigh: Math.max(this.getLiveDayHigh(anchor.ceStrike, 'CE'), ceHigh),
+      dayHigh: Math.max(this.getLiveDayHigh(anchor.ceStrike, 'CE'), ceHigh, ceLtp),
       status: activeLeg === 'CE' ? 'EXECUTED' : (activeLeg === 'PE' ? 'DISABLED' : (status === 'SL_HIT' ? 'SL_HIT' : 'ARMED')),
       isProvisional,
     };
@@ -755,7 +762,7 @@ export class SensexOptionFeedService {
       currentLtp: peLtp,
       progressPct: peProgressPct,
       armedHigh: peHigh,
-      dayHigh: Math.max(this.getLiveDayHigh(anchor.peStrike, 'PE'), peHigh),
+      dayHigh: Math.max(this.getLiveDayHigh(anchor.peStrike, 'PE'), peHigh, peLtp),
       status: activeLeg === 'PE' ? 'EXECUTED' : (activeLeg === 'CE' ? 'DISABLED' : (status === 'SL_HIT' ? 'SL_HIT' : 'ARMED')),
       isProvisional,
     };

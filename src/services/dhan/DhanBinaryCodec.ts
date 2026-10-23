@@ -14,8 +14,8 @@ export enum DhanFeedResponseCode {
 }
 
 export enum DhanFeedRequestCode {
-  SUBSCRIBE_TICKER = 17,
-  SUBSCRIBE_QUOTE = 15,
+  SUBSCRIBE_TICKER = 15,
+  SUBSCRIBE_QUOTE = 17,
   SUBSCRIBE_DEPTH = 21,
   UNSUBSCRIBE = 16,
   DISCONNECT = 12,

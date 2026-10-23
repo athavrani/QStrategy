@@ -983,8 +983,12 @@ class NiftyOptionFeedService {
 
     const ceProgress = triggerProgressPct(this.peakCeLtp, anchor.ceTrigger);
     const peProgress = triggerProgressPct(this.peakPeLtp, anchor.peTrigger);
-    const ceDayHigh = Math.max(this.getLiveDayHigh(anchor.ceStrike, 'CE'), this.peakCeLtp);
-    const peDayHigh = Math.max(this.getLiveDayHigh(anchor.peStrike, 'PE'), this.peakPeLtp);
+    const ceDayHigh = Math.max(this.getLiveDayHigh(anchor.ceStrike, 'CE'), this.peakCeLtp, ceLtp);
+    const peDayHigh = Math.max(this.getLiveDayHigh(anchor.peStrike, 'PE'), this.peakPeLtp, peLtp);
+    this.chainFeed.pin([
+      { strike: anchor.ceStrike, type: 'CE' },
+      { strike: anchor.peStrike, type: 'PE' },
+    ]);
 
     const isCeBreached = anchor.ceTrigger > 0 && (ceLtp >= anchor.ceTrigger || this.peakCeLtp >= anchor.ceTrigger);
     const isPeBreached = anchor.peTrigger > 0 && (peLtp >= anchor.peTrigger || this.peakPeLtp >= anchor.peTrigger);

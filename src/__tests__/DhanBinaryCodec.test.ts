@@ -159,7 +159,7 @@ describe('DhanHQ v2 Binary Codec (Little-Endian Protocol)', () => {
       const jsonStr = buildDhanSubscriptionMessage(instruments, DhanFeedRequestCode.SUBSCRIBE_QUOTE);
       const parsed = JSON.parse(jsonStr);
 
-      expect(parsed.RequestCode).toBe(15);
+      expect(parsed.RequestCode).toBe(17);
       expect(parsed.InstrumentCount).toBe(2);
       expect(parsed.InstrumentList).toHaveLength(2);
       expect(parsed.InstrumentList[0]).toEqual({ ExchangeSegment: 'NSE_EQ', SecurityId: '1333' });

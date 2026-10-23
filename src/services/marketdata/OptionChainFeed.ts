@@ -64,6 +64,7 @@ export class OptionChainFeed {
   lastSyncTime = 0;
 
   private streamed = new Map<string, InstrumentSubscription>();
+  private pinned = new Map<string, InstrumentSubscription>();
   private inflight: Promise<boolean> | null = null;
   private readonly fetchChain: NonNullable<OptionChainFeedDeps['fetchChain']>;
   private readonly market: NonNullable<OptionChainFeedDeps['market']>;
@@ -138,6 +139,27 @@ export class OptionChainFeed {
     this.chain = null;
     this.lastSyncTime = 0;
     this.releaseStreamed([...this.streamed.keys()]);
+    if (this.pinned.size > 0) {
+      this.market.release(`${this.config.owner}-locked`, [...this.pinned.values()]);
+      this.pinned.clear();
+    }
+  }
+
+  /** Keeps locked contracts streaming for the session even if ranking or spot moves them out of the stream window. */
+  pin(legs: Array<{ strike: number; type: 'CE' | 'PE' }>): void {
+    if (!this.chain) return;
+    const fresh: InstrumentSubscription[] = [];
+    for (const { strike, type } of legs) {
+      const row = this.chain[strike];
+      const id = type === 'CE' ? row?.ceSecId : row?.peSecId;
+      if (!id) continue;
+      const sub = { exchangeSegment: this.config.optionSegment, securityId: String(id) };
+      const key = `${sub.exchangeSegment}:${sub.securityId}`;
+      if (this.pinned.has(key)) continue;
+      this.pinned.set(key, sub);
+      fresh.push(sub);
+    }
+    if (fresh.length > 0) this.market.acquire(`${this.config.owner}-locked`, fresh);
   }
 
   private async fetchOnly(ticker: string): Promise<boolean> {

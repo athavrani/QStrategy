@@ -117,3 +117,78 @@ describe('09:25 breakout progress follows the high since the 09:30 entry window'
     expect(nifty.evaluateBreakout180(24800, '09:35:00 AM').ceCandidate).toMatchObject({ currentLtp: 174, armedHigh: 177 });
   });
 });
+
+describe('Dhan feed subscription codes', () => {
+  test('quote subscription is 17 and ticker 15', () => {
+    const { DhanFeedRequestCode } = require('../services/dhan/DhanBinaryCodec');
+    expect(DhanFeedRequestCode.SUBSCRIBE_TICKER).toBe(15);
+    expect(DhanFeedRequestCode.SUBSCRIBE_QUOTE).toBe(17);
+  });
+});
+
+describe('SENSEX OOBTST day high', () => {
+  const lockSensex = () => {
+    (sensex as any).cachedLiveOptionChain = {
+      80800: { ceLtp: 95.0, peLtp: 140.0, ceSecId: '201', peSecId: '202' },
+      81200: { ceLtp: 140.0, peLtp: 100.0, ceSecId: '203', peSecId: '204' },
+    };
+    sensex.evaluateSensexOobtst(81000, '09:20:00 AM');
+  };
+
+  test('a quote packet fills the exchange Day High of a locked leg', () => {
+    const { encodeDhanQuotePacket, decodeDhanBinaryPacket } = require('../services/dhan/DhanBinaryCodec');
+    lockSensex();
+    const packet = decodeDhanBinaryPacket(
+      encodeDhanQuotePacket({
+        securityId: 201, exchangeSegment: 8, ltp: 100, ltq: 1, ltt: 1729321200, atp: 99, volume: 10,
+        totalSellQty: 1, totalBuyQty: 1, dayOpen: 95, dayClose: 0, dayHigh: 133.5, dayLow: 90,
+      })
+    );
+    (marketData as any).snapshots.apply('8:201', packet, Date.now());
+    expect(sensex.evaluateSensexOobtst(81000, '09:21:00 AM').ceLeg.dayHigh).toBe(133.5);
+  });
+
+  test('Day High follows a rising price after the leg is bought, with no exchange value', () => {
+    lockSensex();
+    (sensex as any).cachedLiveOptionChain[80800].ceLtp = 145;
+    expect(sensex.evaluateSensexOobtst(81000, '09:22:00 AM').activeLeg).toBe('CE');
+    (sensex as any).cachedLiveOptionChain[80800].ceLtp = 170;
+    const leg = sensex.evaluateSensexOobtst(81000, '09:30:00 AM').ceLeg;
+    expect(leg).toMatchObject({ currentLtp: 170, armedHigh: 170, dayHigh: 170 });
+    (sensex as any).cachedLiveOptionChain[80800].ceLtp = 160;
+    expect(sensex.evaluateSensexOobtst(81000, '09:31:00 AM').ceLeg).toMatchObject({ currentLtp: 160, dayHigh: 170 });
+  });
+});
+
+describe('locked legs stay streamed and snapshots clear', () => {
+  test('pin acquires the locked contracts once and reset releases them', () => {
+    const { OptionChainFeed } = require('../services/marketdata/OptionChainFeed');
+    const market = { acquire: jest.fn(), release: jest.fn(), isConnected: () => true };
+    const feed = new OptionChainFeed(
+      {
+        owner: 'sx', underlying: 'SENSEX', optionSegment: 'BSE_FNO', fallbackSpot: 81000,
+        resolveExpiryYmd: () => '2026-10-30',
+        selectCandidates: () => ({ ceCandidates: [], peCandidates: [] }),
+      },
+      { market }
+    );
+    feed.chain = { 80800: { ceLtp: 1, peLtp: 1, ceOi: 0, peOi: 0, ceSecId: '201', peSecId: '202' } };
+    const legs = [{ strike: 80800, type: 'CE' as const }, { strike: 80800, type: 'PE' as const }];
+    feed.pin(legs);
+    feed.pin(legs);
+    expect(market.acquire).toHaveBeenCalledTimes(1);
+    expect(market.acquire).toHaveBeenCalledWith('sx-locked', [
+      { exchangeSegment: 'BSE_FNO', securityId: '201' },
+      { exchangeSegment: 'BSE_FNO', securityId: '202' },
+    ]);
+    feed.reset();
+    expect(market.release).toHaveBeenCalledWith('sx-locked', expect.any(Array));
+  });
+
+  test('clearSnapshots drops yesterday quotes', () => {
+    (marketData as any).snapshots.apply('8:301', { exchangeSegment: 8, securityId: 301, dayHigh: 140 }, 1);
+    expect(marketData.getQuote('BSE_FNO', '301')?.dayHigh).toBe(140);
+    marketData.clearSnapshots();
+    expect(marketData.getQuote('BSE_FNO', '301')).toBeUndefined();
+  });
+});

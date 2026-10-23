@@ -290,6 +290,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       niftyOptionFeedService.resetBreakout180(true);
       sensexOptionFeedService.resetAnchor(true);
       dhanDirectService.resetPrevCloseIfNewDay(true);
+      // Yesterday's quotes (day high, volume) must not survive into the new session
+      marketData.clearSnapshots();
       set({
         sessionDate: todayIST,
         avgLoaded: false,
