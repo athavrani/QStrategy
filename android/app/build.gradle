@@ -115,7 +115,7 @@ def getAppVersion() {
             }
         }
     } catch (Exception ignored) {}
-    return "1.0.16"
+    return "1.0.17"
 }
 
 def getAppVersionCode() {
@@ -128,7 +128,7 @@ def getAppVersionCode() {
             }
         }
     } catch (Exception ignored) {}
-    return 17
+    return 18
 }
 
 // Release signing secrets come from the environment or ~/.gradle/gradle.properties, never from the repo.
