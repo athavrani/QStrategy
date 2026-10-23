@@ -56,6 +56,23 @@ describe('JournalRepository', () => {
     expect(await repo.loadForDate('2098-01-01')).toEqual([]);
     expect(await repo.loadForDate('2098-06-01')).toHaveLength(1);
   });
+
+  test('lists session dates newest first and the store selects a past day', async () => {
+    const repo = new JournalRepository();
+    await repo.save(entry('d-1'), '2097-05-01');
+    await repo.save(entry('d-2'), '2097-05-03');
+    await repo.save(entry('d-3'), '2097-05-03');
+
+    const dates = await repo.getAvailableDates();
+    expect(dates.indexOf('2097-05-03')).toBeLessThan(dates.indexOf('2097-05-01'));
+    expect(new Set(dates).size).toBe(dates.length);
+
+    await useRadarStore.getState().selectJournalDate('2097-05-03');
+    expect(useRadarStore.getState().historicalJournal).toHaveLength(2);
+    await useRadarStore.getState().selectJournalDate(null);
+    expect(useRadarStore.getState().selectedJournalDate).toBeNull();
+    expect(useRadarStore.getState().historicalJournal).toEqual([]);
+  });
 });
 
 describe('SignalPipeline journal sink', () => {

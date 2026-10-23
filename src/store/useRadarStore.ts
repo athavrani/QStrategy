@@ -7,7 +7,7 @@ import {
   MarketSessionStatus,
   SignalJournalItem,
 } from '../types/mobile';
-import { apiService } from '../services/apiService';
+import { apiService, isSessionVolumeLive } from '../services/apiService';
 import { alertLatchService } from '../services/alertLatchService';
 import { strategyEngine, STRATEGY_IDS, applyClosedTrades, sumPoints } from '../engine';
 import { journalRepository } from '../services/JournalRepository';
@@ -84,6 +84,11 @@ interface RadarStoreState {
   selectedLockDate: string | null;
   historicalLocks: DailyStrategyLockRecord[];
 
+  // Date-wise Journal History
+  availableJournalDates: string[];
+  selectedJournalDate: string | null;
+  historicalJournal: SignalJournalItem[];
+
   // Actions
   initStreamer: () => void;
   refreshAll: (isManual?: boolean) => Promise<void>;
@@ -98,6 +103,8 @@ interface RadarStoreState {
   setSensexOobtstTargetPremium: (target: number) => Promise<boolean>;
   fetchAvailableLockDates: () => Promise<string[]>;
   selectLockDate: (date: string | null) => Promise<void>;
+  fetchAvailableJournalDates: () => Promise<string[]>;
+  selectJournalDate: (date: string | null) => Promise<void>;
 }
 
 let latchReadyPromise: Promise<void> | null = null;
@@ -111,7 +118,7 @@ let lastLockSyncAt = 0;
 function withNewEntries(prev: RadarStoreState, entries: SignalJournalItem[]): Partial<RadarStoreState> {
   return {
     journal: [...entries, ...prev.journal],
-    signalsTodayCount: Math.max(prev.signalsTodayCount, prev.journal.length + entries.length),
+    signalsTodayCount: prev.journal.length + entries.length,
   };
 }
 
@@ -152,6 +159,10 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   selectedLockDate: null,
   historicalLocks: [],
 
+  availableJournalDates: [],
+  selectedJournalDate: null,
+  historicalJournal: [],
+
   ensureLatchReady: () => {
     if (!latchReadyPromise) {
       latchReadyPromise = (async () => {
@@ -165,7 +176,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           set((prev) => {
             const known = new Set(prev.journal.map((j) => j.id));
             const journal = [...prev.journal, ...persisted.filter((j) => !known.has(j.id))];
-            return { journal, netPointsCaptured: sumPoints(journal) };
+            return { journal, signalsTodayCount: journal.length, netPointsCaptured: sumPoints(journal) };
           });
         }
       } catch {}
@@ -237,7 +248,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
                   : `🔴 Crossed 100% of 20D Avg (${(item.volumeRatio * 100).toFixed(1)}% Vol). Bearish LTP < Open (Distribution).`,
               };
             });
-            set({ journal: restoredJournal.reverse() });
+            set({ journal: restoredJournal.reverse(), signalsTodayCount: restoredJournal.length });
           }
         } catch {}
       }
@@ -286,6 +297,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         carryTrades: [],
         signalsTodayCount: 0,
         netPointsCaptured: 0,
+        selectedJournalDate: null,
+        historicalJournal: [],
         stocks: get().stocks.map((s) => ({
           ...s,
           todayTradedShares: 0,
@@ -298,6 +311,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       });
       // A session left open overnight must still pick up yesterday's BTST positions
       get().loadCarryTrades();
+      get().fetchAvailableJournalDates().catch(() => {});
     }
 
     // Daily 20D average volume & previous session close computation:
@@ -377,8 +391,6 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       const breakout = breakoutRes.status === 'fulfilled' ? breakoutRes.value : get().niftyBreakout180;
       const niftyIndexQuote = niftyIndexQuoteRes.status === 'fulfilled' ? niftyIndexQuoteRes.value : null;
 
-      const greenCount = stocks.filter((s) => s.hasCrossed20D && s.todayTradedShares > 0 && s.circleIndicator === 'GREEN').length;
-      const redCount = stocks.filter((s) => s.hasCrossed20D && s.todayTradedShares > 0 && s.circleIndicator === 'RED').length;
       const telemetry = dhanDirectService.getTelemetry();
 
       const resolvedSpot = niftyIndexQuote && niftyIndexQuote.ltp > 0 ? niftyIndexQuote.ltp : get().niftySpot;
@@ -403,13 +415,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         carry: get().carryTrades,
       });
 
-      const isOvernightActive = overnight && (overnight.status === 'ACTIVE_HOLD' || overnight.status === 'OVERNIGHT_HOLD');
-      const isBreakoutActive = breakout && breakout.status === 'IN_TRADE';
-      const isSensexActive = liveSensexOobtst && (liveSensexOobtst.status === 'ACTIVE' || liveSensexOobtst.status === 'BTST_HOLD');
-      const signalsTodayCount = Math.max(
-        greenCount + redCount + (isOvernightActive ? 1 : 0) + (isBreakoutActive ? 1 : 0) + (isSensexActive ? 1 : 0),
-        get().journal.length + newJournalEntries.length
-      );
+      const volumeLive = isSessionVolumeLive();
 
       set((prev) => {
         const existingMap = new Map(prev.stocks.map((s) => [s.ticker, s]));
@@ -439,7 +445,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           );
 
           // Traded volume: Monotonic guarantee, never overwrite live volume with 0
-          const todayTradedShares = Math.max(newStock.todayTradedShares || 0, existing.todayTradedShares || 0);
+          const todayTradedShares = volumeLive
+            ? Math.max(newStock.todayTradedShares || 0, existing.todayTradedShares || 0)
+            : 0;
           const cachedAvg = avgVolumeService.getCachedAvg(newStock.ticker);
           const avgShares = (cachedAvg && cachedAvg > 0)
             ? cachedAvg
@@ -492,7 +500,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           oobtstTargetPremium: niftyOptionFeedService.getTargetPremium(),
           breakoutThreshold: niftyOptionFeedService.getBreakoutThreshold(),
           sensexOobtstTargetPremium: sensexOptionFeedService.getTargetPremium(),
-          signalsTodayCount,
+          signalsTodayCount: prev.journal.length + newJournalEntries.length,
           feedStatus: telemetry.status,
           lastTickTime: telemetry.lastTickTime || session.istTime,
           journal: newJournalEntries.length > 0 ? [...newJournalEntries, ...prev.journal] : prev.journal,
@@ -612,6 +620,22 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     set({ selectedLockDate: date, historicalLocks: locks });
   },
 
+  fetchAvailableJournalDates: async () => {
+    const today = formatDateKeyIST();
+    const dates = (await journalRepository.getAvailableDates()).filter((d) => d !== today);
+    set({ availableJournalDates: dates });
+    return dates;
+  },
+
+  selectJournalDate: async (date: string | null) => {
+    if (!date || date === formatDateKeyIST()) {
+      set({ selectedJournalDate: null, historicalJournal: [] });
+      return;
+    }
+    const items = await journalRepository.loadForDate(date);
+    set({ selectedJournalDate: date, historicalJournal: items });
+  },
+
   initStreamer: () => {
     if (get().isStreamerInitialized) return;
     set({ isStreamerInitialized: true });
@@ -706,6 +730,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
 
       const currentStocks = get().stocks;
       let updatedStocks = currentStocks;
+      const batchVolumeLive = isSessionVolumeLive();
 
       // Map ticks across constituent stocks if any are loaded
       if (currentStocks.length > 0) {
@@ -752,8 +777,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           );
 
           // 4. Capture cumulative day volume (never reset to 0)
-          const todayTradedShares = ('volume' in tick && tick.volume > 0) ? tick.volume : stock.todayTradedShares;
-          if ('volume' in tick && tick.volume > 0 && todayTradedShares !== stock.todayTradedShares) stockUpdated = true;
+          const todayTradedShares = (batchVolumeLive && 'volume' in tick && tick.volume > 0) ? tick.volume : stock.todayTradedShares;
+          if (batchVolumeLive && 'volume' in tick && tick.volume > 0 && todayTradedShares !== stock.todayTradedShares) stockUpdated = true;
 
           if (!stockUpdated) return stock;
 

@@ -1,15 +1,38 @@
-import React from 'react';
-import { View, Text, StyleSheet, FlatList } from 'react-native';
+import React, { useEffect } from 'react';
+import { View, Text, StyleSheet, FlatList, ScrollView, TouchableOpacity } from 'react-native';
 import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
 import { SignalJournalItem } from '../types/mobile';
 import { FinancialValue } from '../components/common/FinancialValue';
 import { StatusBadge } from '../components/common/StatusBadge';
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatDateLabel(date: string): string {
+  const [, m, d] = date.split('-').map(Number);
+  return `${d} ${MONTHS[m - 1] ?? ''}`;
+}
+
 export function JournalScreen(): React.JSX.Element {
   const styles = useThemedStyles();
-  const journal = useRadarStore((s) => s.journal);
-  const netPointsCaptured = useRadarStore((s) => s.netPointsCaptured);
+  const todayJournal = useRadarStore((s) => s.journal);
+  const todayNetPoints = useRadarStore((s) => s.netPointsCaptured);
+  const sessionDate = useRadarStore((s) => s.sessionDate);
+  const availableDates = useRadarStore((s) => s.availableJournalDates);
+  const selectedDate = useRadarStore((s) => s.selectedJournalDate);
+  const historicalJournal = useRadarStore((s) => s.historicalJournal);
+  const fetchAvailableJournalDates = useRadarStore((s) => s.fetchAvailableJournalDates);
+  const selectJournalDate = useRadarStore((s) => s.selectJournalDate);
+
+  useEffect(() => {
+    fetchAvailableJournalDates().catch(() => {});
+  }, [fetchAvailableJournalDates, sessionDate]);
+
+  const isHistorical = selectedDate !== null;
+  const journal = isHistorical ? historicalJournal : todayJournal;
+  const netPointsCaptured = isHistorical
+    ? historicalJournal.reduce((sum, j) => sum + (j.pnlPoints ?? 0), 0)
+    : todayNetPoints;
 
   // Dynamic SEBI-compliant Win Rate calculation from real journal executions (Zero Fabrication)
   const completedTrades = journal.filter(
@@ -85,6 +108,30 @@ export function JournalScreen(): React.JSX.Element {
 
   return (
     <View style={styles.container}>
+      {availableDates.length > 0 && (
+        <View style={styles.dateStripWrap}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateStrip}>
+            <TouchableOpacity
+              style={[styles.datePill, !isHistorical && styles.datePillActive]}
+              onPress={() => selectJournalDate(null)}
+            >
+              <Text style={[styles.datePillText, !isHistorical && styles.datePillTextActive]}>Today</Text>
+            </TouchableOpacity>
+            {availableDates.map((date) => (
+              <TouchableOpacity
+                key={date}
+                style={[styles.datePill, selectedDate === date && styles.datePillActive]}
+                onPress={() => selectJournalDate(date)}
+              >
+                <Text style={[styles.datePillText, selectedDate === date && styles.datePillTextActive]}>
+                  {formatDateLabel(date)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {/* KPI Summary Header */}
       <View style={styles.kpiContainer}>
         <View style={styles.kpiCard}>
@@ -120,7 +167,7 @@ export function JournalScreen(): React.JSX.Element {
       {journal.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>📜</Text>
-          <Text style={styles.emptyTitle}>No Signals Logged Today</Text>
+          <Text style={styles.emptyTitle}>{isHistorical ? 'No Signals Logged' : 'No Signals Logged Today'}</Text>
           <Text style={styles.emptySubtitle}>
             Algo signal executions and trailing stop-loss milestones from 20D Crossover, 09:20 Strangle, and 180 Breakout will automatically persist here.
           </Text>
@@ -141,6 +188,35 @@ const useThemedStyles = createThemedStyles((colors, theme) => ({
   container: {
     flex: 1,
     backgroundColor: theme.colors.obsidian,
+  },
+  dateStripWrap: {
+    backgroundColor: theme.colors.surfaceSubtle,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.divider,
+  },
+  dateStrip: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    gap: 8,
+  },
+  datePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.cardBorder,
+    backgroundColor: theme.colors.card,
+  },
+  datePillActive: {
+    borderColor: theme.colors.textPrimary,
+  },
+  datePillText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.sizes.xs,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  datePillTextActive: {
+    color: theme.colors.textPrimary,
   },
   kpiContainer: {
     flexDirection: 'row',

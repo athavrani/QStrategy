@@ -41,6 +41,15 @@ export class JournalRepository {
     return rows.map((r) => this.toItem(r));
   }
 
+  /** Session dates that have journal rows, newest first. */
+  async getAvailableDates(): Promise<string[]> {
+    const db = await dbManager.getDatabase();
+    const rows = await db.getAll<any>(
+      'SELECT DISTINCT trade_date FROM signal_journal ORDER BY trade_date DESC'
+    );
+    return rows.map((r) => r.trade_date);
+  }
+
   /** Marks the open entry of a trade as closed. Closed or missing rows are left untouched. */
   async closeTrade(trade: ClosedTrade, tradeDate: string): Promise<void> {
     const db = await dbManager.getDatabase();

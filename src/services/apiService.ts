@@ -25,6 +25,11 @@ export function isMarketSessionBeforeOpen(): boolean {
   return totalMinutes < 555;
 }
 
+/** Quote volume belongs to today only once the session has opened on a trading day; before that it is the previous session's. */
+export function isSessionVolumeLive(): boolean {
+  return !isMarketSessionBeforeOpen() && isTradingDay(new Date());
+}
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const customUrl = (process.env as Record<string, string | undefined>)?.EXPO_PUBLIC_API_URL;
   if (!customUrl) {
@@ -82,7 +87,7 @@ export const apiService = {
 
   // 2. Strategy 1: 20D Volume Crossover Screener (All SENSEX & NIFTY 50 Stocks)
   async fetchStockRadarList(): Promise<StockRadarItem[]> {
-    const isBeforeOpen = isMarketSessionBeforeOpen() || !isTradingDay(new Date());
+    const volumeLive = isSessionVolumeLive();
 
     // Priority 1: Direct Mobile-to-Dhan HQ Live Market Feed (Official Data API Plan)
     await dhanDirectService.initialize();
@@ -104,7 +109,7 @@ export const apiService = {
       const dayOpen = q && q.open > 0 ? q.open : spotPrice;
       const dayHigh = q && q.high > 0 ? q.high : spotPrice;
       const dayLow = q && q.low > 0 ? q.low : spotPrice;
-      const todayShares = (q && q.volume > 0) ? q.volume : 0;
+      const todayShares = (volumeLive && q && q.volume > 0) ? q.volume : 0;
       // Priority: 1. Live dynamic 20D average from service, 2. catalog baseline fallback
       const dynamicAvg = avgVolumeService.getCachedAvg(m.ticker);
       const avgShares = (dynamicAvg && dynamicAvg > 0) ? dynamicAvg : (m.avg20DTradedShares || 1);

@@ -27,6 +27,7 @@ export interface StrategyDeps {
 }
 
 const SECONDS_0915 = 9 * 3600 + 15 * 60;
+const SECONDS_0916 = 9 * 3600 + 16 * 60;
 const SECONDS_0925 = 9 * 3600 + 25 * 60;
 
 /** Morning exit of overnight OOBTST positions: stop-loss from 09:15, otherwise square off at 09:25. */
@@ -98,6 +99,9 @@ export function createVolumeCrossoverStrategy(deps: StrategyDeps): EngineStrateg
     id: STRATEGY_IDS.VOLUME_CROSSOVER,
     detect(ctx: EngineContext): SignalEvent[] {
       const events: SignalEvent[] = [];
+      // Pre-open volume is the previous session's and must never register as a crossover
+      const now = parseClockSeconds(ctx.istTime ?? '');
+      if (now !== null && now < SECONDS_0916) return events;
       for (const stock of ctx.stocks ?? []) {
         if (!stock.hasCrossed20D || stock.todayTradedShares <= 0) continue;
         const side = stock.circleIndicator;

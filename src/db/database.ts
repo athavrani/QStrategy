@@ -238,6 +238,10 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (sql.includes('signal_journal')) {
       const rows = Array.from(this.getOrCreateTable('signal_journal').values());
+      if (sql.includes('DISTINCT trade_date')) {
+        const dates = Array.from(new Set(rows.map((r) => r.trade_date))).sort().reverse();
+        return dates.map((trade_date) => ({ trade_date })) as T[];
+      }
       // Open trades window: [fromDate, beforeDate, ...strategyIds]
       if (sql.includes('trade_date >= ?')) {
         const [fromDate, beforeDate, ...ids] = params;

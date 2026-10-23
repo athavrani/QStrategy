@@ -53,6 +53,7 @@ describe('20D crossover on ticks (gated on loaded averages)', () => {
 
   beforeEach(() => {
     evaluate.mockClear();
+    jest.setSystemTime(new Date('2026-10-21T05:30:00Z')); // Wed 11:00 IST, session live
   });
 
   const pushTick = (volume: number) => {
@@ -74,6 +75,13 @@ describe('20D crossover on ticks (gated on loaded averages)', () => {
     const [ctx, only] = evaluate.mock.calls[0];
     expect(only).toEqual([STRATEGY_IDS.VOLUME_CROSSOVER]);
     expect(ctx.stocks[0]).toMatchObject({ ticker: 'RELIANCE', todayTradedShares: 5000, hasCrossed20D: true });
+  });
+
+  test('ignores pre-open volume, which belongs to the previous session', () => {
+    jest.setSystemTime(new Date('2026-10-21T03:00:00Z')); // 08:30 IST
+    useRadarStore.setState({ stocks: [stock()], latchServiceInitialized: true, avgLoaded: true });
+    pushTick(5000);
+    expect(useRadarStore.getState().stocks[0]).toMatchObject({ todayTradedShares: 100, hasCrossed20D: false });
   });
 
   test('waits for the latch to be ready', () => {
