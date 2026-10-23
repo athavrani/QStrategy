@@ -8,6 +8,7 @@ import { AppUpdateModal } from './src/components/common';
 import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateService';
 import { formatDateKeyIST } from './src/constants/nseHolidays';
 import { syncBackgroundMonitor } from './src/services/backgroundMonitorService';
+import { startPositionMonitor, stopPositionMonitor } from './src/execution/positionMonitor';
 
 export default function App() {
   const refreshAll = useRadarStore((s) => s.refreshAll);
@@ -28,6 +29,9 @@ export default function App() {
 
     // Foreground service keeps timers and the Dhan socket alive while the app is minimised
     syncBackgroundMonitor().catch(() => {});
+
+    // Keeps stop-losses placed and exits tracked for positions opened by the app, even when the Orders tab is closed
+    startPositionMonitor();
 
     // 2. Restore latches and today's journal first, then load data and launch the live streamer.
     // The streamer starts even if the first refresh fails, so ticks are never blocked by one bad REST call.
@@ -79,6 +83,7 @@ export default function App() {
       clearInterval(clockTimer);
       clearInterval(backgroundSyncTimer);
       clearTimeout(updateCheckTimeout);
+      stopPositionMonitor();
     };
   }, []);
 

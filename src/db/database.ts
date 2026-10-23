@@ -3,7 +3,7 @@
  * Wraps expo-sqlite with migrations, type-safe query helpers, and in-memory test fallback.
  */
 
-import { DATABASE_NAME, CURRENT_SCHEMA_VERSION, CREATE_TABLES_SQL, ORDER_COLUMNS } from './schema';
+import { DATABASE_NAME, CURRENT_SCHEMA_VERSION, CREATE_TABLES_SQL, ORDER_COLUMNS, POSITION_COLUMNS } from './schema';
 
 export interface DatabaseDriver {
   exec(sql: string): Promise<void>;
@@ -22,6 +22,15 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
 
   public async run(sql: string, params: any[] = []): Promise<{ lastInsertRowId?: number; changes: number }> {
     const trimmed = sql.trim().toUpperCase();
+
+    if (trimmed.startsWith('INSERT') && sql.includes('INTO app_positions')) {
+      const row: Record<string, any> = {};
+      POSITION_COLUMNS.forEach((col, i) => {
+        row[col] = params[i];
+      });
+      this.getOrCreateTable('app_positions').set(row.id, row);
+      return { changes: 1 };
+    }
 
     if (trimmed.startsWith('INSERT') && sql.includes('INTO orders')) {
       const row: Record<string, any> = {};
@@ -245,6 +254,10 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    if (sql.includes('FROM app_positions')) {
+      return Array.from(this.getOrCreateTable('app_positions').values()) as T[];
+    }
+
     if (sql.includes('FROM orders')) {
       const [env, trade_date] = params;
       return Array.from(this.getOrCreateTable('orders').values())
@@ -295,6 +308,10 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getFirst<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+    if (sql.includes('FROM app_positions')) {
+      return (this.getOrCreateTable('app_positions').get(params[0]) as T) ?? null;
+    }
+
     if (sql.includes('FROM orders')) {
       return (this.getOrCreateTable('orders').get(params[0]) as T) ?? null;
     }

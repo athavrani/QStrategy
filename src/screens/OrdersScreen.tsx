@@ -4,6 +4,7 @@ import { createThemedStyles, useTheme } from '../theme';
 import { useOrdersStore } from '../store/useOrdersStore';
 import { isOpenOrderStatus, isCancellableStatus, type OrderRequest } from '../services/dhan/DhanOrderClient';
 import type { StoredOrder } from '../services/OrderRepository';
+import { isActivePosition, type Position } from '../services/PositionRepository';
 import { isProposalStatus, CONFIRMING } from '../execution/ExecutionService';
 import { useLiveArm, isLiveArmed } from '../execution/liveArm';
 import { marketData } from '../services/marketdata/MarketDataService';
@@ -100,6 +101,95 @@ function PaperOrderCard({ order }: { order: StoredOrder }) {
         LIMIT {order.price} · qty {order.quantity} · {order.productType || 'no product'} · {order.strategyId ?? 'strategy'}
       </Text>
       {order.errorMessage ? <Text style={styles.errorText}>{order.errorMessage}</Text> : null}
+    </View>
+  );
+}
+
+const POSITION_LABEL: Record<string, string> = {
+  ENTRY_SENT: 'ENTRY PENDING',
+  OPEN_UNPROTECTED: 'NO STOP-LOSS',
+  PROTECTED: 'PROTECTED',
+  CLOSING: 'EXITING',
+  CLOSED: 'CLOSED',
+  ENTRY_FAILED: 'NOT FILLED',
+};
+
+/** A position the app opened: what is held, whether a stop-loss is working at the exchange, and how to leave it. */
+function PositionCard({
+  position,
+  error,
+  busy,
+  onExit,
+  onProtect,
+}: {
+  position: Position;
+  error?: string;
+  busy: boolean;
+  onExit: (p: Position) => void;
+  onProtect: () => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
+  const unprotected = position.state === 'OPEN_UNPROTECTED';
+  const color =
+    unprotected ? colors.bearish : position.state === 'PROTECTED' ? colors.bullish : position.state === 'CLOSED' || position.state === 'ENTRY_FAILED' ? colors.textMuted : colors.warning;
+  const holding = position.filledQty > 0 && (position.state === 'PROTECTED' || unprotected || position.state === 'CLOSING');
+  let ltp: number | undefined;
+  try {
+    ltp = marketData.getQuote(position.exchangeSegment, position.securityId)?.ltp;
+  } catch {
+    ltp = undefined;
+  }
+  const unrealized = holding && ltp !== undefined ? Number(((ltp - position.entryAvg) * position.filledQty).toFixed(2)) : null;
+
+  return (
+    <View style={[styles.orderCard, unprotected && { borderColor: colors.bearish }]} testID={`position-${position.id}`}>
+      <View style={styles.rowBetween}>
+        <Text style={styles.symbol}>{position.tradingSymbol}</Text>
+        <Text style={[styles.status, { color, borderColor: color }]} testID={`position-state-${position.id}`}>
+          {POSITION_LABEL[position.state] ?? position.state}
+        </Text>
+      </View>
+      <Text style={styles.meta}>
+        qty {position.filledQty}/{position.requestedQty}
+        {position.entryAvg > 0 ? ` · entry ${position.entryAvg}` : ''}
+        {position.slPrice != null ? ` · stop-loss ${position.slPrice}` : ' · no stop-loss price'}
+        {position.targetPrice != null ? ` · target ${position.targetPrice}` : ''}
+      </Text>
+      {unrealized !== null ? (
+        <Text style={[styles.meta, { color: unrealized >= 0 ? colors.bullish : colors.bearish }]}>
+          Price now {ltp} · {unrealized >= 0 ? '+' : ''}{unrealized}
+        </Text>
+      ) : null}
+      {position.state === 'CLOSED' && position.pnl !== null ? (
+        <Text style={[styles.meta, { color: position.pnl >= 0 ? colors.bullish : colors.bearish }]}>
+          Closed at {position.exitAvg} · P&L {position.pnl >= 0 ? '+' : ''}{position.pnl}
+        </Text>
+      ) : null}
+      {position.exitHint && holding ? (
+        <Text style={[styles.meta, { color: colors.warning }]} testID={`position-hint-${position.id}`}>
+          Exit suggested: {position.exitHint}
+        </Text>
+      ) : null}
+      {position.note ? <Text style={unprotected ? styles.errorText : styles.metaSmall}>{position.note}</Text> : null}
+      {error ? <Text style={styles.errorText} testID={`position-error-${position.id}`}>{error}</Text> : null}
+      {holding && position.state !== 'CLOSING' ? (
+        <View style={styles.row}>
+          <TouchableOpacity
+            style={[styles.placeBtn, { flex: 1, backgroundColor: colors.bearish }, busy && { opacity: 0.5 }]}
+            disabled={busy}
+            onPress={() => onExit(position)}
+            testID={`exit-${position.id}`}
+          >
+            <Text style={styles.placeText}>{busy ? 'Exiting...' : 'Exit now (market)'}</Text>
+          </TouchableOpacity>
+          {unprotected && position.slPrice != null ? (
+            <TouchableOpacity style={[styles.cancelBtn, { marginTop: 0, paddingHorizontal: 14, justifyContent: 'center' }]} onPress={onProtect} testID={`protect-${position.id}`}>
+              <Text style={styles.cancelText}>Place stop-loss</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -290,6 +380,7 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
   const styles = useThemedStyles();
   const {
     orders, liveOrders, paperOrders, configured, liveConfigured, syncing, error, lastSynced, proposalErrors,
+    positions, positionErrors, exitPosition, protectNow,
     init, sync, cancel, confirmProposal, dismissProposal,
   } = useOrdersStore();
   const armedDate = useLiveArm((s) => s.armedDate);
@@ -302,7 +393,10 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
 
   const proposals = paperOrders.filter((o) => isProposalStatus(o.status));
   const signalLog = paperOrders.filter((o) => !isProposalStatus(o.status));
-  const hasOpen = orders.some((o) => isOpenOrderStatus(o.status)) || liveOrders.some((o) => isOpenOrderStatus(o.status));
+  const hasOpen =
+    orders.some((o) => isOpenOrderStatus(o.status)) ||
+    liveOrders.some((o) => isOpenOrderStatus(o.status)) ||
+    positions.some((p) => isActivePosition(p.state));
   const needsPolling = (configured || liveConfigured) && hasOpen;
   useEffect(() => {
     // Open orders change status, and proposals must expire on time, so refresh while either exists.
@@ -338,6 +432,30 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
       );
     },
     [runConfirm]
+  );
+
+  const [exiting, setExiting] = useState<Record<string, boolean>>({});
+  const askExit = useCallback(
+    (p: Position) => {
+      Alert.alert(
+        'Exit position?',
+        `Sell all ${p.filledQty} of ${p.tradingSymbol} at market now.
+
+The stop-loss order is cancelled first so the shares are not sold twice. A market order fills at the best available price, which can be worse than the last price shown.`,
+        [
+          { text: 'Keep', style: 'cancel' },
+          {
+            text: 'Exit now',
+            style: 'destructive',
+            onPress: () => {
+              setExiting((prev) => ({ ...prev, [p.id]: true }));
+              exitPosition(p.id).finally(() => setExiting((prev) => ({ ...prev, [p.id]: false })));
+            },
+          },
+        ]
+      );
+    },
+    [exitPosition]
   );
 
   const dismiss = useCallback((order: StoredOrder) => void dismissProposal(order.correlationId ?? order.id), [dismissProposal]);
@@ -396,6 +514,22 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
               sending={Boolean(sending[o.correlationId ?? o.id])}
               onConfirm={askConfirm}
               onDismiss={dismiss}
+            />
+          ))}
+        </>
+      ) : null}
+
+      {positions.length > 0 ? (
+        <>
+          <Text style={styles.section}>POSITIONS ({positions.length})</Text>
+          {positions.map((p) => (
+            <PositionCard
+              key={p.id}
+              position={p}
+              error={positionErrors[p.id]}
+              busy={Boolean(exiting[p.id])}
+              onExit={askExit}
+              onProtect={() => void protectNow(p.id)}
             />
           ))}
         </>

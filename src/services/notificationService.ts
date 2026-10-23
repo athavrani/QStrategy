@@ -130,6 +130,16 @@ export const notificationService = {
     } catch {}
   },
 
+  // Position alerts: no stop-loss, stop-loss hit, exit suggested or failed
+  async notifyPositionAlert(title: string, body: string) {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: { title, body, data: { screen: 'ORDERS' }, sound: true },
+        trigger: null,
+      });
+    } catch {}
+  },
+
   // 5. Alert: 09:45 Time Exit
   async notify180TimeExit(strike: number, type: 'CE' | 'PE') {
     try {

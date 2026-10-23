@@ -200,13 +200,14 @@ export class DhanOrderClient {
   }
 
   /** Places one order. Never retries; an unclear outcome is reported as UNKNOWN. */
-  async placeOrder(req: OrderRequest): Promise<PlaceOutcome> {
+  async placeOrder(req: OrderRequest, opts: { closing?: boolean } = {}): Promise<PlaceOutcome> {
     const correlationId = req.correlationId ?? generateCorrelationId();
     const invalid = validateOrderRequest({ ...req, correlationId });
     if (invalid) return { kind: 'REJECTED', error: invalid, code: null, correlationId };
 
     const creds = await this.credentials();
-    const off = this.guard() ?? this.gate();
+    // Closing orders skip the arm gate: they only reduce exposure, and must work after the arm window ends.
+    const off = this.guard() ?? (opts.closing ? null : this.gate());
     if (off) return { kind: 'REJECTED', error: off, code: null, correlationId };
     if (!creds) {
       return { kind: 'REJECTED', error: `Dhan ${this.env.toLowerCase()} credentials are not configured.`, code: null, correlationId };
@@ -243,8 +244,8 @@ export class DhanOrderClient {
   }
 
   /** Places an order and, when the outcome is unclear, looks it up by correlation id before reporting UNKNOWN. */
-  async placeAndConfirm(req: OrderRequest): Promise<PlaceOutcome> {
-    const outcome = await this.placeOrder(req);
+  async placeAndConfirm(req: OrderRequest, opts: { closing?: boolean } = {}): Promise<PlaceOutcome> {
+    const outcome = await this.placeOrder(req, opts);
     if (outcome.kind !== 'UNKNOWN') return outcome;
 
     for (let i = 0; i < this.lookupAttempts; i++) {
@@ -257,6 +258,31 @@ export class DhanOrderClient {
     return outcome;
   }
 
+  /**
+   * Places an order that closes or protects a position the app holds. It must be a SELL, can never be larger than
+   * the quantity held, and is not blocked by the arm switch, so protection still works after the arm window ends.
+   */
+  async placeClosingOrder(req: OrderRequest, heldQty: number): Promise<PlaceOutcome> {
+    const correlationId = req.correlationId ?? generateCorrelationId('QSX');
+    const refuse = (error: string): PlaceOutcome => ({ kind: 'REJECTED', error, code: null, correlationId });
+    if (req.transactionType !== 'SELL') return refuse('A closing order must be a SELL.');
+    if (!(heldQty > 0)) return refuse('There is nothing held to close.');
+    if (req.quantity > heldQty) return refuse(`A closing order cannot be larger than the ${heldQty} held.`);
+    return this.placeAndConfirm({ ...req, correlationId }, { closing: true });
+  }
+
+  /** Changes the quantity or prices of a closing order, never above the quantity held. */
+  async modifyClosingOrder(
+    orderId: string,
+    change: { orderType: OrderType; validity: Validity; quantity?: number; price?: number; triggerPrice?: number },
+    heldQty: number
+  ): Promise<CallResult<{ orderId: string; status: string }>> {
+    if (change.quantity !== undefined && change.quantity > heldQty) {
+      return { ok: false, status: 0, error: `A closing order cannot be larger than the ${heldQty} held.`, code: null };
+    }
+    return this.modifyOrder(orderId, change, { closing: true });
+  }
+
   async cancelOrder(orderId: string): Promise<CallResult<{ orderId: string; status: string }>> {
     const out = await this.call('DELETE', `/orders/${encodeURIComponent(orderId)}`);
     if ('error' in out) return { ok: false, status: 0, error: out.error, code: null };
@@ -266,9 +292,10 @@ export class DhanOrderClient {
 
   async modifyOrder(
     orderId: string,
-    change: { orderType: OrderType; validity: Validity; quantity?: number; price?: number; triggerPrice?: number }
+    change: { orderType: OrderType; validity: Validity; quantity?: number; price?: number; triggerPrice?: number },
+    opts: { closing?: boolean } = {}
   ): Promise<CallResult<{ orderId: string; status: string }>> {
-    const refused = this.guard() ?? this.gate();
+    const refused = this.guard() ?? (opts.closing ? null : this.gate());
     if (refused) return { ok: false, status: 0, error: refused, code: null };
     const creds = await this.credentials();
     if (!creds) return { ok: false, status: 0, error: `Dhan ${this.env.toLowerCase()} credentials are not configured.`, code: null };

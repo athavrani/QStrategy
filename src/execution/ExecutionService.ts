@@ -1,4 +1,5 @@
 import { orderRepository, type OrderRepository, type StoredOrder } from '../services/OrderRepository';
+import { positionRepository, type PositionRepository } from '../services/PositionRepository';
 import { tradingCalendarService } from '../services/TradingCalendarService';
 import { secureVault } from '../services/SecureCredentialVault';
 import { notificationService } from '../services/notificationService';
@@ -39,6 +40,7 @@ export interface ExecutionServiceDeps {
   now?: () => Date;
   isTradingDay?: (d: Date) => boolean;
   liveClient?: Pick<DhanOrderClient, 'placeAndConfirm'>;
+  positions?: Pick<PositionRepository, 'create' | 'update'>;
   isArmed?: () => boolean;
   /** Biometric check; must fail closed on devices without biometrics. */
   authenticate?: (prompt: string) => Promise<boolean>;
@@ -61,6 +63,7 @@ export class ExecutionService implements ExecutionPort {
   private readonly now: () => Date;
   private readonly isTradingDay: (d: Date) => boolean;
   private readonly liveClient: Pick<DhanOrderClient, 'placeAndConfirm'>;
+  private readonly positions: Pick<PositionRepository, 'create' | 'update'>;
   private readonly isArmed: () => boolean;
   private readonly authenticate: (prompt: string) => Promise<boolean>;
   private readonly checkIp: () => Promise<string | null>;
@@ -74,6 +77,7 @@ export class ExecutionService implements ExecutionPort {
     this.now = deps.now ?? (() => new Date());
     this.isTradingDay = deps.isTradingDay ?? ((d) => tradingCalendarService.isTradingDay(d));
     this.liveClient = deps.liveClient ?? liveOrderClient;
+    this.positions = deps.positions ?? positionRepository;
     this.isArmed = deps.isArmed ?? (() => isLiveArmed(this.now()));
     this.authenticate = deps.authenticate ?? ((prompt) => secureVault.authenticateStrict(prompt));
     this.checkIp = deps.checkIp ?? ipPreflight;
@@ -130,6 +134,7 @@ export class ExecutionService implements ExecutionPort {
     }
 
     await this.record(signal, settings, correlationId, PENDING_CONFIRM, null);
+    await this.rememberPosition(signal, correlationId, mapped.request.quantity);
     try {
       this.notify(signal.hint?.tradingSymbol ?? signal.symbol, mapped.request.quantity, mapped.request.price ?? signal.entryPrice, this.ttlMs / 1000);
     } catch {
@@ -202,6 +207,19 @@ export class ExecutionService implements ExecutionPort {
       },
       { source: 'APP', strategyId: MANUAL_TEST_ID }
     );
+    try {
+      await this.positions.create({
+        id: request.correlationId as string,
+        strategyId: MANUAL_TEST_ID,
+        securityId: request.securityId,
+        exchangeSegment: request.exchangeSegment,
+        productType: request.productType,
+        tradingSymbol: `Test order, security ${request.securityId}`,
+        requestedQty: request.quantity,
+      });
+    } catch {
+      // Without it the position is still created when the order is sent, only without a stop-loss price.
+    }
     return { ok: true, correlationId: request.correlationId as string };
   }
 
@@ -281,6 +299,11 @@ export class ExecutionService implements ExecutionPort {
     await this.setStatus(proposal, CONFIRMING, null);
     const outcome = await this.liveClient.placeAndConfirm(request);
 
+    // An uncertain result may still be a live order, so it is tracked too and protected if it turns out to fill.
+    if (outcome.kind === 'PLACED' || outcome.kind === 'UNKNOWN') {
+      await this.trackEntry(proposal, outcome.kind === 'PLACED' ? outcome.orderId : null);
+    }
+
     if (outcome.kind === 'PLACED') {
       await this.repo.upsert(
         'LIVE',
@@ -300,6 +323,47 @@ export class ExecutionService implements ExecutionPort {
   }
 
   // --------------------------------------------------------------- helpers
+
+  /** Remembers the stop-loss and target of a proposal, so they are known if it is confirmed. */
+  private async rememberPosition(signal: ExecutableSignal, correlationId: string, quantity: number): Promise<void> {
+    try {
+      await this.positions.create({
+        id: correlationId,
+        strategyId: signal.strategyId,
+        securityId: signal.hint?.securityId ?? '',
+        exchangeSegment: signal.hint?.exchangeSegment ?? '',
+        productType: signal.hint?.productType ?? '',
+        tradingSymbol: signal.hint?.tradingSymbol ?? signal.symbol,
+        requestedQty: quantity,
+        slPrice: signal.stopLoss ?? null,
+        targetPrice: signal.target ?? null,
+      });
+    } catch {
+      // The proposal still works; it would just have no stop-loss price recorded.
+    }
+  }
+
+  /** Marks the position as having an entry order out at Dhan, creating it if the proposal predates tracking. */
+  private async trackEntry(proposal: StoredOrder, orderId: string | null): Promise<void> {
+    const id = proposal.correlationId as string;
+    try {
+      const updated = await this.positions.update(id, { state: 'ENTRY_SENT', entryOrderId: orderId, requestedQty: proposal.quantity });
+      if (!updated) {
+        await this.positions.create({
+          id,
+          strategyId: proposal.strategyId ?? 'UNKNOWN',
+          securityId: proposal.securityId,
+          exchangeSegment: proposal.exchangeSegment,
+          productType: proposal.productType,
+          tradingSymbol: proposal.tradingSymbol ?? proposal.securityId,
+          requestedQty: proposal.quantity,
+          state: 'ENTRY_SENT',
+        });
+      }
+    } catch {
+      // The order is already sent and recorded in the order list; losing the tracking row is reported by its absence.
+    }
+  }
 
   private isExpired(row: StoredOrder): boolean {
     const created = Date.parse(row.createTime ?? '');

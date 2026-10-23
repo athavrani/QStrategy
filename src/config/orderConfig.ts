@@ -34,3 +34,12 @@ export const LIVE_MAX_LOTS = 1;
 export const MANUAL_TEST_ID = 'MANUAL_TEST';
 export const MANUAL_TEST_MAX_QTY = 10;
 export const MANUAL_TEST_MAX_VALUE = 5000;
+
+/**
+ * A stop-loss is placed as a stop-loss limit order, because exchanges do not accept stop-loss market orders on
+ * options. Its limit price sits this percentage below the trigger so it still fills when the price moves fast.
+ */
+export const SL_LIMIT_BUFFER_PCT = 3;
+
+/** How long to wait for an order of unknown outcome to show up at Dhan before sending a replacement. */
+export const PROTECT_RETRY_MS = 60_000;

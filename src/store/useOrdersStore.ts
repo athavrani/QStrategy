@@ -11,6 +11,8 @@ import {
   type PlaceOutcome,
 } from '../services/dhan/DhanOrderClient';
 import { executionService, type ConfirmResult } from '../execution/ExecutionService';
+import { positionManager, type ExitResult } from '../execution/PositionManager';
+import { positionRepository, type Position } from '../services/PositionRepository';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import type { OrderEnvironment } from '../config/orderConfig';
 
@@ -24,6 +26,10 @@ interface OrdersState {
   liveOrders: StoredOrder[];
   /** Orders the execution layer planned, proposed or blocked; never sent to Dhan until a proposal is confirmed. */
   paperOrders: StoredOrder[];
+  /** Positions opened by the app: active ones, plus today's finished ones. */
+  positions: Position[];
+  /** Failure message per position, shown on that position. */
+  positionErrors: Record<string, string>;
   configured: boolean;
   liveConfigured: boolean;
   syncing: boolean;
@@ -37,6 +43,8 @@ interface OrdersState {
   place: (req: OrderRequest) => Promise<PlaceOutcome>;
   cancel: (order: StoredOrder) => Promise<string | null>;
   createTestProposal: (input: { securityId: string; quantity: number; price: number }) => Promise<{ ok: true; correlationId: string } | { ok: false; error: string }>;
+  exitPosition: (id: string) => Promise<ExitResult>;
+  protectNow: (id: string) => Promise<void>;
   confirmProposal: (correlationId: string) => Promise<ConfirmResult>;
   dismissProposal: (correlationId: string) => Promise<void>;
   clearError: () => void;
@@ -79,6 +87,8 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
   orders: [],
   liveOrders: [],
   paperOrders: [],
+  positions: [],
+  positionErrors: {},
   configured: false,
   liveConfigured: false,
   syncing: false,
@@ -95,6 +105,7 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
       orders: await orderRepository.loadForDate('SANDBOX', today),
       liveOrders: await orderRepository.loadForDate('LIVE', today),
       paperOrders: await orderRepository.loadForDate('PAPER', today),
+      positions: await positionRepository.loadVisible(today),
     });
   },
 
@@ -104,7 +115,7 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
     const errors: string[] = [];
     try {
       await executionService.expireStale();
-      set({ paperOrders: await orderRepository.loadForDate('PAPER') });
+      set({ paperOrders: await orderRepository.loadForDate('PAPER'), positions: await positionRepository.loadVisible() });
 
       for (const env of ['SANDBOX', 'LIVE'] as const) {
         const configured = await hasCredentials(env);
@@ -126,7 +137,11 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
           [key]: await orderRepository.loadForDate(env),
         } as Partial<OrdersState>);
       }
-      set({ error: errors.length ? errors.join(' ') : null, lastSynced: new Date().toISOString() });
+      set({
+        error: errors.length ? errors.join(' ') : null,
+        lastSynced: new Date().toISOString(),
+        positions: await positionRepository.loadVisible(),
+      });
     } catch (err: any) {
       set({ error: err?.message || 'Could not refresh orders.' });
     } finally {
@@ -165,8 +180,25 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
     return result;
   },
 
+  exitPosition: async (id) => {
+    const result = await positionManager.exitPosition(id);
+    set((s) => {
+      const { [id]: _old, ...rest } = s.positionErrors;
+      return { positionErrors: result.ok ? rest : { ...rest, [id]: result.error } };
+    });
+    await get().sync();
+    return result;
+  },
+
+  protectNow: async (id) => {
+    await positionManager.protectNow(id);
+    await get().sync();
+  },
+
   confirmProposal: async (correlationId) => {
     const result = await executionService.confirmProposal(correlationId);
+    // A sent entry is picked up straight away, so its stop-loss goes in as soon as it fills.
+    if (result.ok || result.uncertain) positionManager.reconcile().catch(() => {});
     set((s) => {
       const { [correlationId]: _old, ...rest } = s.proposalErrors;
       return { proposalErrors: result.ok ? rest : { ...rest, [correlationId]: result.error } };

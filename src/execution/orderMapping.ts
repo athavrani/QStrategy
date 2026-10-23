@@ -74,3 +74,8 @@ export function marketHoursBlock(now: Date, isTradingDay: (d: Date) => boolean):
   if (minutes < OPEN_MINUTES || minutes >= CLOSE_MINUTES) return 'Outside order hours (09:15 to 15:25 IST).';
   return null;
 }
+
+/** Rounds down to the option tick size (0.05); used for the limit price of a sell stop-loss. */
+export function roundDownToTick(price: number): number {
+  return Number((Math.floor(price / TICK + 1e-9) * TICK).toFixed(2));
+}
