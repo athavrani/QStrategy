@@ -6,24 +6,27 @@ import { isOpenOrderStatus, type DhanOrder } from './dhan/DhanOrderClient';
 
 export type OrderSource = 'APP' | 'DHAN';
 
+/** Where an order record lives: Dhan's sandbox or live account, or a paper record that was never sent. */
+export type OrderRecordEnv = OrderEnvironment | 'PAPER';
+
 /** An order as stored locally: what Dhan reports plus where it came from. */
 export interface StoredOrder extends DhanOrder {
   id: string;
-  env: OrderEnvironment;
+  env: OrderRecordEnv;
   tradeDate: string;
   source: OrderSource;
   strategyId: string | null;
 }
 
 /** One row per order and environment. Orders are matched on correlation id, falling back to the Dhan order id. */
-export function orderKey(env: OrderEnvironment, order: Pick<DhanOrder, 'orderId' | 'correlationId'>): string {
+export function orderKey(env: OrderRecordEnv, order: Pick<DhanOrder, 'orderId' | 'correlationId'>): string {
   return `${env}:${order.correlationId || `dhan-${order.orderId}`}`;
 }
 
 /** SQLite-backed local copy of the Dhan order book, keyed by environment and session date. */
 export class OrderRepository {
   async upsert(
-    env: OrderEnvironment,
+    env: OrderRecordEnv,
     order: DhanOrder,
     meta: { source?: OrderSource; strategyId?: string | null; tradeDate?: string } = {}
   ): Promise<void> {
@@ -68,7 +71,7 @@ export class OrderRepository {
   }
 
   /** Newest first. */
-  async loadForDate(env: OrderEnvironment, tradeDate: string = formatDateKeyIST()): Promise<StoredOrder[]> {
+  async loadForDate(env: OrderRecordEnv, tradeDate: string = formatDateKeyIST()): Promise<StoredOrder[]> {
     const db = await dbManager.getDatabase();
     const rows = await db.getAll<any>(
       'SELECT * FROM orders WHERE env = ? AND trade_date = ? ORDER BY create_time DESC',
@@ -77,7 +80,7 @@ export class OrderRepository {
     return rows.map((r) => this.toOrder(r));
   }
 
-  async loadOpen(env: OrderEnvironment, tradeDate?: string): Promise<StoredOrder[]> {
+  async loadOpen(env: OrderRecordEnv, tradeDate?: string): Promise<StoredOrder[]> {
     return (await this.loadForDate(env, tradeDate)).filter((o) => isOpenOrderStatus(o.status));
   }
 

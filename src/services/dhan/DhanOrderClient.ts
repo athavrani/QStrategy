@@ -2,7 +2,8 @@
  * Dhan order API client: place, modify, cancel, order book, order lookup, trades and positions.
  *
  * Safety rules built in:
- *  - an environment (SANDBOX or LIVE) is chosen per client and LIVE is refused while switched off in orderConfig;
+ *  - an environment (SANDBOX or LIVE) is chosen per client and an environment switched off in orderConfig is refused;
+ *  - an optional gate can veto placing and modifying orders (the live client uses it for the daily arm switch);
  *  - requests are never cached or merged, and a POST is never retried;
  *  - when the outcome of a placement is unknown (timeout, network error, server error) the order is looked up
  *    by its correlation id instead of being sent again.
@@ -11,6 +12,7 @@
 import { secureVault } from '../SecureCredentialVault';
 import { dhanRestGateway, type GatewayResponse } from './DhanRestGateway';
 import { parseDhanError } from './dhanErrors';
+import { isLiveArmed } from '../../execution/liveArm';
 import { DHAN_BASE_URLS, ORDER_ENVIRONMENTS_ENABLED, type OrderEnvironment } from '../../config/orderConfig';
 
 export type TransactionType = 'BUY' | 'SELL';
@@ -130,6 +132,8 @@ export function normalizeOrder(raw: any): DhanOrder {
 }
 
 export interface OrderClientOptions {
+  /** Returns a reason to refuse placing or modifying an order, or null to allow it. Cancelling is never gated. */
+  gate?: () => string | null;
   sleep?: (ms: number) => Promise<void>;
   /** Pause before each look-up after an unknown placement outcome. */
   lookupDelayMs?: number;
@@ -137,6 +141,7 @@ export interface OrderClientOptions {
 }
 
 export class DhanOrderClient {
+  private readonly gate: () => string | null;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly lookupDelayMs: number;
   private readonly lookupAttempts: number;
@@ -145,6 +150,7 @@ export class DhanOrderClient {
     public readonly env: OrderEnvironment,
     options: OrderClientOptions = {}
   ) {
+    this.gate = options.gate ?? (() => null);
     this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.lookupDelayMs = options.lookupDelayMs ?? 1500;
     this.lookupAttempts = options.lookupAttempts ?? 3;
@@ -200,7 +206,7 @@ export class DhanOrderClient {
     if (invalid) return { kind: 'REJECTED', error: invalid, code: null, correlationId };
 
     const creds = await this.credentials();
-    const off = this.guard();
+    const off = this.guard() ?? this.gate();
     if (off) return { kind: 'REJECTED', error: off, code: null, correlationId };
     if (!creds) {
       return { kind: 'REJECTED', error: `Dhan ${this.env.toLowerCase()} credentials are not configured.`, code: null, correlationId };
@@ -262,6 +268,8 @@ export class DhanOrderClient {
     orderId: string,
     change: { orderType: OrderType; validity: Validity; quantity?: number; price?: number; triggerPrice?: number }
   ): Promise<CallResult<{ orderId: string; status: string }>> {
+    const refused = this.guard() ?? this.gate();
+    if (refused) return { ok: false, status: 0, error: refused, code: null };
     const creds = await this.credentials();
     if (!creds) return { ok: false, status: 0, error: `Dhan ${this.env.toLowerCase()} credentials are not configured.`, code: null };
     const out = await this.call('PUT', `/orders/${encodeURIComponent(orderId)}`, {
@@ -308,3 +316,8 @@ export class DhanOrderClient {
 }
 
 export const sandboxOrderClient = new DhanOrderClient('SANDBOX');
+
+/** Placing and modifying live orders are refused unless live trading is armed for today. */
+export const liveOrderClient = new DhanOrderClient('LIVE', {
+  gate: () => (isLiveArmed() ? null : 'Live trading is not armed. Arm it in Settings first.'),
+});

@@ -3,31 +3,42 @@ import { secureVault } from '../services/SecureCredentialVault';
 import { orderRepository, type StoredOrder } from '../services/OrderRepository';
 import {
   sandboxOrderClient,
+  liveOrderClient,
   isOpenOrderStatus,
   isCancellableStatus,
   type DhanOrder,
   type OrderRequest,
   type PlaceOutcome,
 } from '../services/dhan/DhanOrderClient';
+import { executionService, type ConfirmResult } from '../execution/ExecutionService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import type { OrderEnvironment } from '../config/orderConfig';
 
-/** Orders are sandbox-only until the live phase; the environment is a constant here, not a user setting. */
-const ENV: OrderEnvironment = 'SANDBOX';
-const client = sandboxOrderClient;
+/** The sandbox test-order panel always uses the sandbox; live orders only come from confirmed proposals. */
+const TEST_ENV: OrderEnvironment = 'SANDBOX';
 
 interface OrdersState {
-  env: OrderEnvironment;
+  /** Sandbox orders (test panel). */
   orders: StoredOrder[];
+  /** Live orders mirrored from the Dhan order book. */
+  liveOrders: StoredOrder[];
+  /** Orders the execution layer planned, proposed or blocked; never sent to Dhan until a proposal is confirmed. */
+  paperOrders: StoredOrder[];
   configured: boolean;
+  liveConfigured: boolean;
   syncing: boolean;
   lastSynced: string | null;
   error: string | null;
+  /** Failure message per proposal, so a refused confirmation is shown on that proposal. */
+  proposalErrors: Record<string, string>;
 
   init: () => Promise<void>;
   sync: () => Promise<void>;
   place: (req: OrderRequest) => Promise<PlaceOutcome>;
   cancel: (order: StoredOrder) => Promise<string | null>;
+  createTestProposal: (input: { securityId: string; quantity: number; price: number }) => Promise<{ ok: true; correlationId: string } | { ok: false; error: string }>;
+  confirmProposal: (correlationId: string) => Promise<ConfirmResult>;
+  dismissProposal: (correlationId: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -57,42 +68,65 @@ function fromRequest(req: OrderRequest, outcome: Extract<PlaceOutcome, { kind: '
   };
 }
 
+const clientFor = (env: OrderEnvironment) => (env === 'LIVE' ? liveOrderClient : sandboxOrderClient);
+
+async function hasCredentials(env: OrderEnvironment): Promise<boolean> {
+  const c = env === 'LIVE' ? await secureVault.getEffectiveCredentials() : await secureVault.getSandboxCredentials();
+  return Boolean(c.clientId && c.token);
+}
+
 export const useOrdersStore = create<OrdersState>((set, get) => ({
-  env: ENV,
   orders: [],
+  liveOrders: [],
+  paperOrders: [],
   configured: false,
+  liveConfigured: false,
   syncing: false,
   lastSynced: null,
   error: null,
+  proposalErrors: {},
 
   init: async () => {
-    const creds = await secureVault.getSandboxCredentials();
-    const orders = await orderRepository.loadForDate(ENV, formatDateKeyIST());
-    set({ configured: Boolean(creds.clientId && creds.token), orders });
+    await executionService.expireStale();
+    const today = formatDateKeyIST();
+    set({
+      configured: await hasCredentials('SANDBOX'),
+      liveConfigured: await hasCredentials('LIVE'),
+      orders: await orderRepository.loadForDate('SANDBOX', today),
+      liveOrders: await orderRepository.loadForDate('LIVE', today),
+      paperOrders: await orderRepository.loadForDate('PAPER', today),
+    });
   },
 
   sync: async () => {
     if (get().syncing) return;
     set({ syncing: true });
+    const errors: string[] = [];
     try {
-      const creds = await secureVault.getSandboxCredentials();
-      const configured = Boolean(creds.clientId && creds.token);
-      if (!configured) {
-        set({ configured: false, error: null, orders: await orderRepository.loadForDate(ENV) });
-        return;
+      await executionService.expireStale();
+      set({ paperOrders: await orderRepository.loadForDate('PAPER') });
+
+      for (const env of ['SANDBOX', 'LIVE'] as const) {
+        const configured = await hasCredentials(env);
+        const key = env === 'LIVE' ? 'liveOrders' : 'orders';
+        if (!configured) {
+          set(env === 'LIVE' ? { liveConfigured: false } : { configured: false });
+          set({ [key]: await orderRepository.loadForDate(env) } as Partial<OrdersState>);
+          continue;
+        }
+        const res = await clientFor(env).getOrders();
+        if (!res.ok) {
+          errors.push(env === 'LIVE' ? `Live: ${res.error}` : res.error);
+          set(env === 'LIVE' ? { liveConfigured: true } : { configured: true });
+          continue;
+        }
+        for (const order of res.data) await orderRepository.upsert(env, order, { source: 'DHAN' });
+        set({
+          ...(env === 'LIVE' ? { liveConfigured: true } : { configured: true }),
+          [key]: await orderRepository.loadForDate(env),
+        } as Partial<OrdersState>);
       }
-      const res = await client.getOrders();
-      if (!res.ok) {
-        set({ configured: true, error: res.error });
-        return;
-      }
-      for (const order of res.data) await orderRepository.upsert(ENV, order, { source: 'DHAN' });
-      set({
-        configured: true,
-        error: null,
-        lastSynced: new Date().toISOString(),
-        orders: await orderRepository.loadForDate(ENV),
-      });
+      set({ error: errors.length ? errors.join(' ') : null, lastSynced: new Date().toISOString() });
     } catch (err: any) {
       set({ error: err?.message || 'Could not refresh orders.' });
     } finally {
@@ -101,10 +135,10 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
   },
 
   place: async (req) => {
-    const outcome = await client.placeAndConfirm(req);
+    const outcome = await sandboxOrderClient.placeAndConfirm(req);
     if (outcome.kind === 'PLACED') {
-      await orderRepository.upsert(ENV, fromRequest(req, outcome), { source: 'APP' });
-      set({ orders: await orderRepository.loadForDate(ENV), error: null });
+      await orderRepository.upsert(TEST_ENV, fromRequest(req, outcome), { source: 'APP' });
+      set({ orders: await orderRepository.loadForDate(TEST_ENV), error: null });
     } else {
       set({ error: outcome.error });
     }
@@ -116,13 +150,34 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
     if (!isCancellableStatus(order.status)) {
       return 'This order has not reached the exchange yet (TRANSIT). Dhan allows cancelling once it is pending.';
     }
-    const res = await client.cancelOrder(order.orderId);
+    const res = await clientFor(order.env === 'LIVE' ? 'LIVE' : 'SANDBOX').cancelOrder(order.orderId);
     if (!res.ok) {
       set({ error: res.error });
       return res.error;
     }
     await get().sync();
     return null;
+  },
+
+  createTestProposal: async (input) => {
+    const result = await executionService.createManualProposal(input);
+    set({ paperOrders: await orderRepository.loadForDate('PAPER') });
+    return result;
+  },
+
+  confirmProposal: async (correlationId) => {
+    const result = await executionService.confirmProposal(correlationId);
+    set((s) => {
+      const { [correlationId]: _old, ...rest } = s.proposalErrors;
+      return { proposalErrors: result.ok ? rest : { ...rest, [correlationId]: result.error } };
+    });
+    await get().sync();
+    return result;
+  },
+
+  dismissProposal: async (correlationId) => {
+    await executionService.dismissProposal(correlationId);
+    set({ paperOrders: await orderRepository.loadForDate('PAPER') });
   },
 
   clearError: () => set({ error: null }),

@@ -232,23 +232,58 @@ describe('DhanOrderClient (sandbox)', () => {
   });
 });
 
-describe('DhanOrderClient (live is switched off)', () => {
+describe('DhanOrderClient (live environment and its gate)', () => {
   const fetchMock = jest.fn();
   beforeEach(() => {
     fetchMock.mockReset();
     (global as any).fetch = fetchMock;
   });
 
-  test('LIVE stays disabled by default', () => {
-    expect(ORDER_ENVIRONMENTS_ENABLED.LIVE).toBe(false);
+  test('a gate that refuses blocks placing and modifying before any network request, with the reason', async () => {
+    const live = new DhanOrderClient('LIVE', { gate: () => 'Not armed.' });
+    expect(await live.placeOrder(LIMIT)).toMatchObject({ kind: 'REJECTED', error: 'Not armed.' });
+    expect(await live.placeAndConfirm(LIMIT)).toMatchObject({ kind: 'REJECTED', error: 'Not armed.' });
+    expect(await live.modifyOrder('1', { orderType: 'LIMIT', validity: 'DAY', price: 1 })).toMatchObject({ ok: false, error: 'Not armed.' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test('every live call is refused before any network request', async () => {
-    const live = new DhanOrderClient('LIVE');
-    expect(await live.placeOrder(LIMIT)).toMatchObject({ kind: 'REJECTED', error: 'LIVE orders are switched off in this build.' });
-    expect(await live.cancelOrder('1')).toMatchObject({ ok: false });
-    expect(await live.modifyOrder('1', { orderType: 'LIMIT', validity: 'DAY', price: 1 })).toMatchObject({ ok: false });
-    expect(await live.getOrders()).toMatchObject({ ok: false });
+  test('the shared live client is gated by the arm switch and starts disarmed', async () => {
+    const { liveOrderClient } = require('../services/dhan/DhanOrderClient');
+    const { useLiveArm } = require('../execution/liveArm');
+    useLiveArm.getState().disarm();
+    expect(await liveOrderClient.placeOrder(LIMIT)).toMatchObject({ kind: 'REJECTED', error: expect.stringContaining('not armed') });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('when the gate allows, an order goes to the live URL with the live token', async () => {
+    const live = new DhanOrderClient('LIVE', { gate: () => null });
+    fetchMock.mockResolvedValue(res({ orderId: '900', orderStatus: 'TRANSIT' }));
+    const out = await live.placeOrder({ ...LIMIT, correlationId: 'QS-live1' });
+    expect(out).toEqual({ kind: 'PLACED', orderId: '900', status: 'TRANSIT', correlationId: 'QS-live1' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.dhan.co/v2/orders');
+    expect(init.headers['access-token']).toBe('live-token');
+    expect(JSON.parse(init.body).dhanClientId).toBe('1100345678');
+  });
+
+  test('cancelling and reading are never gated, because they only reduce exposure or look', async () => {
+    const live = new DhanOrderClient('LIVE', { gate: () => 'Not armed.' });
+    fetchMock.mockResolvedValue(res({ orderId: '900', orderStatus: 'CANCELLED' }));
+    expect(await live.cancelOrder('900')).toMatchObject({ ok: true });
+    fetchMock.mockResolvedValue(res([]));
+    expect(await live.getOrders()).toEqual({ ok: true, data: [] });
+    expect(fetchMock.mock.calls.every((c) => String(c[0]).startsWith('https://api.dhan.co/v2/'))).toBe(true);
+  });
+
+  test('a disabled environment is refused outright', async () => {
+    (ORDER_ENVIRONMENTS_ENABLED as any).LIVE = false;
+    try {
+      const live = new DhanOrderClient('LIVE', { gate: () => null });
+      expect(await live.placeOrder(LIMIT)).toMatchObject({ kind: 'REJECTED', error: 'LIVE orders are switched off in this build.' });
+      expect(await live.cancelOrder('1')).toMatchObject({ ok: false });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      (ORDER_ENVIRONMENTS_ENABLED as any).LIVE = true;
+    }
   });
 });

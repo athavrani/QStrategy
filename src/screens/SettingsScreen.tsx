@@ -18,6 +18,8 @@ import { dhanHqFeedSocket, testDhanFeedConnection } from '../services/dhan/DhanH
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { OrderExecutionCard } from '../components/settings/OrderExecutionCard';
 import { SandboxCredentialsCard } from '../components/settings/SandboxCredentialsCard';
+import { ExecutionSettingsCard } from '../components/settings/ExecutionSettingsCard';
+import { LiveTradingCard } from '../components/settings/LiveTradingCard';
 import { useRadarStore } from '../store/useRadarStore';
 import { API_CONFIG } from '../config/apiConfig';
 import { appUpdateService, UpdateCheckResult } from '../services/appUpdateService';
@@ -503,6 +505,12 @@ export function SettingsScreen() {
 
       <Text style={styles.sectionHeader}>ORDER EXECUTION · DHAN SANDBOX (TEST ORDERS)</Text>
       <SandboxCredentialsCard />
+
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · MODE & LIMITS</Text>
+      <ExecutionSettingsCard />
+
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · LIVE TRADING</Text>
+      <LiveTradingCard />
 
       {/* BACKGROUND MONITORING */}
       <Text style={styles.sectionHeader}>BACKGROUND MONITORING</Text>
