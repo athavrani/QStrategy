@@ -45,6 +45,7 @@ interface OrdersState {
   createTestProposal: (input: { securityId: string; quantity: number; price: number }) => Promise<{ ok: true; correlationId: string } | { ok: false; error: string }>;
   exitPosition: (id: string) => Promise<ExitResult>;
   protectNow: (id: string) => Promise<void>;
+  exitAll: () => Promise<{ attempted: number; failed: Array<{ id: string; symbol: string; error: string }> }>;
   confirmProposal: (correlationId: string) => Promise<ConfirmResult>;
   dismissProposal: (correlationId: string) => Promise<void>;
   clearError: () => void;
@@ -185,6 +186,19 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
     set((s) => {
       const { [id]: _old, ...rest } = s.positionErrors;
       return { positionErrors: result.ok ? rest : { ...rest, [id]: result.error } };
+    });
+    await get().sync();
+    return result;
+  },
+
+  exitAll: async () => {
+    const result = await positionManager.exitAll();
+    set((s) => {
+      const errors = { ...s.positionErrors };
+      result.failed.forEach((f) => {
+        errors[f.id] = f.error;
+      });
+      return { positionErrors: errors };
     });
     await get().sync();
     return result;

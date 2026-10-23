@@ -1,5 +1,6 @@
 import { positionRepository, isActivePosition, type Position, type PositionRepository } from '../services/PositionRepository';
 import { notificationService } from '../services/notificationService';
+import { secureVault } from '../services/SecureCredentialVault';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import {
   liveOrderClient,
@@ -26,6 +27,10 @@ export interface PositionManagerDeps {
   alert?: (title: string, body: string) => void;
   slLimitBufferPct?: number;
   retryMs?: number;
+  /** Seconds until the live access token expires, or null when unknown. */
+  tokenSecondsLeft?: () => Promise<number | null>;
+  /** Consecutive failed order-book reads before the user is told positions cannot be managed. */
+  unreachableAfter?: number;
 }
 
 export type ExitResult = { ok: true } | { ok: false; error: string; uncertain?: boolean };
@@ -50,6 +55,11 @@ export class PositionManager {
   private readonly alert: (title: string, body: string) => void;
   private readonly bufferPct: number;
   private readonly retryMs: number;
+  private readonly tokenSecondsLeft: () => Promise<number | null>;
+  private readonly unreachableAfter: number;
+  private failures = 0;
+  private unreachableAlerted = false;
+  private tokenWarned = false;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(deps: PositionManagerDeps = {}) {
@@ -63,6 +73,17 @@ export class PositionManager {
       });
     this.bufferPct = deps.slLimitBufferPct ?? SL_LIMIT_BUFFER_PCT;
     this.retryMs = deps.retryMs ?? PROTECT_RETRY_MS;
+    this.unreachableAfter = deps.unreachableAfter ?? 3;
+    this.tokenSecondsLeft =
+      deps.tokenSecondsLeft ??
+      (async () => {
+        try {
+          const creds = await secureVault.getEffectiveCredentials();
+          return creds.token ? secureVault.getTokenRemainingSeconds(creds.token) : null;
+        } catch {
+          return null;
+        }
+      });
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -95,8 +116,14 @@ export class PositionManager {
     const active = await this.positions.loadActive();
     if (active.length === 0) return { checked: 0 };
 
+    await this.warnIfTokenEnding();
+
     const res = await this.client.getOrders();
-    if (!res.ok) return { checked: active.length, error: res.error };
+    if (!res.ok) {
+      this.noteFailure(res.status, res.error);
+      return { checked: active.length, error: res.error };
+    }
+    this.noteRecovered();
 
     const today = formatDateKeyIST(this.now());
     let broker: any[] | null | undefined;
@@ -340,6 +367,37 @@ export class PositionManager {
     });
   }
 
+  // -------------------------------------------------------------- health
+
+  /** Tells the user once when Dhan cannot be reached (or the token has expired) while positions are open. */
+  private noteFailure(status: number, error: string): void {
+    this.failures += 1;
+    const expired = status === 401;
+    if (this.unreachableAlerted || (!expired && this.failures < this.unreachableAfter)) return;
+    this.unreachableAlerted = true;
+    this.tell(
+      expired ? 'Dhan access token expired' : 'Cannot manage your positions',
+      `${expired ? 'The access token is no longer valid' : error}. Stop-losses already at the exchange still work, but the app cannot place new ones or exit. Open the Dhan app to check your positions.`
+    );
+  }
+
+  private noteRecovered(): void {
+    if (this.unreachableAlerted) this.tell('Connection to Dhan restored', 'The app is managing your positions again.');
+    this.failures = 0;
+    this.unreachableAlerted = false;
+  }
+
+  private async warnIfTokenEnding(): Promise<void> {
+    const left = await this.tokenSecondsLeft();
+    if (left === null || left > 30 * 60) {
+      if (left !== null) this.tokenWarned = false;
+      return;
+    }
+    if (this.tokenWarned) return;
+    this.tokenWarned = true;
+    this.tell('Dhan access token ends soon', `It ends in about ${Math.max(0, Math.round(left / 60))} min and you hold positions. Renew it, or manage them in the Dhan app.`);
+  }
+
   // ----------------------------------------------------------------- exit
 
   /** Sells the whole position at market. The stop-loss is cancelled first so the shares cannot be sold twice. */
@@ -402,6 +460,19 @@ export class PositionManager {
       return fail(out.error);
     }
     return fail(`Result unknown: ${out.error}. Check the Dhan order book (ref ${corr}).`, true);
+  }
+
+  /** Panic button: exits every held position, one at a time, and reports which ones could not be exited. */
+  exitAll(): Promise<{ attempted: number; failed: Array<{ id: string; symbol: string; error: string }> }> {
+    return this.serial(async () => {
+      const held = (await this.positions.loadActive()).filter((p) => (p.state === 'PROTECTED' || p.state === 'OPEN_UNPROTECTED') && p.filledQty > 0);
+      const failed: Array<{ id: string; symbol: string; error: string }> = [];
+      for (const p of held) {
+        const result = await this.runExit(p.id);
+        if (!result.ok) failed.push({ id: p.id, symbol: p.tradingSymbol, error: result.error });
+      }
+      return { attempted: held.length, failed };
+    });
   }
 
   // ------------------------------------------------------- strategy exits

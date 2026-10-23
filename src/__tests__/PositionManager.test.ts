@@ -61,7 +61,7 @@ const ord = (over: Partial<DhanOrder> = {}): DhanOrder => ({
   ...over,
 });
 
-function build(initial: Position[] = [pos()], book: DhanOrder[] = []) {
+function build(initial: Position[] = [pos()], book: DhanOrder[] = [], extra: Record<string, any> = {}) {
   let nowMs = START;
   const store = new Map<string, Position>(initial.map((p) => [p.id, p]));
   const positions = {
@@ -98,6 +98,8 @@ function build(initial: Position[] = [pos()], book: DhanOrder[] = []) {
     now: () => new Date(nowMs),
     alert: (t, b) => alerts.push([t, b]),
     retryMs: 60_000,
+    tokenSecondsLeft: async () => null,
+    ...extra,
   });
   return { mgr, store, positions, client, state, alerts, calls, advance: (ms: number) => (nowMs += ms), get: () => store.get('QSP-entry-1')! };
 }
@@ -433,5 +435,105 @@ describe('strategy exit hints', () => {
     await b.mgr.onTradesClosed([trade({ outcome: 'LOSS' }), trade({ strategyId: 'OOBTST_NIFTY' }), trade({ symbol: 'NIFTY 24900 CE' })]);
     expect(b.get().exitHint).toBeNull();
     expect(b.alerts).toHaveLength(0);
+  });
+});
+
+describe('health alerts', () => {
+  const held = () => pos({ state: 'PROTECTED', filledQty: 65, entryAvg: 180, slOrderId: 'S1', slCorrelationId: 'QSS-1' });
+  const withSl = () => [ord(), ord({ orderId: 'S1', correlationId: 'QSS-1', status: 'PENDING', transactionType: 'SELL', orderType: 'STOP_LOSS', quantity: 65, price: 155.2, triggerPrice: 160, filledQty: 0 })];
+
+  test('a single failed read is not alarming, but repeated failures tell the user once', async () => {
+    const b = build([held()], withSl());
+    b.state.ordersOk = false;
+    await b.mgr.reconcile();
+    await b.mgr.reconcile();
+    expect(b.alerts).toHaveLength(0);
+    await b.mgr.reconcile();
+    expect(b.alerts).toHaveLength(1);
+    expect(b.alerts[0][0]).toBe('Cannot manage your positions');
+    expect(b.alerts[0][1]).toContain('Dhan app');
+    await b.mgr.reconcile();
+    await b.mgr.reconcile();
+    expect(b.alerts).toHaveLength(1); // not repeated
+  });
+
+  test('an expired token is reported straight away', async () => {
+    const b = build([held()], withSl());
+    b.client.getOrders.mockResolvedValue({ ok: false, status: 401, error: 'Access token expired', code: 'DH-901' } as any);
+    await b.mgr.reconcile();
+    expect(b.alerts).toHaveLength(1);
+    expect(b.alerts[0][0]).toBe('Dhan access token expired');
+  });
+
+  test('coming back is announced once, and the failure count starts again', async () => {
+    const b = build([held()], withSl());
+    b.state.ordersOk = false;
+    for (let i = 0; i < 3; i++) await b.mgr.reconcile();
+    b.state.ordersOk = true;
+    await b.mgr.reconcile();
+    await b.mgr.reconcile();
+    expect(b.alerts.map((a) => a[0])).toEqual(['Cannot manage your positions', 'Connection to Dhan restored']);
+
+    b.state.ordersOk = false;
+    await b.mgr.reconcile();
+    expect(b.alerts).toHaveLength(2); // one failure alone does not alert again
+  });
+
+  test('a token that ends within half an hour is flagged once while a position is held, and re-armed after renewal', async () => {
+    let left: number | null = 20 * 60;
+    const b = build([held()], withSl(), { tokenSecondsLeft: async () => left });
+    await b.mgr.reconcile();
+    await b.mgr.reconcile();
+    expect(b.alerts.filter(([t]) => t.includes('ends soon'))).toHaveLength(1);
+
+    left = 8 * 3600;
+    await b.mgr.reconcile();
+    left = 10 * 60;
+    await b.mgr.reconcile();
+    expect(b.alerts.filter(([t]) => t.includes('ends soon'))).toHaveLength(2);
+  });
+
+  test('no token warning when no position is held, and an unreadable expiry is ignored', async () => {
+    const none = build([pos({ state: 'CLOSED' })], [], { tokenSecondsLeft: async () => 60 });
+    await none.mgr.reconcile();
+    expect(none.alerts).toHaveLength(0);
+
+    const unknown = build([held()], withSl(), { tokenSecondsLeft: async () => null });
+    await unknown.mgr.reconcile();
+    expect(unknown.alerts).toHaveLength(0);
+  });
+});
+
+describe('exit all', () => {
+  const heldPos = (id: string, over: Partial<Position> = {}) =>
+    pos({ id, state: 'PROTECTED', filledQty: 65, entryAvg: 180, slOrderId: `S-${id}`, slCorrelationId: `QSS-${id}`, ...over });
+
+  test('exits every held position, one at a time, and skips ones that are not held', async () => {
+    const b = build([heldPos('A'), heldPos('B', { state: 'OPEN_UNPROTECTED', slOrderId: null, slCorrelationId: null }), pos({ id: 'C', state: 'ENTRY_SENT' }), pos({ id: 'D', state: 'CLOSED' })]);
+    const result = await b.mgr.exitAll();
+    expect(result).toEqual({ attempted: 2, failed: [] });
+    const markets = b.client.placeClosingOrder.mock.calls.filter((c: any[]) => c[0].orderType === 'MARKET');
+    expect(markets).toHaveLength(2);
+    expect(b.calls).toEqual(['cancel:S-A', 'place:MARKET', 'place:MARKET']); // B had no stop-loss to cancel
+    expect(b.store.get('A')!.state).toBe('CLOSING');
+    expect(b.store.get('B')!.state).toBe('CLOSING');
+    expect(b.store.get('C')!.state).toBe('ENTRY_SENT');
+  });
+
+  test('one position failing to exit does not stop the others, and is reported by name', async () => {
+    const b = build([heldPos('A'), heldPos('B')]);
+    b.client.cancelOrder.mockResolvedValueOnce({ ok: false, status: 400, error: 'Order already traded', code: null } as any);
+    const result = await b.mgr.exitAll();
+    expect(result.attempted).toBe(2);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]).toMatchObject({ id: 'A', symbol: 'NIFTY 24850 CE' });
+    expect(b.store.get('A')!.state).toBe('PROTECTED'); // untouched, still protected
+    expect(b.store.get('B')!.state).toBe('CLOSING');
+  });
+
+  test('with nothing held it does nothing', async () => {
+    const b = build([pos({ state: 'CLOSED' })]);
+    expect(await b.mgr.exitAll()).toEqual({ attempted: 0, failed: [] });
+    expect(b.client.placeClosingOrder).not.toHaveBeenCalled();
   });
 });

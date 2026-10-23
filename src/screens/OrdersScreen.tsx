@@ -4,6 +4,7 @@ import { createThemedStyles, useTheme } from '../theme';
 import { useOrdersStore } from '../store/useOrdersStore';
 import { isOpenOrderStatus, isCancellableStatus, type OrderRequest } from '../services/dhan/DhanOrderClient';
 import type { StoredOrder } from '../services/OrderRepository';
+import { buildExecutionReport } from '../execution/executionReport';
 import { isActivePosition, type Position } from '../services/PositionRepository';
 import { isProposalStatus, CONFIRMING } from '../execution/ExecutionService';
 import { useLiveArm, isLiveArmed } from '../execution/liveArm';
@@ -194,6 +195,33 @@ function PositionCard({
   );
 }
 
+/** How the day's signals turned into orders, fills and profit or loss. Shown only once there is something to report. */
+function ExecutionReportCard({ paperOrders, positions }: { paperOrders: StoredOrder[]; positions: Position[] }) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles();
+  const r = buildExecutionReport(paperOrders, positions);
+  if (r.signals === 0 && r.filled === 0) return null;
+  return (
+    <View style={styles.panel} testID="exec-report">
+      <Text style={styles.panelTitle}>Today's execution report</Text>
+      <Text style={styles.meta} testID="report-signals">
+        {r.signals} signal{r.signals === 1 ? '' : 's'}: {r.sent} sent, {r.missed} missed (expired), {r.dismissed} dismissed, {r.blocked} blocked
+        {r.failed ? `, ${r.failed} refused by Dhan` : ''}
+        {r.uncertain ? `, ${r.uncertain} uncertain` : ''}
+      </Text>
+      {r.blockedReasons.slice(0, 3).map((b) => (
+        <Text key={b.reason} style={styles.metaSmall}>Blocked {b.count}x: {b.reason}</Text>
+      ))}
+      <Text style={styles.meta} testID="report-fills">
+        {r.filled} filled{r.avgFillVsLimit !== null ? `, on average ${r.avgFillVsLimit >= 0 ? '+' : ''}${r.avgFillVsLimit} per share against the limit price` : ''}
+      </Text>
+      <Text style={[styles.meta, { color: r.pnl >= 0 ? colors.bullish : colors.bearish }]} testID="report-pnl">
+        {r.closed} closed ({r.wins} won, {r.losses} lost): {r.pnl >= 0 ? '+' : ''}{r.pnl}{r.open ? ` · ${r.open} still open` : ''}
+      </Text>
+    </View>
+  );
+}
+
 /** A live order waiting for the user. Nothing has been sent; confirming re-runs every check and asks for biometrics. */
 function ProposalCard({
   order,
@@ -378,9 +406,10 @@ function TestOrderPanel() {
 
 export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
   const styles = useThemedStyles();
+  const { colors } = useTheme();
   const {
     orders, liveOrders, paperOrders, configured, liveConfigured, syncing, error, lastSynced, proposalErrors,
-    positions, positionErrors, exitPosition, protectNow,
+    positions, positionErrors, exitPosition, exitAll, protectNow,
     init, sync, cancel, confirmProposal, dismissProposal,
   } = useOrdersStore();
   const armedDate = useLiveArm((s) => s.armedDate);
@@ -433,6 +462,31 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
     },
     [runConfirm]
   );
+
+  const heldCount = positions.filter((p) => (p.state === 'PROTECTED' || p.state === 'OPEN_UNPROTECTED') && p.filledQty > 0).length;
+  const [exitAllMessage, setExitAllMessage] = useState<string | null>(null);
+  const askExitAll = useCallback(() => {
+    Alert.alert(
+      'Exit ALL positions?',
+      `Sell every position the app holds (${heldCount}) at market now. Each stop-loss is cancelled first. Market orders can fill at a worse price than the last one shown.`,
+      [
+        { text: 'Keep', style: 'cancel' },
+        {
+          text: 'Exit all now',
+          style: 'destructive',
+          onPress: () => {
+            exitAll().then((r) =>
+              setExitAllMessage(
+                r.failed.length === 0
+                  ? `Exit sent for ${r.attempted} position${r.attempted === 1 ? '' : 's'}.`
+                  : `${r.attempted - r.failed.length} of ${r.attempted} exits sent. Not exited: ${r.failed.map((f) => `${f.symbol} (${f.error})`).join('; ')}`
+              )
+            );
+          },
+        },
+      ]
+    );
+  }, [exitAll, heldCount]);
 
   const [exiting, setExiting] = useState<Record<string, boolean>>({});
   const askExit = useCallback(
@@ -522,6 +576,12 @@ The stop-loss order is cancelled first so the shares are not sold twice. A marke
       {positions.length > 0 ? (
         <>
           <Text style={styles.section}>POSITIONS ({positions.length})</Text>
+          {heldCount > 0 ? (
+            <TouchableOpacity style={[styles.placeBtn, { backgroundColor: colors.bearish, marginBottom: 8 }]} onPress={askExitAll} testID="exit-all">
+              <Text style={styles.placeText}>Exit ALL positions ({heldCount})</Text>
+            </TouchableOpacity>
+          ) : null}
+          {exitAllMessage ? <Text style={styles.errorText} testID="exit-all-result">{exitAllMessage}</Text> : null}
           {positions.map((p) => (
             <PositionCard
               key={p.id}
@@ -548,6 +608,8 @@ The stop-loss order is cancelled first so the shares are not sold twice. A marke
           ))}
         </>
       ) : null}
+
+      <ExecutionReportCard paperOrders={paperOrders} positions={positions} />
 
       <Text style={styles.section}>SIGNAL ORDER LOG ({signalLog.length})</Text>
       <Text style={styles.metaSmall}>Recorded on this device. Only orders you confirm are sent to Dhan.</Text>
