@@ -1,6 +1,6 @@
 {
   "name": "qstrategy",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "QStrategy — Standalone Mobile Trading & Quantitative Algo Strategy Terminal",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {

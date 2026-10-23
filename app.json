@@ -3,7 +3,7 @@
     "name": "QStrategy",
     "slug": "qstrategy",
     "scheme": "qstrategy",
-    "version": "1.0.17",
+    "version": "1.0.18",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "platforms": [
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.qstrategy.app",
-      "versionCode": 18,
+      "versionCode": 19,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#080A0F"
@@ -55,7 +55,7 @@
       },
       "updateManifestUrl": "https://raw.githubusercontent.com/athavrani/QStrategy/main/app.json",
       "apkDownloadUrl": "https://github.com/athavrani/QStrategy/releases/latest/download/QStrategy.apk",
-      "releaseNotes": "Breakout: lock 09:25, entry from 09:30 (higher LTP wins), SL entry-20 / target entry+40, exits at actual LTP and frozen, 09:45 exit fixed. OOBTST and breakout Step 2 progress now follows the high since arming and shows Day High."
+      "releaseNotes": "Fix Dhan feed subscription (quote packets, code 17) so Day High, day open and volume arrive live. SENSEX/NIFTY OOBTST Day High never below LTP, locked legs stay streamed, snapshots cleared at day change."
     },
     "owner": "quantpulse"
   }
