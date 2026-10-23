@@ -3,6 +3,7 @@ import { journalRepository } from '../services/JournalRepository';
 import { marketData } from '../services/marketdata/MarketDataService';
 import { notificationService } from '../services/notificationService';
 import { apiService } from '../services/apiService';
+import { executionService } from '../execution/ExecutionService';
 import { SignalPipeline } from './SignalPipeline';
 import { StrategyEngine } from './StrategyEngine';
 import { createDefaultStrategies } from './strategies';
@@ -16,7 +17,8 @@ export const strategyEngine = new StrategyEngine(
     alertLatchService,
     Date.now,
     (entry) => journalRepository.save(entry, alertLatchService.getTodayISTDateString()),
-    (trade) => journalRepository.closeTrade(trade, trade.tradeDate ?? alertLatchService.getTodayISTDateString())
+    (trade) => journalRepository.closeTrade(trade, trade.tradeDate ?? alertLatchService.getTodayISTDateString()),
+    executionService
   )
 );
 

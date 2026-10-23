@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar } from 'react-native';
 import { useTheme, createThemedStyles } from '../theme';
 import { useRadarStore } from '../store/useRadarStore';
+import { useOrdersStore } from '../store/useOrdersStore';
+import { isOpenOrderStatus } from '../services/dhan/DhanOrderClient';
 import { ConnectedHeaderBar } from '../components/common/ConnectedHeaderBar';
 import { FeedHealthBanner } from '../components/common/FeedHealthBanner';
 import { FirstRunOnboarding } from '../components/common/FirstRunOnboarding';
@@ -10,13 +12,15 @@ import { RadarScreen } from '../screens/RadarScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { OptionChainScreen } from '../screens/OptionChainScreen';
+import { OrdersScreen } from '../screens/OrdersScreen';
 import * as Haptics from 'expo-haptics';
 
-type Tab = 'SIGNALS' | 'RADAR' | 'OPTIONS' | 'JOURNAL' | 'SETTINGS';
+type Tab = 'SIGNALS' | 'RADAR' | 'OPTIONS' | 'JOURNAL' | 'ORDERS' | 'SETTINGS';
 
 export function AppNavigator() {
   const [activeTab, setActiveTab] = useState<Tab>('SIGNALS');
   const signalsTodayCount = useRadarStore((s) => s.signalsTodayCount);
+  const openOrdersCount = useOrdersStore((s) => s.orders.filter((o) => isOpenOrderStatus(o.status)).length);
   const { colors, isDark } = useTheme();
   const styles = useThemedStyles();
 
@@ -35,6 +39,8 @@ export function AppNavigator() {
         return <OptionChainScreen />;
       case 'JOURNAL':
         return <JournalScreen />;
+      case 'ORDERS':
+        return <OrdersScreen onOpenSettings={() => setActiveTab('SETTINGS')} />;
       case 'SETTINGS':
         return <SettingsScreen />;
     }
@@ -92,6 +98,19 @@ export function AppNavigator() {
         >
           <Text style={[styles.tabIcon, activeTab === 'JOURNAL' && styles.tabIconActive]}>📜</Text>
           <Text style={[styles.tabLabel, activeTab === 'JOURNAL' && styles.tabLabelActive]}>Journal</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'ORDERS' && styles.tabItemActive]}
+          onPress={() => handleTabPress('ORDERS')}
+        >
+          <Text style={[styles.tabIcon, activeTab === 'ORDERS' && styles.tabIconActive]}>🧾</Text>
+          <Text style={[styles.tabLabel, activeTab === 'ORDERS' && styles.tabLabelActive]}>Orders</Text>
+          {openOrdersCount > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{openOrdersCount}</Text>
+            </View>
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity

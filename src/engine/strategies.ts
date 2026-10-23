@@ -1,6 +1,7 @@
 import type { StockRadarItem, TacticalStrikeSuggestion } from '../types/mobile';
 import type { OobtstLiveState } from '../strategies/types';
-import type { CarryTrade, EngineContext, EngineStrategy, ExitEvent, SignalEvent } from './types';
+import type { CarryTrade, EngineContext, EngineStrategy, ExecutionHint, ExitEvent, SignalEvent } from './types';
+import { NIFTY_LOT_SIZE, SENSEX_LOT_SIZE } from '../constants/lotSizes';
 import { parseClockSeconds } from './clockTriggers';
 
 export const STRATEGY_IDS = {
@@ -94,6 +95,18 @@ function buildCarryExit(
 
 const clock = () => new Date().toLocaleTimeString('en-IN');
 
+/** Instrument details for an order, or undefined when the contract's security ID is not known. */
+function optionHint(
+  securityId: string | undefined,
+  exchangeSegment: ExecutionHint['exchangeSegment'],
+  tradingSymbol: string,
+  lotSize: number,
+  productType: ExecutionHint['productType']
+): ExecutionHint | undefined {
+  if (!securityId) return undefined;
+  return { securityId: String(securityId), exchangeSegment, tradingSymbol, lotSize, productType };
+}
+
 export function createVolumeCrossoverStrategy(deps: StrategyDeps): EngineStrategy {
   return {
     id: STRATEGY_IDS.VOLUME_CROSSOVER,
@@ -169,6 +182,13 @@ export function createBreakout180Strategy(deps: StrategyDeps): EngineStrategy {
           stopLoss: b.fixedStopLoss,
           target: b.fixedTarget,
           timestamp: entryTime,
+          execution: optionHint(
+            (contract === 'CE' ? b.ceCandidate : b.peCandidate)?.securityId,
+            'NSE_FNO',
+            `NIFTY ${symbol}`,
+            NIFTY_LOT_SIZE,
+            'INTRADAY'
+          ),
           latch: {
             key: `BREAKOUT_180_${symbol.replace(/\s+/g, '_')}`,
             side: 'GREEN',
@@ -238,6 +258,8 @@ interface OobtstConfig {
   idPrefix: string;
   latchPrefix: string;
   notesLabel: string;
+  exchangeSegment: ExecutionHint['exchangeSegment'];
+  lotSize: number;
   select: (ctx: EngineContext) => OobtstLiveState | null | undefined;
 }
 
@@ -262,6 +284,14 @@ function createOobtstStrategy(deps: StrategyDeps, cfg: OobtstConfig): EngineStra
           entryPrice: trigger,
           stopLoss: leg.openPrice,
           timestamp: s.lastUpdated || ctx.istTime || clock(),
+          // The leg itself carries no security ID; the candidate list for the same strike does.
+          execution: optionHint(
+            (s.activeLeg === 'CE' ? s.ceCandidates : s.peCandidates)?.find((c) => c.strike === leg.strike)?.securityId,
+            cfg.exchangeSegment,
+            leg.symbol,
+            cfg.lotSize,
+            'MARGIN'
+          ),
           latch: {
             key: `${cfg.latchPrefix}_${leg.symbol.replace(/\s+/g, '_')}`,
             side: 'GREEN',
@@ -326,6 +356,8 @@ export function createNiftyOobtstStrategy(deps: StrategyDeps): EngineStrategy {
     idPrefix: 'sig-oobtst-nifty',
     latchPrefix: 'OOBTST_NIFTY',
     notesLabel: '09:20',
+    exchangeSegment: 'NSE_FNO',
+    lotSize: NIFTY_LOT_SIZE,
     select: (ctx) => ctx.niftyOobtst,
   });
 }
@@ -337,6 +369,8 @@ export function createSensexOobtstStrategy(deps: StrategyDeps): EngineStrategy {
     idPrefix: 'sig-oobtst-sensex',
     latchPrefix: 'OOBTST_SENSEX',
     notesLabel: 'Sensex 09:20',
+    exchangeSegment: 'BSE_FNO',
+    lotSize: SENSEX_LOT_SIZE,
     select: (ctx) => ctx.sensexOobtst,
   });
 }

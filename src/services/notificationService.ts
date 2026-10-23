@@ -115,6 +115,31 @@ export const notificationService = {
     } catch {}
   },
 
+  // Order proposal waiting for the user's confirmation (live orders are never sent without it)
+  async notifyOrderAwaitingConfirm(symbol: string, quantity: number, price: number, expiresInSec: number) {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `Confirm order: BUY ${symbol}`,
+          body: `Qty ${quantity} @ limit ₹${price.toFixed(2)}. Open Orders to confirm within ${Math.round(expiresInSec / 60)} min, or it expires.`,
+          data: { screen: 'ORDERS' },
+          sound: true,
+        },
+        trigger: null,
+      });
+    } catch {}
+  },
+
+  // Position alerts: no stop-loss, stop-loss hit, exit suggested or failed
+  async notifyPositionAlert(title: string, body: string) {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: { title, body, data: { screen: 'ORDERS' }, sound: true },
+        trigger: null,
+      });
+    } catch {}
+  },
+
   // 5. Alert: 09:45 Time Exit
   async notify180TimeExit(strike: number, type: 'CE' | 'PE') {
     try {

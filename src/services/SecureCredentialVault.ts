@@ -11,6 +11,8 @@ const VAULT_KEY_CLIENT_ID = 'QSTRATEGY_SECURE_CLIENT_ID';
 const VAULT_KEY_ACCESS_TOKEN = 'QSTRATEGY_SECURE_ACCESS_TOKEN';
 const VAULT_KEY_TAB_ID = 'QSTRATEGY_SECURE_TAB_ID';
 const VAULT_KEY_STREAMER_MODE = 'QSTRATEGY_SECURE_STREAMER_MODE';
+const VAULT_KEY_SANDBOX_CLIENT_ID = 'QSTRATEGY_SECURE_SANDBOX_CLIENT_ID';
+const VAULT_KEY_SANDBOX_TOKEN = 'QSTRATEGY_SECURE_SANDBOX_TOKEN';
 
 export interface DhanCredentials {
   clientId: string;
@@ -271,6 +273,61 @@ export class SecureCredentialVault {
         disableDeviceFallback: false,
       });
 
+      return result.success;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Dhan sandbox credentials, kept apart from the live ones: a sandbox token never works on the live
+   * API, and a live token must never be sent to the sandbox.
+   */
+  public async getSandboxCredentials(): Promise<{ clientId: string; token: string }> {
+    try {
+      const [clientId, token] = await Promise.all([
+        SecureStore.getItemAsync(VAULT_KEY_SANDBOX_CLIENT_ID),
+        SecureStore.getItemAsync(VAULT_KEY_SANDBOX_TOKEN),
+      ]);
+      return {
+        clientId: (clientId || '').trim(),
+        token: (token || '').replace(/\s+/g, ''),
+      };
+    } catch {
+      return { clientId: '', token: '' };
+    }
+  }
+
+  public async saveSandboxCredentials(clientId: string, token: string): Promise<void> {
+    const secureOptions: SecureStore.SecureStoreOptions = {
+      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    };
+    await Promise.all([
+      SecureStore.setItemAsync(VAULT_KEY_SANDBOX_CLIENT_ID, (clientId || '').trim(), secureOptions),
+      SecureStore.setItemAsync(VAULT_KEY_SANDBOX_TOKEN, (token || '').replace(/\s+/g, ''), secureOptions),
+    ]);
+  }
+
+  public async clearSandboxCredentials(): Promise<void> {
+    await Promise.all([
+      SecureStore.deleteItemAsync(VAULT_KEY_SANDBOX_CLIENT_ID),
+      SecureStore.deleteItemAsync(VAULT_KEY_SANDBOX_TOKEN),
+    ]);
+  }
+
+  /**
+   * Like authenticateWithBiometrics, but fails closed: a device with no biometric hardware or no
+   * enrolment is refused rather than waved through. Used before actions that move money or lock settings.
+   */
+  public async authenticateStrict(promptMessage: string): Promise<boolean> {
+    try {
+      if (!(await LocalAuthentication.hasHardwareAsync())) return false;
+      if (!(await LocalAuthentication.isEnrolledAsync())) return false;
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage,
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
+      });
       return result.success;
     } catch {
       return false;

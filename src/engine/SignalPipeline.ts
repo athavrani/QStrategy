@@ -1,6 +1,7 @@
 import type { SignalJournalItem } from '../types/mobile';
 import type { AcquireAlertLatchDetails, CrossoverTriggerState } from '../services/alertLatchService';
 import type { ClosedTrade, ExitEvent, SignalEvent } from './types';
+import type { ExecutionPort } from '../execution/types';
 
 export interface LatchPort {
   isAlertLatched(key: string, side: CrossoverTriggerState): boolean;
@@ -16,7 +17,8 @@ export class SignalPipeline {
     private readonly latch: LatchPort,
     private readonly now: () => number = Date.now,
     private readonly sink?: JournalSink,
-    private readonly closeSink?: CloseSink
+    private readonly closeSink?: CloseSink,
+    private readonly execution?: ExecutionPort
   ) {}
 
   /** Records each trade exit once: latch, persist the close, then notify. */
@@ -92,6 +94,21 @@ export class SignalPipeline {
         await this.sink?.(item);
       } catch {
         // Persistence failure must not hide the signal from the live journal.
+      }
+      try {
+        await this.execution?.onSignal({
+          journalId: item.id,
+          strategyId: event.strategyId,
+          symbol: event.symbol,
+          side: event.signalType,
+          entryPrice: event.entryPrice,
+          stopLoss: event.stopLoss,
+          target: event.target,
+          timestamp: event.timestamp,
+          hint: event.execution,
+        });
+      } catch {
+        // An execution failure must never undo or hide a signal that is already latched and journaled.
       }
       journal.push(item);
     }

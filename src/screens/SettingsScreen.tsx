@@ -16,6 +16,11 @@ import { dhanDirectService } from '../services/dhanDirectService';
 import { secureVault, isDhanJwtToken, isNumericClientId } from '../services/SecureCredentialVault';
 import { dhanHqFeedSocket, testDhanFeedConnection } from '../services/dhan/DhanHqFeedSocket';
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
+import { OrderExecutionCard } from '../components/settings/OrderExecutionCard';
+import { SandboxCredentialsCard } from '../components/settings/SandboxCredentialsCard';
+import { ExecutionSettingsCard } from '../components/settings/ExecutionSettingsCard';
+import { LiveTradingCard } from '../components/settings/LiveTradingCard';
+import { LiveReadinessCard } from '../components/settings/LiveReadinessCard';
 import { useRadarStore } from '../store/useRadarStore';
 import { API_CONFIG } from '../config/apiConfig';
 import { appUpdateService, UpdateCheckResult } from '../services/appUpdateService';
@@ -494,6 +499,22 @@ export function SettingsScreen() {
           <Text style={styles.testAppLaunchText}>📱 Test 1-Tap Launch Dhan Mobile App</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ORDER EXECUTION: DHAN IP WHITELIST */}
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · DHAN IP WHITELIST</Text>
+      <OrderExecutionCard />
+
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · DHAN SANDBOX (TEST ORDERS)</Text>
+      <SandboxCredentialsCard />
+
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · MODE & LIMITS</Text>
+      <ExecutionSettingsCard />
+
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · LIVE TRADING</Text>
+      <LiveTradingCard />
+
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · READINESS CHECK</Text>
+      <LiveReadinessCard />
 
       {/* BACKGROUND MONITORING */}
       <Text style={styles.sectionHeader}>BACKGROUND MONITORING</Text>

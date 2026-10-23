@@ -3,7 +3,7 @@
  * Wraps expo-sqlite with migrations, type-safe query helpers, and in-memory test fallback.
  */
 
-import { DATABASE_NAME, CURRENT_SCHEMA_VERSION, CREATE_TABLES_SQL } from './schema';
+import { DATABASE_NAME, CURRENT_SCHEMA_VERSION, CREATE_TABLES_SQL, ORDER_COLUMNS, POSITION_COLUMNS } from './schema';
 
 export interface DatabaseDriver {
   exec(sql: string): Promise<void>;
@@ -22,6 +22,24 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
 
   public async run(sql: string, params: any[] = []): Promise<{ lastInsertRowId?: number; changes: number }> {
     const trimmed = sql.trim().toUpperCase();
+
+    if (trimmed.startsWith('INSERT') && sql.includes('INTO app_positions')) {
+      const row: Record<string, any> = {};
+      POSITION_COLUMNS.forEach((col, i) => {
+        row[col] = params[i];
+      });
+      this.getOrCreateTable('app_positions').set(row.id, row);
+      return { changes: 1 };
+    }
+
+    if (trimmed.startsWith('INSERT') && sql.includes('INTO orders')) {
+      const row: Record<string, any> = {};
+      ORDER_COLUMNS.forEach((col, i) => {
+        row[col] = params[i];
+      });
+      this.getOrCreateTable('orders').set(row.id, row);
+      return { changes: 1 };
+    }
 
     if (trimmed.startsWith('INSERT')) {
       if (sql.includes('daily_strategy_locks')) {
@@ -236,6 +254,17 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    if (sql.includes('FROM app_positions')) {
+      return Array.from(this.getOrCreateTable('app_positions').values()) as T[];
+    }
+
+    if (sql.includes('FROM orders')) {
+      const [env, trade_date] = params;
+      return Array.from(this.getOrCreateTable('orders').values())
+        .filter((r) => r.env === env && (trade_date === undefined || r.trade_date === trade_date))
+        .sort((a, b) => String(b.create_time ?? '').localeCompare(String(a.create_time ?? ''))) as T[];
+    }
+
     if (sql.includes('signal_journal')) {
       const rows = Array.from(this.getOrCreateTable('signal_journal').values());
       if (sql.includes('DISTINCT trade_date')) {
@@ -279,6 +308,14 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getFirst<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+    if (sql.includes('FROM app_positions')) {
+      return (this.getOrCreateTable('app_positions').get(params[0]) as T) ?? null;
+    }
+
+    if (sql.includes('FROM orders')) {
+      return (this.getOrCreateTable('orders').get(params[0]) as T) ?? null;
+    }
+
     if (sql.includes('daily_strategy_locks')) {
       const table = this.getOrCreateTable('daily_strategy_locks');
       if (params.length === 2) {

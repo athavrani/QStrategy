@@ -24,6 +24,16 @@ export interface EngineContext {
   carry?: CarryTrade[];
 }
 
+/** What an order for this signal needs to know about the instrument. Absent when the strategy cannot name it. */
+export interface ExecutionHint {
+  securityId: string;
+  exchangeSegment: 'NSE_FNO' | 'BSE_FNO';
+  tradingSymbol: string;
+  lotSize: number;
+  /** INTRADAY squares off the same day; MARGIN carries the position overnight. */
+  productType: 'INTRADAY' | 'MARGIN';
+}
+
 export interface SignalEvent {
   /** Prefix of the journal entry id; a timestamp is appended. */
   idPrefix: string;
@@ -40,6 +50,8 @@ export interface SignalEvent {
     side: CrossoverTriggerState;
     details: AcquireAlertLatchDetails;
   };
+  /** Instrument details for order execution; strategies that are alert-only leave this out. */
+  execution?: ExecutionHint;
   /** Runs only after the latch is acquired, so expensive work is skipped for suppressed duplicates. */
   materialize: () => { notes: string; notify?: () => void };
 }

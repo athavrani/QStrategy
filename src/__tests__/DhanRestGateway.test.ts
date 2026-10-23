@@ -119,3 +119,41 @@ describe('DhanRestGateway', () => {
     expect(sleeps).toEqual([]);
   });
 });
+
+describe('DhanRestGateway.request (order and account endpoints)', () => {
+  test('sends the requested method and omits the body when none is given', async () => {
+    const { gw, fetchImpl } = setup();
+    await gw.request('GET', '/orders', undefined, CREDS);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.dhan.co/v2/orders');
+    expect(init.method).toBe('GET');
+    expect('body' in init).toBe(false);
+
+    await gw.request('PUT', '/orders/123', { price: 10 }, CREDS);
+    expect(fetchImpl.mock.calls[1][1].method).toBe('PUT');
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).toEqual({ price: 10 });
+  });
+
+  test('never merges or caches identical order requests', async () => {
+    const { gw, fetchImpl } = setup();
+    const body = { securityId: '1', quantity: 65 };
+    await Promise.all([gw.request('POST', '/orders', body, CREDS), gw.request('POST', '/orders', body, CREDS)]);
+    await gw.request('POST', '/orders', body, CREDS);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test('sends to an overridden base URL such as the sandbox, and defaults to production', async () => {
+    const { gw, fetchImpl } = setup();
+    await gw.request('GET', '/orders', undefined, CREDS, { baseUrl: 'https://sandbox.dhan.co/v2' });
+    await gw.request('GET', '/orders', undefined, CREDS);
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://sandbox.dhan.co/v2/orders');
+    expect(fetchImpl.mock.calls[1][0]).toBe('https://api.dhan.co/v2/orders');
+  });
+
+  test('spaces order calls so bursts stay under the 10 requests per second limit', async () => {
+    const { gw, sleeps } = setup();
+    await gw.request('GET', '/orders', undefined, CREDS);
+    await gw.request('GET', '/orders', undefined, CREDS);
+    expect(sleeps).toEqual([120]);
+  });
+});
