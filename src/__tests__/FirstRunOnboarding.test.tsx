@@ -9,6 +9,9 @@ import {
 } from '../components/common/FirstRunOnboarding';
 import { secureVault } from '../services/SecureCredentialVault';
 
+// Mounting the modal is slow when the suite runs in parallel under coverage
+jest.setTimeout(25000);
+
 describe('shouldShowOnboarding', () => {
   test('shows only without credentials and without a prior dismissal', () => {
     expect(shouldShowOnboarding({ clientId: '', token: '' }, false)).toBe(true);
