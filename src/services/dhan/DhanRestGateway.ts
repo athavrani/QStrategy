@@ -24,12 +24,16 @@ export interface GatewayResponse {
   text(): Promise<string>;
 }
 
+export type GatewayMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
 export interface GatewayRequestOptions {
   /** Overrides the endpoint's default cache TTL; 0 disables caching for this call. */
   ttlMs?: number;
   /** Skips cache and single-flight entirely (e.g. connection tests). */
   noCache?: boolean;
   timeoutMs?: number;
+  /** Overrides the production base URL (the sandbox uses https://sandbox.dhan.co/v2). */
+  baseUrl?: string;
 }
 
 export interface GatewayOptions {
@@ -53,6 +57,12 @@ const POLICIES: Array<[string, EndpointPolicy]> = [
   ['/optionchain', { group: 'optionchain', minIntervalMs: 1000, ttlMs: 3000 }],
   ['/marketfeed', { group: 'quote', minIntervalMs: 1000, ttlMs: 1000 }],
   ['/charts', { group: 'data', minIntervalMs: 200, ttlMs: 0 }],
+  // Order and account-control calls are never cached or merged; 10 req/s is the documented order limit.
+  ['/orders', { group: 'orders', minIntervalMs: 120, ttlMs: 0 }],
+  ['/super', { group: 'orders', minIntervalMs: 120, ttlMs: 0 }],
+  ['/trades', { group: 'orders', minIntervalMs: 120, ttlMs: 0 }],
+  ['/positions', { group: 'orders', minIntervalMs: 120, ttlMs: 0 }],
+  ['/ip', { group: 'orders', minIntervalMs: 120, ttlMs: 0 }],
 ];
 const DEFAULT_POLICY: EndpointPolicy = { group: 'default', minIntervalMs: 200, ttlMs: 0 };
 const MAX_CACHE_ENTRIES = 200;
@@ -109,7 +119,7 @@ export class DhanRestGateway {
       if (pending) return pending;
     }
 
-    const promise = this.execute(endpoint, bodyStr, creds, policy, options.timeoutMs ?? this.defaultTimeoutMs)
+    const promise = this.execute('POST', endpoint, bodyStr, creds, policy, options.timeoutMs ?? this.defaultTimeoutMs)
       .then((res) => {
         if (shareable && res.ok && ttl > 0) this.store(key, res, ttl);
         return res;
@@ -120,6 +130,30 @@ export class DhanRestGateway {
 
     if (shareable) this.inflight.set(key, promise);
     return promise;
+  }
+
+  /**
+   * Uncached, unmerged request of any method, for order and account-control endpoints where two
+   * identical calls must stay two calls. Rejects on network errors and timeouts (AbortError).
+   */
+  async request(
+    method: GatewayMethod,
+    endpoint: string,
+    body: unknown,
+    creds: GatewayCredentials,
+    options: GatewayRequestOptions = {}
+  ): Promise<GatewayResponse> {
+    const policy = this.policyFor(endpoint);
+    const bodyStr = body === undefined ? undefined : JSON.stringify(body);
+    return this.execute(
+      method,
+      endpoint,
+      bodyStr,
+      creds,
+      policy,
+      options.timeoutMs ?? this.defaultTimeoutMs,
+      options.baseUrl ?? DHAN_REST_BASE_URL
+    );
   }
 
   private policyFor(endpoint: string): EndpointPolicy {
@@ -151,19 +185,21 @@ export class DhanRestGateway {
   }
 
   private async execute(
+    method: GatewayMethod,
     endpoint: string,
-    bodyStr: string,
+    bodyStr: string | undefined,
     creds: GatewayCredentials,
     policy: EndpointPolicy,
-    timeoutMs: number
+    timeoutMs: number,
+    baseUrl: string = DHAN_REST_BASE_URL
   ): Promise<GatewayResponse> {
     await this.reserveSlot(policy);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const raw = await this.fetchImpl(`${DHAN_REST_BASE_URL}${endpoint}`, {
-        method: 'POST',
+      const raw = await this.fetchImpl(`${baseUrl}${endpoint}`, {
+        method,
         headers: {
           'access-token': creds.token,
           'client-id': creds.clientId,
@@ -171,7 +207,7 @@ export class DhanRestGateway {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: bodyStr,
+        ...(bodyStr !== undefined ? { body: bodyStr } : {}),
         signal: controller.signal,
       });
 

@@ -40,6 +40,14 @@ export interface DailyStrategyLockRecord {
   updated_at: string;
 }
 
+/** Column order of the orders table; the repository's INSERT and the in-memory test driver both follow it. */
+export const ORDER_COLUMNS = [
+  'id', 'env', 'trade_date', 'order_id', 'correlation_id', 'source', 'strategy_id', 'status',
+  'transaction_type', 'exchange_segment', 'product_type', 'order_type', 'validity', 'security_id',
+  'trading_symbol', 'quantity', 'price', 'trigger_price', 'filled_qty', 'remaining_qty', 'avg_price',
+  'error_code', 'error_message', 'create_time', 'update_time', 'created_at', 'updated_at',
+] as const;
+
 export const CREATE_TABLES_SQL = `
 -- 1. Strategy Positions Table
 CREATE TABLE IF NOT EXISTS strategy_positions (
@@ -145,4 +153,37 @@ CREATE TABLE IF NOT EXISTS signal_journal (
 );
 
 CREATE INDEX IF NOT EXISTS idx_journal_trade_date ON signal_journal(trade_date);
+
+-- 6. Orders Table (Orders placed from the app and mirrored from the Dhan order book, per environment)
+CREATE TABLE IF NOT EXISTS orders (
+  id TEXT PRIMARY KEY,
+  env TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  correlation_id TEXT,
+  source TEXT NOT NULL,
+  strategy_id TEXT,
+  status TEXT NOT NULL,
+  transaction_type TEXT NOT NULL,
+  exchange_segment TEXT NOT NULL,
+  product_type TEXT NOT NULL,
+  order_type TEXT NOT NULL,
+  validity TEXT NOT NULL,
+  security_id TEXT NOT NULL,
+  trading_symbol TEXT,
+  quantity INTEGER NOT NULL,
+  price REAL NOT NULL,
+  trigger_price REAL NOT NULL,
+  filled_qty INTEGER NOT NULL,
+  remaining_qty INTEGER NOT NULL,
+  avg_price REAL NOT NULL,
+  error_code TEXT,
+  error_message TEXT,
+  create_time TEXT,
+  update_time TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_env_date ON orders(env, trade_date);
 `;
