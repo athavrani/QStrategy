@@ -80,6 +80,27 @@ describe('validateOrderRequest', () => {
   });
 });
 
+describe('parseDhanError', () => {
+  const { parseDhanError } = require('../services/dhan/dhanErrors');
+  const body = (obj: any) => ({ status: 400, errorText: JSON.stringify(obj) });
+
+  test('reads the current, snake_case and nested remarks error shapes', () => {
+    expect(parseDhanError(body({ errorCode: 'DH-906', errorMessage: 'Bad order' }))).toEqual({ message: 'Bad order (HTTP 400)', code: 'DH-906' });
+    expect(parseDhanError(body({ error_code: 'DH-905', error_message: 'Missing field' }))).toEqual({ message: 'Missing field (HTTP 400)', code: 'DH-905' });
+    expect(
+      parseDhanError(body({ status: 'failure', remarks: { error_code: 'DH-906', error_type: 'Order_Error', error_message: 'Order in transit cannot be cancelled' } }))
+    ).toEqual({ message: 'Order in transit cannot be cancelled (HTTP 400)', code: 'DH-906' });
+    expect(parseDhanError(body({ remarks: 'plain remark' })).message).toBe('plain remark (HTTP 400)');
+  });
+
+  test('falls back to the raw body, the status, and the token message', () => {
+    expect(parseDhanError({ status: 400, errorText: 'oops' }).message).toBe('oops (HTTP 400)');
+    expect(parseDhanError(body({ unexpected: true })).message).toContain('unexpected');
+    expect(parseDhanError({ status: 502, errorText: '' }).message).toBe('Dhan returned HTTP 502.');
+    expect(parseDhanError({ status: 401, errorText: '' }).code).toBe('DH-901');
+  });
+});
+
 describe('normalizeOrder', () => {
   test('maps Dhan fields and tolerates missing ones', () => {
     const o = normalizeOrder(bookRow({ omsErrorCode: '16', omsErrorDescription: 'RMS rejected' }));

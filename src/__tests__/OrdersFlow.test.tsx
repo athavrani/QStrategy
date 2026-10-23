@@ -165,6 +165,40 @@ describe('OrdersScreen', () => {
     act(() => tree.unmount());
   });
 
+  test('a TRANSIT order has no cancel button, explains why, and never calls Dhan to cancel', async () => {
+    fetchMock.mockResolvedValue(ok([row({ orderId: 'X1', correlationId: 'QS-x1', orderStatus: 'TRANSIT' })]));
+    const tree = await mount();
+    expect(allText(tree)).toContain('ACTIVE (1)');
+    expect(tree.root.findAllByProps({ testID: 'cancel-X1' })).toHaveLength(0);
+    expect(textOf(tree.root.findByProps({ testID: 'transit-X1' }))).toContain('Waiting for the exchange');
+    await act(async () => {
+      expect(await useOrdersStore.getState().cancel(useOrdersStore.getState().orders[0])).toContain('TRANSIT');
+    });
+    expect(fetchMock.mock.calls.some((c) => c[1].method === 'DELETE')).toBe(false);
+  });
+
+  test('a refused cancel shows Dhan reason on that order and leaves it open', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (url: string, init: any) => {
+      if (init.method === 'DELETE') {
+        return ok({ errorType: 'Order_Error', errorCode: 'DH-906', errorMessage: 'Order is in transit' }, 400);
+      }
+      return ok([row({ orderId: 'T1', correlationId: 'QS-t1', orderStatus: 'PENDING' })]);
+    });
+    const tree = await mount();
+
+    await act(async () => tree.root.findAllByProps({ testID: 'cancel-T1' })[0].props.onPress());
+    const buttons = alertSpy.mock.calls[0][2] as any[];
+    await act(async () => {
+      buttons.find((b) => b.text === 'Cancel order').onPress();
+    });
+    await flush();
+
+    expect(textOf(tree.root.findByProps({ testID: 'action-error-T1' }))).toBe('Cancel failed: Order is in transit (HTTP 400)');
+    expect(allText(tree)).toContain('ACTIVE (1)');
+    alertSpy.mockRestore();
+  });
+
   test('a test order is validated, placed in the sandbox, and shown in the list', async () => {
     let placed = false;
     fetchMock.mockImplementation(async (url: string, init: any) => {

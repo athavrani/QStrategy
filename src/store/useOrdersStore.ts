@@ -4,6 +4,7 @@ import { orderRepository, type StoredOrder } from '../services/OrderRepository';
 import {
   sandboxOrderClient,
   isOpenOrderStatus,
+  isCancellableStatus,
   type DhanOrder,
   type OrderRequest,
   type PlaceOutcome,
@@ -112,6 +113,9 @@ export const useOrdersStore = create<OrdersState>((set, get) => ({
 
   cancel: async (order) => {
     if (!isOpenOrderStatus(order.status)) return 'That order is no longer open.';
+    if (!isCancellableStatus(order.status)) {
+      return 'This order has not reached the exchange yet (TRANSIT). Dhan allows cancelling once it is pending.';
+    }
     const res = await client.cancelOrder(order.orderId);
     if (!res.ok) {
       set({ error: res.error });

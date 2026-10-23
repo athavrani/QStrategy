@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, RefreshControl, Alert } from 'react-native';
 import { createThemedStyles, useTheme } from '../theme';
 import { useOrdersStore } from '../store/useOrdersStore';
-import { isOpenOrderStatus, type OrderRequest } from '../services/dhan/DhanOrderClient';
+import { isOpenOrderStatus, isCancellableStatus, type OrderRequest } from '../services/dhan/DhanOrderClient';
 import type { StoredOrder } from '../services/OrderRepository';
 
 const POLL_MS = 5000;
@@ -11,7 +11,15 @@ interface OrdersScreenProps {
   onOpenSettings?: () => void;
 }
 
-function OrderCard({ order, onCancel }: { order: StoredOrder; onCancel: (o: StoredOrder) => void }) {
+function OrderCard({
+  order,
+  onCancel,
+  actionError,
+}: {
+  order: StoredOrder;
+  onCancel: (o: StoredOrder) => void;
+  actionError?: string;
+}) {
   const { colors } = useTheme();
   const styles = useThemedStyles();
   const open = isOpenOrderStatus(order.status);
@@ -38,11 +46,17 @@ function OrderCard({ order, onCancel }: { order: StoredOrder; onCancel: (o: Stor
         {order.averageTradedPrice > 0 ? ` @ ${order.averageTradedPrice}` : ''} · {order.source === 'APP' ? 'placed here' : 'from Dhan'} · {order.env}
       </Text>
       {order.errorMessage ? <Text style={styles.errorText}>{order.errorMessage}</Text> : null}
+      {actionError ? <Text style={styles.errorText} testID={`action-error-${order.orderId}`}>{actionError}</Text> : null}
       <Text style={styles.metaSmall}>Order {order.orderId}</Text>
-      {open ? (
+      {open && isCancellableStatus(order.status) ? (
         <TouchableOpacity style={styles.cancelBtn} onPress={() => onCancel(order)} testID={`cancel-${order.orderId}`}>
           <Text style={styles.cancelText}>Cancel order</Text>
         </TouchableOpacity>
+      ) : null}
+      {open && !isCancellableStatus(order.status) ? (
+        <Text style={styles.metaSmall} testID={`transit-${order.orderId}`}>
+          Waiting for the exchange to accept this order. Cancel becomes available once it is pending.
+        </Text>
       ) : null}
     </View>
   );
@@ -135,14 +149,28 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
     return () => clearInterval(timer);
   }, [configured, hasOpen, sync]);
 
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+
+  const runCancel = useCallback(
+    async (order: StoredOrder) => {
+      setActionErrors((prev) => {
+        const { [order.orderId]: _gone, ...rest } = prev;
+        return rest;
+      });
+      const err = await cancel(order);
+      if (err) setActionErrors((prev) => ({ ...prev, [order.orderId]: `Cancel failed: ${err}` }));
+    },
+    [cancel]
+  );
+
   const confirmCancel = useCallback(
     (order: StoredOrder) => {
       Alert.alert('Cancel order', `Cancel ${order.transactionType} ${order.tradingSymbol ?? order.securityId} (${order.orderId})?`, [
         { text: 'Keep', style: 'cancel' },
-        { text: 'Cancel order', style: 'destructive', onPress: () => void cancel(order) },
+        { text: 'Cancel order', style: 'destructive', onPress: () => void runCancel(order) },
       ]);
     },
-    [cancel]
+    [runCancel]
   );
 
   const active = orders.filter((o) => isOpenOrderStatus(o.status));
@@ -179,13 +207,13 @@ export function OrdersScreen({ onOpenSettings }: OrdersScreenProps) {
           <Text style={styles.section}>ACTIVE ({active.length})</Text>
           {active.length === 0 ? <Text style={styles.none} testID="orders-none-active">No open orders</Text> : null}
           {active.map((o) => (
-            <OrderCard key={o.id} order={o} onCancel={confirmCancel} />
+            <OrderCard key={o.id} order={o} onCancel={confirmCancel} actionError={actionErrors[o.orderId]} />
           ))}
 
           <Text style={styles.section}>TODAY ({done.length})</Text>
           {done.length === 0 ? <Text style={styles.none}>Nothing completed yet</Text> : null}
           {done.map((o) => (
-            <OrderCard key={o.id} order={o} onCancel={confirmCancel} />
+            <OrderCard key={o.id} order={o} onCancel={confirmCancel} actionError={actionErrors[o.orderId]} />
           ))}
 
           <Text style={styles.metaSmall}>

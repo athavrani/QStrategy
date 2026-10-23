@@ -70,6 +70,9 @@ export type CallResult<T> = { ok: true; data: T } | { ok: false; status: number;
 export const OPEN_ORDER_STATUSES = ['TRANSIT', 'PENDING', 'PART_TRADED', 'TRIGGERED', 'MODIFIED'];
 export const isOpenOrderStatus = (status: string): boolean => OPEN_ORDER_STATUSES.includes(status);
 
+/** TRANSIT orders have not reached the exchange yet and Dhan refuses to cancel or modify them (HTTP 400). */
+export const isCancellableStatus = (status: string): boolean => isOpenOrderStatus(status) && status !== 'TRANSIT';
+
 const CORRELATION_RE = /^[a-zA-Z0-9_.-]{1,30}$/;
 
 export function generateCorrelationId(prefix = 'QS'): string {

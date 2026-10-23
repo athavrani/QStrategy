@@ -15,9 +15,22 @@ export function parseDhanError(res: Pick<GatewayResponse, 'status' | 'errorText'
   if (text) {
     try {
       const parsed = JSON.parse(text);
-      const msg = parsed?.errorMessage ?? parsed?.message ?? parsed?.remarks;
-      const code = typeof parsed?.errorCode === 'string' ? parsed.errorCode : null;
-      if (typeof msg === 'string' && msg) return { message: `${msg} (HTTP ${res.status})`, code };
+      // Dhan uses {errorType, errorCode, errorMessage}; older responses nest the same fields under `remarks`.
+      const remarks = parsed?.remarks && typeof parsed.remarks === 'object' ? parsed.remarks : null;
+      const pick = (...vals: unknown[]): string | null => {
+        const hit = vals.find((v) => typeof v === 'string' && v !== '');
+        return typeof hit === 'string' ? hit : null;
+      };
+      const msg = pick(
+        parsed?.errorMessage,
+        parsed?.error_message,
+        remarks?.error_message,
+        remarks?.errorMessage,
+        parsed?.message,
+        parsed?.remarks
+      );
+      const code = pick(parsed?.errorCode, parsed?.error_code, remarks?.error_code, remarks?.errorCode);
+      if (msg) return { message: `${msg} (HTTP ${res.status})`, code };
       if (code) return { message: `Dhan error ${code} (HTTP ${res.status})`, code };
     } catch {
       // Plain-text body: fall through to the raw text.
