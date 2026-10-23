@@ -3,7 +3,7 @@
     "name": "QStrategy",
     "slug": "qstrategy",
     "scheme": "qstrategy",
-    "version": "1.0.18",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "platforms": [
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.qstrategy.app",
-      "versionCode": 19,
+      "versionCode": 20,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#080A0F"
@@ -55,7 +55,7 @@
       },
       "updateManifestUrl": "https://raw.githubusercontent.com/athavrani/QStrategy/main/app.json",
       "apkDownloadUrl": "https://github.com/athavrani/QStrategy/releases/latest/download/QStrategy.apk",
-      "releaseNotes": "Fix Dhan feed subscription (quote packets, code 17) so Day High, day open and volume arrive live. SENSEX/NIFTY OOBTST Day High never below LTP, locked legs stay streamed, snapshots cleared at day change."
+      "releaseNotes": "v1.1.0: Adds Dhan order execution. New Orders tab. Settings gain the Dhan IP whitelist, sandbox testing, execution mode and limits, a daily live-trading arm switch and a readiness check. Live orders are off by default: they need Confirm mode, daily arming, your confirmation and a biometric check, and are limited to one lot. Filled entries get an exchange stop-loss, with Exit now and Exit all. Read ORDER_EXECUTION_RUNBOOK.md before using real money."
     },
     "owner": "quantpulse"
   }
