@@ -20,6 +20,7 @@ import { dailyStrategyLockService } from '../../services/DailyStrategyLockServic
 import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
 import { NIFTY_LOT_SIZE } from '../../constants/lotSizes';
+import { triggerProgressPct } from '../../utils/triggerProgress';
 
 interface OobtstDetailModalProps {
   visible: boolean;
@@ -105,6 +106,10 @@ export function OobtstDetailModal({
     ceLtp: oobtstLive?.ceLeg.currentLtp || stepDetails?.step2?.ceLtp || 0,
     peTrigger: oobtstLive?.peLeg.triggerPrice || stepDetails?.step2?.peTrigger || 0,
     peLtp: oobtstLive?.peLeg.currentLtp || stepDetails?.step2?.peLtp || 0,
+    ceHigh: oobtstLive?.ceLeg.armedHigh ?? stepDetails?.step2?.ceHigh ?? 0,
+    peHigh: oobtstLive?.peLeg.armedHigh ?? stepDetails?.step2?.peHigh ?? 0,
+    ceDayHigh: oobtstLive?.ceLeg.dayHigh ?? stepDetails?.step2?.ceDayHigh ?? 0,
+    peDayHigh: oobtstLive?.peLeg.dayHigh ?? stepDetails?.step2?.peDayHigh ?? 0,
     multiplier: 1.5,
   };
 
@@ -167,8 +172,8 @@ export function OobtstDetailModal({
     }
   };
 
-  const ceProgress = step2.ceTrigger > 0 ? Math.min(100, Math.round((step2.ceLtp / step2.ceTrigger) * 100)) : 0;
-  const peProgress = step2.peTrigger > 0 ? Math.min(100, Math.round((step2.peLtp / step2.peTrigger) * 100)) : 0;
+  const ceProgress = triggerProgressPct(step2.ceHigh || step2.ceLtp, step2.ceTrigger);
+  const peProgress = triggerProgressPct(step2.peHigh || step2.peLtp, step2.peTrigger);
 
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
@@ -752,7 +757,7 @@ export function OobtstDetailModal({
                   1.5x Trigger: <Text style={styles.boldWhite}>{step2.ceTrigger > 0 ? `₹${step2.ceTrigger.toFixed(2)}` : '--'}</Text>
                 </Text>
                 <Text style={styles.triggerMetricText}>
-                  LTP: <Text style={[styles.boldWhite, { color: isCeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.ceLtp > 0 ? `₹${step2.ceLtp.toFixed(2)}` : '--'}</Text>{step2.ceTrigger > 0 ? ` (${ceProgress}%)` : ''}
+                  LTP: <Text style={[styles.boldWhite, { color: isCeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.ceLtp > 0 ? `₹${step2.ceLtp.toFixed(2)}` : '--'}</Text>{step2.ceDayHigh > 0 ? ` • Day High ₹${step2.ceDayHigh.toFixed(2)}` : ''}{step2.ceTrigger > 0 ? ` (${ceProgress}%)` : ''}
                 </Text>
               </View>
               <View style={styles.progressBarBg}>
@@ -809,7 +814,7 @@ export function OobtstDetailModal({
                   1.5x Trigger: <Text style={styles.boldWhite}>{step2.peTrigger > 0 ? `₹${step2.peTrigger.toFixed(2)}` : '--'}</Text>
                 </Text>
                 <Text style={styles.triggerMetricText}>
-                  LTP: <Text style={[styles.boldWhite, { color: isPeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.peLtp > 0 ? `₹${step2.peLtp.toFixed(2)}` : '--'}</Text>{step2.peTrigger > 0 ? ` (${peProgress}%)` : ''}
+                  LTP: <Text style={[styles.boldWhite, { color: isPeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.peLtp > 0 ? `₹${step2.peLtp.toFixed(2)}` : '--'}</Text>{step2.peDayHigh > 0 ? ` • Day High ₹${step2.peDayHigh.toFixed(2)}` : ''}{step2.peTrigger > 0 ? ` (${peProgress}%)` : ''}
                 </Text>
               </View>
               <View style={styles.progressBarBg}>

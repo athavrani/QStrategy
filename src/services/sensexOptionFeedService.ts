@@ -20,6 +20,7 @@ import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
 import { OobtstCandidateStrike, OobtstLiveState, OobtstLegDetail } from '../strategies/types';
 import { SENSEX_LOT_SIZE } from '../constants/lotSizes';
+import { triggerProgressPct } from '../utils/triggerProgress';
 
 export { SENSEX_LOT_SIZE };
 export const SENSEX_STRIKE_STEP = 100;
@@ -46,6 +47,9 @@ export interface SensexOobtstDayAnchor {
   lockFailureReason?: string;
   peakPrice: number;
   troughPrice: number;
+  /** Highest LTP per leg since the 09:20 lock; a spike between evaluations still triggers. */
+  ceArmedHigh?: number;
+  peArmedHigh?: number;
   status: 'SCANNING' | 'ARMED' | 'ACTIVE' | 'SL_HIT' | 'BTST_HOLD' | 'LOCK_FAILED';
   entryTime: string | null;
   exitTime: string | null;
@@ -216,6 +220,9 @@ export class SensexOptionFeedService {
    */
   public async loadPersistedAnchor(dateKey?: string): Promise<SensexOobtstDayAnchor | null> {
     const today = dateKey || formatDateKeyIST();
+    // The in-memory anchor carries the armed highs and entry; storage can lag it
+    const live = this.cachedAnchor;
+    if (live && live.tradeDate === today && live.isConfirmed && !live.isLockFailed) return live;
     try {
       // 1. Try SQLite multi-tier store
       const record = await dailyStrategyLockService.getLock(today, 'SENSEX_OOBTST');
@@ -645,13 +652,21 @@ export class SensexOptionFeedService {
 
       // Check Directional Breakout Trigger under OCO
       if (!activeLeg) {
-        const ceCrossed = ceLtp >= anchor.ceTriggerPrice && anchor.ceTriggerPrice > 0;
-        const peCrossed = peLtp >= anchor.peTriggerPrice && anchor.peTriggerPrice > 0;
+        const prevCeHigh = anchor.ceArmedHigh ?? 0;
+        const prevPeHigh = anchor.peArmedHigh ?? 0;
+        anchor.ceArmedHigh = Math.max(prevCeHigh, ceLtp);
+        anchor.peArmedHigh = Math.max(prevPeHigh, peLtp);
+        if (anchor.ceArmedHigh > prevCeHigh || anchor.peArmedHigh > prevPeHigh) {
+          this.persistLockedAnchor(anchor);
+        }
+
+        const ceCrossed = anchor.ceTriggerPrice > 0 && anchor.ceArmedHigh >= anchor.ceTriggerPrice;
+        const peCrossed = anchor.peTriggerPrice > 0 && anchor.peArmedHigh >= anchor.peTriggerPrice;
 
         if (ceCrossed && peCrossed) {
           // Simultaneous cross tie-breaker: larger percentage breakout over trigger
-          const cePct = (ceLtp - anchor.ceTriggerPrice) / anchor.ceTriggerPrice;
-          const pePct = (peLtp - anchor.peTriggerPrice) / anchor.peTriggerPrice;
+          const cePct = (anchor.ceArmedHigh - anchor.ceTriggerPrice) / anchor.ceTriggerPrice;
+          const pePct = (anchor.peArmedHigh - anchor.peTriggerPrice) / anchor.peTriggerPrice;
           activeLeg = cePct >= pePct ? 'CE' : 'PE';
         } else if (ceCrossed) {
           activeLeg = 'CE';
@@ -662,7 +677,9 @@ export class SensexOptionFeedService {
         if (activeLeg) {
           anchor.activeLeg = activeLeg;
           anchor.entryTime = istTimeStr || new Date().toLocaleTimeString('en-IN');
-          executedPrice = activeLeg === 'CE' ? ceLtp : peLtp;
+          const legLtp = activeLeg === 'CE' ? ceLtp : peLtp;
+          const legTrigger = activeLeg === 'CE' ? anchor.ceTriggerPrice : anchor.peTriggerPrice;
+          executedPrice = legLtp >= legTrigger ? legLtp : legTrigger;
           anchor.executedPrice = executedPrice;
           slPrice = Number((executedPrice * 0.5).toFixed(2));
           anchor.slPrice = slPrice;
@@ -710,8 +727,10 @@ export class SensexOptionFeedService {
       }
     }
 
-    const ceProgressPct = anchor.ceTriggerPrice > 0 ? Math.min(100, Math.round((ceLtp / anchor.ceTriggerPrice) * 100)) : 0;
-    const peProgressPct = anchor.peTriggerPrice > 0 ? Math.min(100, Math.round((peLtp / anchor.peTriggerPrice) * 100)) : 0;
+    const ceHigh = anchor.ceArmedHigh ?? ceLtp;
+    const peHigh = anchor.peArmedHigh ?? peLtp;
+    const ceProgressPct = triggerProgressPct(ceHigh, anchor.ceTriggerPrice);
+    const peProgressPct = triggerProgressPct(peHigh, anchor.peTriggerPrice);
 
     const ceLeg: OobtstLegDetail = {
       type: 'CE',
@@ -721,6 +740,8 @@ export class SensexOptionFeedService {
       triggerPrice: anchor.ceTriggerPrice,
       currentLtp: ceLtp,
       progressPct: ceProgressPct,
+      armedHigh: ceHigh,
+      dayHigh: Math.max(this.getLiveDayHigh(anchor.ceStrike, 'CE'), ceHigh),
       status: activeLeg === 'CE' ? 'EXECUTED' : (activeLeg === 'PE' ? 'DISABLED' : (status === 'SL_HIT' ? 'SL_HIT' : 'ARMED')),
       isProvisional,
     };
@@ -733,6 +754,8 @@ export class SensexOptionFeedService {
       triggerPrice: anchor.peTriggerPrice,
       currentLtp: peLtp,
       progressPct: peProgressPct,
+      armedHigh: peHigh,
+      dayHigh: Math.max(this.getLiveDayHigh(anchor.peStrike, 'PE'), peHigh),
       status: activeLeg === 'PE' ? 'EXECUTED' : (activeLeg === 'CE' ? 'DISABLED' : (status === 'SL_HIT' ? 'SL_HIT' : 'ARMED')),
       isProvisional,
     };
@@ -781,6 +804,10 @@ export class SensexOptionFeedService {
 
   public getLiveOptionPrice(strike: number, type: 'CE' | 'PE'): number {
     return this.chainFeed.getLiveOptionPrice(strike, type);
+  }
+
+  public getLiveDayHigh(strike: number, type: 'CE' | 'PE'): number {
+    return this.chainFeed.getDayHigh(strike, type);
   }
 }
 

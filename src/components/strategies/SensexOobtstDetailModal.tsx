@@ -18,6 +18,7 @@ import { dailyStrategyLockService } from '../../services/DailyStrategyLockServic
 import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
 import { SENSEX_LOT_SIZE } from '../../constants/lotSizes';
+import { triggerProgressPct } from '../../utils/triggerProgress';
 
 interface SensexOobtstDetailModalProps {
   visible: boolean;
@@ -103,6 +104,10 @@ export function SensexOobtstDetailModal({
     ceLtp: sensexOobtstLive?.ceLeg.currentLtp || stepDetails?.step2?.ceLtp || 0,
     peTrigger: sensexOobtstLive?.peLeg.triggerPrice || stepDetails?.step2?.peTrigger || 0,
     peLtp: sensexOobtstLive?.peLeg.currentLtp || stepDetails?.step2?.peLtp || 0,
+    ceHigh: sensexOobtstLive?.ceLeg.armedHigh ?? stepDetails?.step2?.ceHigh ?? 0,
+    peHigh: sensexOobtstLive?.peLeg.armedHigh ?? stepDetails?.step2?.peHigh ?? 0,
+    ceDayHigh: sensexOobtstLive?.ceLeg.dayHigh ?? stepDetails?.step2?.ceDayHigh ?? 0,
+    peDayHigh: sensexOobtstLive?.peLeg.dayHigh ?? stepDetails?.step2?.peDayHigh ?? 0,
     multiplier: 1.5,
   };
 
@@ -156,8 +161,8 @@ export function SensexOobtstDetailModal({
   const pnlPerShare = currentStep === 3 && step3.executedPrice > 0 ? (activeLtp - step3.executedPrice) : 0;
   const pnlPerLot = pnlPerShare * SENSEX_LOT_SIZE;
 
-  const ceProgress = step2.ceTrigger > 0 ? Math.min(100, Math.round((step2.ceLtp / step2.ceTrigger) * 100)) : 0;
-  const peProgress = step2.peTrigger > 0 ? Math.min(100, Math.round((step2.peLtp / step2.peTrigger) * 100)) : 0;
+  const ceProgress = triggerProgressPct(step2.ceHigh || step2.ceLtp, step2.ceTrigger);
+  const peProgress = triggerProgressPct(step2.peHigh || step2.peLtp, step2.peTrigger);
 
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
@@ -740,7 +745,7 @@ export function SensexOobtstDetailModal({
                   1.5x Trigger: <Text style={styles.boldWhite}>{step2.ceTrigger > 0 ? `₹${step2.ceTrigger.toFixed(2)}` : '--'}</Text>
                 </Text>
                 <Text style={styles.triggerMetricText}>
-                  LTP: <Text style={[styles.boldWhite, { color: isCeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.ceLtp > 0 ? `₹${step2.ceLtp.toFixed(2)}` : '--'}</Text>{step2.ceTrigger > 0 ? ` (${ceProgress}%)` : ''}
+                  LTP: <Text style={[styles.boldWhite, { color: isCeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.ceLtp > 0 ? `₹${step2.ceLtp.toFixed(2)}` : '--'}</Text>{step2.ceDayHigh > 0 ? ` • Day High ₹${step2.ceDayHigh.toFixed(2)}` : ''}{step2.ceTrigger > 0 ? ` (${ceProgress}%)` : ''}
                 </Text>
               </View>
               <View style={styles.progressBarBg}>
@@ -797,7 +802,7 @@ export function SensexOobtstDetailModal({
                   1.5x Trigger: <Text style={styles.boldWhite}>{step2.peTrigger > 0 ? `₹${step2.peTrigger.toFixed(2)}` : '--'}</Text>
                 </Text>
                 <Text style={styles.triggerMetricText}>
-                  LTP: <Text style={[styles.boldWhite, { color: isPeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.peLtp > 0 ? `₹${step2.peLtp.toFixed(2)}` : '--'}</Text>{step2.peTrigger > 0 ? ` (${peProgress}%)` : ''}
+                  LTP: <Text style={[styles.boldWhite, { color: isPeExecuted ? colors.bullish : colors.textPrimary }]}>{step2.peLtp > 0 ? `₹${step2.peLtp.toFixed(2)}` : '--'}</Text>{step2.peDayHigh > 0 ? ` • Day High ₹${step2.peDayHigh.toFixed(2)}` : ''}{step2.peTrigger > 0 ? ` (${peProgress}%)` : ''}
                 </Text>
               </View>
               <View style={styles.progressBarBg}>

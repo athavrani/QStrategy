@@ -113,7 +113,7 @@ describe('Production Strategy Persistence & Monotonic Duplicate Alert Suppressio
 
       // Simulate trade entry breakout > 180.00
       (niftyOptionFeedService as any).cachedLiveOptionChain[24800].ceLtp = 182.5;
-      const state2 = niftyOptionFeedService.evaluateBreakout180(24800, '09:28:00 AM');
+      const state2 = niftyOptionFeedService.evaluateBreakout180(24800, '09:30:00 AM');
       expect(state2.status).toBe('IN_TRADE');
       expect(state2.activeContract).toBe('CE');
       expect(state2.entryPrice).toBe(182.5);

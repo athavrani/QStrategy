@@ -35,6 +35,10 @@ export interface OobtstLegDetail {
   triggerPrice: number;
   currentLtp: number;
   progressPct: number;
+  /** Highest LTP since the leg armed (09:20); drives progressPct. */
+  armedHigh?: number;
+  /** Exchange day high of the contract. */
+  dayHigh?: number;
   status: 'ARMED' | 'EXECUTED' | 'DISABLED' | 'SL_HIT' | 'SCANNING';
   isProvisional?: boolean;
 }
@@ -129,6 +133,10 @@ export interface StrategySignalOutput {
       ceLtp: number;
       peTrigger: number;
       peLtp: number;
+      ceHigh?: number;
+      peHigh?: number;
+      ceDayHigh?: number;
+      peDayHigh?: number;
       multiplier: number;
     };
     step3?: {

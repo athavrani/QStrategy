@@ -88,6 +88,8 @@ export interface Candidate180Contract {
   price0925: number;
   distanceTo180: number;        // difference from threshold: |price - threshold|
   currentLtp: number;
+  armedHigh?: number;           // highest price since the 09:30 entry window opened
+  dayHigh?: number;             // exchange day high
   isTriggered: boolean;
   isDisabled: boolean;
   rank?: 1 | 2;
@@ -121,9 +123,11 @@ export interface NiftyBreakout180State {
   activeContract: 'CE' | 'PE' | null;
   entryPrice: number | null;
   entryTime: string | null;
-  fixedTarget: number;          // ₹220.00
-  fixedStopLoss: number;        // ₹160.00
+  fixedTarget: number;          // entry + 40 (₹220.00 at a 180 entry)
+  fixedStopLoss: number;        // entry - 20 (₹160.00 at a 180 entry)
   currentPrice: number | null;
+  exitPrice?: number | null;    // live price at the moment of the first exit, then frozen
+  exitTime?: string | null;
   pnlPoints: number;
   timeRemainingSec: number;
   outcomeText?: string;

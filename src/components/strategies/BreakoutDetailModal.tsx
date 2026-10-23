@@ -23,6 +23,7 @@ import { useTheme, createThemedStyles } from '../../theme';
 import { NiftyBreakout180State, Candidate180Contract } from '../../types/mobile';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { NIFTY_LOT_SIZE } from '../../constants/lotSizes';
+import { triggerProgressPct } from '../../utils/triggerProgress';
 import { useRadarStore } from '../../store/useRadarStore';
 import { useSharedTick } from '../../hooks/useSharedTicker';
 import { StatusBadge } from '../common/StatusBadge';
@@ -160,6 +161,8 @@ export function BreakoutDetailModal({
   const slPrice = data?.fixedStopLoss ?? 160.0;
 
   const pnlPerShare = data?.pnlPoints ?? (isActive ? +(activeLtp - entryPrice).toFixed(2) : 0);
+  const cePct = triggerProgressPct(ce.armedHigh ?? ce.currentLtp, activeThreshold);
+  const pePct = triggerProgressPct(pe.armedHigh ?? pe.currentLtp, activeThreshold);
   const pnlPerLot = +(pnlPerShare * NIFTY_LOT_SIZE).toFixed(2);
 
   const handleOpenBroker = (broker: 'kite' | 'dhan', symbol: string) => {
@@ -323,11 +326,11 @@ export function BreakoutDetailModal({
               <Text style={styles.metaLabel}>ENGINE LIFECYCLE</Text>
               <Text style={styles.metaValue}>
                 {isTargetHit
-                  ? '🎯 TARGET BOOKED (+40 PTS)'
+                  ? `🎯 TARGET BOOKED (${pnlPerShare >= 0 ? '+' : ''}${pnlPerShare.toFixed(2)} PTS)`
                   : isSlHit
-                  ? '🛑 STOP LOSS HIT (-20 PTS)'
+                  ? `🛑 STOP LOSS HIT (${pnlPerShare >= 0 ? '+' : ''}${pnlPerShare.toFixed(2)} PTS)`
                   : isTimeExit
-                  ? '⏱️ SQUARED OFF @ 09:45 AM'
+                  ? `⏱️ SQUARED OFF @ 09:45 AM (${pnlPerShare >= 0 ? '+' : ''}${pnlPerShare.toFixed(2)} PTS)`
                   : isActive
                   ? `⚡ ACTIVATED > ₹${activeThreshold.toFixed(2)} (IN TRADE)`
                   : isProvisional
@@ -635,7 +638,7 @@ export function BreakoutDetailModal({
                 <Text style={styles.stepTitle}>
                   Activation Status (&gt; ₹{activeThreshold.toFixed(2)} Breakout)
                 </Text>
-                <Text style={styles.stepSub}>Operating Window: 09:25:00 – 09:45:00 IST (1-min candles)</Text>
+                <Text style={styles.stepSub}>Lock 09:25:00 • Entry window 09:30:00 – 09:45:00 IST (1-min candles)</Text>
               </View>
               <View style={[styles.statusBadge, { backgroundColor: isActive ? colors.cyanGlow : colors.surface }]}>
                 <Text style={[styles.statusBadgeText, { color: isActive ? colors.cyan : colors.warning }]}>
@@ -657,14 +660,14 @@ export function BreakoutDetailModal({
                   <View style={styles.pendingLegRow}>
                     <Text style={styles.pendingLegSymbol}>NIFTY {ce.strike} CE</Text>
                     <Text style={styles.pendingLegPrice}>
-                      LTP: ₹{ce.currentLtp.toFixed(2)} / ₹{activeThreshold.toFixed(2)}
+                      LTP: ₹{ce.currentLtp.toFixed(2)} • Day High: ₹{(ce.dayHigh ?? ce.currentLtp).toFixed(2)} / ₹{activeThreshold.toFixed(2)} ({cePct}%)
                     </Text>
                   </View>
                   <View style={styles.progressBarBg}>
                     <View
                       style={[
                         styles.progressBarFill,
-                        { width: `${Math.min(100, Math.round((ce.currentLtp / activeThreshold) * 100))}%` },
+                        { width: `${cePct}%` },
                       ]}
                     />
                   </View>
@@ -672,14 +675,14 @@ export function BreakoutDetailModal({
                   <View style={[styles.pendingLegRow, { marginTop: 8 }]}>
                     <Text style={styles.pendingLegSymbol}>NIFTY {pe.strike} PE</Text>
                     <Text style={styles.pendingLegPrice}>
-                      LTP: ₹{pe.currentLtp.toFixed(2)} / ₹{activeThreshold.toFixed(2)}
+                      LTP: ₹{pe.currentLtp.toFixed(2)} • Day High: ₹{(pe.dayHigh ?? pe.currentLtp).toFixed(2)} / ₹{activeThreshold.toFixed(2)} ({pePct}%)
                     </Text>
                   </View>
                   <View style={styles.progressBarBg}>
                     <View
                       style={[
                         styles.progressBarFill,
-                        { width: `${Math.min(100, Math.round((pe.currentLtp / activeThreshold) * 100))}%` },
+                        { width: `${pePct}%` },
                       ]}
                     />
                   </View>
@@ -692,8 +695,11 @@ export function BreakoutDetailModal({
                     <Text style={styles.activeContractLabel}>ACTIVATED CONTRACT</Text>
                     <Text style={styles.activeContractSymbol}>{activeSymbol}</Text>
                     <Text style={styles.activeContractEntry}>
-                      Broke ₹{activeThreshold.toFixed(2)} @ ₹{entryPrice.toFixed(2)} ({data?.entryTime || '09:28:15 AM'})
+                      Broke ₹{activeThreshold.toFixed(2)} @ ₹{entryPrice.toFixed(2)} ({data?.entryTime || '09:30:00 AM'})
                     </Text>
+                    {activeCandidate?.dayHigh ? (
+                      <Text style={styles.activeContractEntry}>Day High: ₹{activeCandidate.dayHigh.toFixed(2)}</Text>
+                    ) : null}
                   </View>
                   <TouchableOpacity
                     style={styles.tradeNowBtn}
@@ -710,7 +716,7 @@ export function BreakoutDetailModal({
                     <Text style={[styles.targetValue, { color: colors.bullish }]}>
                       ₹{targetPrice.toFixed(2)}
                     </Text>
-                    <Text style={styles.targetSub}>+40.00 pts (+22.2%)</Text>
+                    <Text style={styles.targetSub}>+{(targetPrice - entryPrice).toFixed(2)} pts</Text>
                   </View>
 
                   <View style={styles.slCard}>
@@ -718,7 +724,7 @@ export function BreakoutDetailModal({
                     <Text style={[styles.slValue, { color: colors.bearish }]}>
                       ₹{slPrice.toFixed(2)}
                     </Text>
-                    <Text style={styles.slSub}>-20.00 pts (-11.1%)</Text>
+                    <Text style={styles.slSub}>-{(entryPrice - slPrice).toFixed(2)} pts</Text>
                   </View>
                 </View>
 
@@ -754,7 +760,7 @@ export function BreakoutDetailModal({
               </View>
               <View style={{ flex: 1, marginLeft: 8 }}>
                 <Text style={styles.stepTitle}>Outcome &amp; Target Booking</Text>
-                <Text style={styles.stepSub}>Target ₹220 / SL ₹160 • 09:45 AM Hard Cutoff</Text>
+                <Text style={styles.stepSub}>Target ₹{targetPrice.toFixed(2)} / SL ₹{slPrice.toFixed(2)} • 09:45 AM Hard Cutoff</Text>
               </View>
               <View
                 style={[
@@ -818,7 +824,7 @@ export function BreakoutDetailModal({
                 <View style={styles.cutoffCard}>
                   <Text style={styles.cutoffTitle}>⏱️ 09:45:00 AM IST Hard Cutoff Invariant</Text>
                   <Text style={styles.cutoffDescription}>
-                    If neither ₹220 Target nor ₹160 Stop Loss is breached before 09:45:00 AM IST, the active position is closed at market price. Strictly zero overnight hold.
+                    If neither the +40 pts Target nor the -20 pts Stop Loss is breached before 09:45:00 AM IST, the active position is closed at market price. Strictly zero overnight hold.
                   </Text>
                 </View>
               </View>

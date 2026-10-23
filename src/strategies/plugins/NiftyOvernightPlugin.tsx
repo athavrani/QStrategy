@@ -119,6 +119,10 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
           ceLtp,
           peTrigger,
           peLtp,
+          ceHigh: live.ceLeg.armedHigh,
+          peHigh: live.peLeg.armedHigh,
+          ceDayHigh: live.ceLeg.dayHigh,
+          peDayHigh: live.peLeg.dayHigh,
           multiplier: 1.5,
         },
         step3: {

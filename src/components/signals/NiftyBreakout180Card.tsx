@@ -56,7 +56,7 @@ export function NiftyBreakout180Card({ data, onPress }: Props) {
           <Text style={styles.icon}>🚀</Text>
           <View>
             <Text style={styles.title}>NIFTY 09:25 ₹180 Breakout</Text>
-            <Text style={styles.window}>3-Step Execution • Window: 09:25 – 09:45 IST</Text>
+            <Text style={styles.window}>3-Step Execution • Lock 09:25 • Entry 09:30 – 09:45 IST</Text>
           </View>
         </View>
 

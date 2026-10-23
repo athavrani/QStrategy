@@ -14,6 +14,7 @@ import { assessLockFreshness, RANK_WINDOW_STRIKES } from './marketdata/lockFresh
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
 import { NIFTY_LOT_SIZE } from '../constants/lotSizes';
+import { triggerProgressPct } from '../utils/triggerProgress';
 
 const NIFTY_STRIKE_STEP = 50;
 const ANCHOR_TARGET_PREMIUM = 62.50;
@@ -290,6 +291,10 @@ class NiftyOptionFeedService {
 
   public getLiveOptionPrice(strike: number, type: 'CE' | 'PE'): number {
     return this.chainFeed.getLiveOptionPrice(strike, type);
+  }
+
+  public getLiveDayHigh(strike: number, type: 'CE' | 'PE'): number {
+    return this.chainFeed.getDayHigh(strike, type);
   }
 
   /**
@@ -608,8 +613,8 @@ class NiftyOptionFeedService {
           const parsed = JSON.parse(record.raw_payload);
           if (parsed && parsed.anchor && parsed.anchor.tradeDate === today && parsed.anchor.isConfirmed) {
             this.cachedAnchor = parsed.anchor;
-            if (typeof parsed.peakCeLtp === 'number') this.peakCeLtp = parsed.peakCeLtp;
-            if (typeof parsed.peakPeLtp === 'number') this.peakPeLtp = parsed.peakPeLtp;
+            if (typeof parsed.peakCeLtp === 'number') this.peakCeLtp = Math.max(this.peakCeLtp, parsed.peakCeLtp);
+            if (typeof parsed.peakPeLtp === 'number') this.peakPeLtp = Math.max(this.peakPeLtp, parsed.peakPeLtp);
             return this.cachedAnchor;
           }
         } catch {}
@@ -642,8 +647,8 @@ class NiftyOptionFeedService {
         const parsed = JSON.parse(json);
         if (parsed && parsed.anchor && parsed.anchor.tradeDate === today && parsed.anchor.isConfirmed) {
           this.cachedAnchor = parsed.anchor;
-          if (typeof parsed.peakCeLtp === 'number') this.peakCeLtp = parsed.peakCeLtp;
-          if (typeof parsed.peakPeLtp === 'number') this.peakPeLtp = parsed.peakPeLtp;
+          if (typeof parsed.peakCeLtp === 'number') this.peakCeLtp = Math.max(this.peakCeLtp, parsed.peakCeLtp);
+          if (typeof parsed.peakPeLtp === 'number') this.peakPeLtp = Math.max(this.peakPeLtp, parsed.peakPeLtp);
           return this.cachedAnchor;
         }
       }
@@ -976,8 +981,10 @@ class NiftyOptionFeedService {
       this.persistLockedAnchor(anchor);
     }
 
-    const ceProgress = anchor.ceTrigger > 0 ? Math.min(100, Math.round((ceLtp / anchor.ceTrigger) * 100)) : 0;
-    const peProgress = anchor.peTrigger > 0 ? Math.min(100, Math.round((peLtp / anchor.peTrigger) * 100)) : 0;
+    const ceProgress = triggerProgressPct(this.peakCeLtp, anchor.ceTrigger);
+    const peProgress = triggerProgressPct(this.peakPeLtp, anchor.peTrigger);
+    const ceDayHigh = Math.max(this.getLiveDayHigh(anchor.ceStrike, 'CE'), this.peakCeLtp);
+    const peDayHigh = Math.max(this.getLiveDayHigh(anchor.peStrike, 'PE'), this.peakPeLtp);
 
     const isCeBreached = anchor.ceTrigger > 0 && (ceLtp >= anchor.ceTrigger || this.peakCeLtp >= anchor.ceTrigger);
     const isPeBreached = anchor.peTrigger > 0 && (peLtp >= anchor.peTrigger || this.peakPeLtp >= anchor.peTrigger);
@@ -1075,6 +1082,8 @@ class NiftyOptionFeedService {
       triggerPrice: anchor.ceTrigger,
       currentLtp: ceLtp,
       progressPct: ceProgress,
+      armedHigh: this.peakCeLtp,
+      dayHigh: ceDayHigh,
       status: ceStatus,
     };
 
@@ -1086,6 +1095,8 @@ class NiftyOptionFeedService {
       triggerPrice: anchor.peTrigger,
       currentLtp: peLtp,
       progressPct: peProgress,
+      armedHigh: this.peakPeLtp,
+      dayHigh: peDayHigh,
       status: peStatus,
     };
 
@@ -1132,6 +1143,14 @@ class NiftyOptionFeedService {
     entryTime: string | null;
     peakPrice: number;
     troughPrice: number;
+    slPrice?: number;
+    targetPrice?: number;
+    ceArmedHigh?: number;
+    peArmedHigh?: number;
+    lastActiveLtp?: number;
+    exitStatus?: 'TARGET_HIT' | 'SL_HIT' | 'TIME_EXIT';
+    exitPrice?: number;
+    exitTime?: string;
     lockedThreshold?: number;
     isLocked?: boolean;
     isLockFailed?: boolean;
@@ -1183,6 +1202,9 @@ class NiftyOptionFeedService {
    */
   public async loadPersistedBreakoutState(dateKey?: string): Promise<any> {
     const today = dateKey || formatDateKeyIST();
+    // A locked in-memory session is newer than storage; reloading would roll back peak, trough or exit
+    const live = this.cachedBreakout180;
+    if (live && live.date === today && (live.isLocked || live.isLockFailed)) return live;
     try {
       // 1. Check AsyncStorage for instant exact state
       const json = await AsyncStorage.getItem(`@qstrategy_breakout180_state_${today}`);
@@ -1332,7 +1354,7 @@ class NiftyOptionFeedService {
    *    Captures actual 09:25 candle open (or first valid trade tick of 09:25 candle).
    *    Once locked, strikes and lockedThreshold are immutable for the session.
    * 5. Execution Rules:
-   *    First contract crossing >= threshold triggers directional BUY.
+   *    A locked leg at or above the threshold at 09:30 (higher LTP if both) is bought; otherwise the first cross until 09:45.
    *    OCO: permanently disables opposite leg.
    *    Target: ₹220.00 (+40 pts), Stop-Loss: ₹160.00 (-20 pts). 1:2 R:R.
    *    09:45:00 AM IST Hard Cutoff: Square-off at market, strictly no overnight hold.
@@ -1378,8 +1400,11 @@ class NiftyOptionFeedService {
     const totalSeconds = istMinutes * 60 + istSeconds;
     const gate0915 = 9 * 60 + 15; // 555 mins (09:15:00 AM)
     const gate0925 = 9 * 60 + 25; // 565 mins (09:25:00 AM)
+    const gate0930 = 9 * 60 + 30; // 570 mins (09:30:00 AM): strikes lock at 09:25, entry opens at 09:30
     const gate0945 = 9 * 60 + 45; // 585 mins (09:45:00 AM)
     const gate1530 = 15 * 60 + 30; // 930 mins (15:30:00 PM)
+    const SL_POINTS = 20;
+    const TARGET_POINTS = 40;
 
     const isMarketClosed = istMinutes < gate0915 || istMinutes >= gate1530;
     const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
@@ -1543,41 +1568,57 @@ class NiftyOptionFeedService {
     const currentCeLtp = this.getLiveOptionPrice(cache.ceStrike, 'CE');
     const currentPeLtp = this.getLiveOptionPrice(cache.peStrike, 'PE');
 
-    if (istMinutes >= gate0945) {
+    const armTrade = (side: 'CE' | 'PE', price: number) => {
+      cache.triggeredSide = side;
+      cache.entryPrice = price;
+      cache.entryTime = nowTime;
+      cache.peakPrice = price;
+      cache.troughPrice = price;
+      cache.lastActiveLtp = price;
+      cache.slPrice = +(price - SL_POINTS).toFixed(2);
+      cache.targetPrice = +(price + TARGET_POINTS).toFixed(2);
+      this.persistBreakoutState(cache);
+    };
+    // The first exit wins and is never recomputed, at the live price when it happened
+    const freezeExit = (exit: 'TARGET_HIT' | 'SL_HIT' | 'TIME_EXIT', price: number) => {
+      cache.exitStatus = exit;
+      cache.exitPrice = +price.toFixed(2);
+      cache.exitTime = nowTime;
+      this.persistBreakoutState(cache);
+    };
+
+    if (cache.exitStatus) {
+      status = cache.exitStatus;
+      timeRemainingSec = 0;
+    } else if (istMinutes >= gate0945) {
       if (cache.triggeredSide) {
+        const liveLtp = cache.triggeredSide === 'CE' ? currentCeLtp : currentPeLtp;
+        freezeExit('TIME_EXIT', liveLtp > 0 ? liveLtp : (cache.lastActiveLtp ?? cache.entryPrice ?? 0));
         status = 'TIME_EXIT';
       } else {
         status = 'NO_TRADE_TODAY';
       }
       timeRemainingSec = 0;
-    } else if (cache.isLocked && istMinutes >= gate0925 && istMinutes < gate0945) {
+    } else if (cache.isLocked && istMinutes >= gate0930 && istMinutes < gate0945) {
+      // Highest price per leg since the entry window opened; drives the Step 2 progress bar
+      const prevCeHigh = cache.ceArmedHigh ?? 0;
+      const prevPeHigh = cache.peArmedHigh ?? 0;
+      cache.ceArmedHigh = Math.max(prevCeHigh, currentCeLtp);
+      cache.peArmedHigh = Math.max(prevPeHigh, currentPeLtp);
+      if (cache.ceArmedHigh > prevCeHigh || cache.peArmedHigh > prevPeHigh) {
+        this.persistBreakoutState(cache);
+      }
+
       if (!cache.triggeredSide) {
-        // Trigger directional buy on first cross above effective threshold
+        // At 09:30 a leg already at or above the threshold is bought; otherwise the first cross until 09:45
         if (currentCeLtp >= effectiveThreshold && currentPeLtp < effectiveThreshold) {
-          cache.triggeredSide = 'CE';
-          cache.entryPrice = +(Math.max(effectiveThreshold, currentCeLtp)).toFixed(2);
-          cache.entryTime = nowTime;
-          cache.peakPrice = cache.entryPrice;
-          cache.troughPrice = cache.entryPrice;
-          this.persistBreakoutState(cache);
+          armTrade('CE', +currentCeLtp.toFixed(2));
         } else if (currentPeLtp >= effectiveThreshold && currentCeLtp < effectiveThreshold) {
-          cache.triggeredSide = 'PE';
-          cache.entryPrice = +(Math.max(effectiveThreshold, currentPeLtp)).toFixed(2);
-          cache.entryTime = nowTime;
-          cache.peakPrice = cache.entryPrice;
-          cache.troughPrice = cache.entryPrice;
-          this.persistBreakoutState(cache);
+          armTrade('PE', +currentPeLtp.toFixed(2));
         } else if (currentCeLtp >= effectiveThreshold && currentPeLtp >= effectiveThreshold) {
-          // Simultaneous crossing: relative percentage momentum tie-breaker
-          const cePct = (currentCeLtp - cache.ceOpen0925) / cache.ceOpen0925;
-          const pePct = (currentPeLtp - cache.peOpen0925) / cache.peOpen0925;
-          const side = cePct >= pePct ? 'CE' : 'PE';
-          cache.triggeredSide = side;
-          cache.entryPrice = side === 'CE' ? currentCeLtp : currentPeLtp;
-          cache.entryTime = nowTime;
-          cache.peakPrice = cache.entryPrice;
-          cache.troughPrice = cache.entryPrice;
-          this.persistBreakoutState(cache);
+          // Both qualify: the higher LTP wins
+          const side = currentCeLtp >= currentPeLtp ? 'CE' : 'PE';
+          armTrade(side, +(side === 'CE' ? currentCeLtp : currentPeLtp).toFixed(2));
         } else {
           status = 'MONITORING_BREAKOUT';
         }
@@ -1585,22 +1626,32 @@ class NiftyOptionFeedService {
 
       if (cache.triggeredSide) {
         const activeLtp = cache.triggeredSide === 'CE' ? currentCeLtp : currentPeLtp;
-        let boundsChanged = false;
-        if (activeLtp > cache.peakPrice) {
-          cache.peakPrice = activeLtp;
-          boundsChanged = true;
-        }
-        if (activeLtp < cache.troughPrice && activeLtp > 0) {
-          cache.troughPrice = activeLtp;
-          boundsChanged = true;
-        }
-        if (boundsChanged) {
-          this.persistBreakoutState(cache);
+        const entry = cache.entryPrice ?? effectiveThreshold;
+        const slPrice = cache.slPrice ?? +(entry - SL_POINTS).toFixed(2);
+        const targetPrice = cache.targetPrice ?? +(entry + TARGET_POINTS).toFixed(2);
+
+        // A missing quote (0) must never read as a stop-loss
+        if (activeLtp > 0) {
+          cache.lastActiveLtp = activeLtp;
+          let boundsChanged = false;
+          if (activeLtp > cache.peakPrice) {
+            cache.peakPrice = activeLtp;
+            boundsChanged = true;
+          }
+          if (activeLtp < cache.troughPrice) {
+            cache.troughPrice = activeLtp;
+            boundsChanged = true;
+          }
+          if (boundsChanged) {
+            this.persistBreakoutState(cache);
+          }
         }
 
-        if (activeLtp >= 220.00 || cache.peakPrice >= 220.00) {
+        if (activeLtp > 0 && activeLtp >= targetPrice) {
+          freezeExit('TARGET_HIT', activeLtp);
           status = 'TARGET_HIT';
-        } else if (activeLtp <= 160.00 || (cache.troughPrice <= 160.00 && cache.troughPrice > 0)) {
+        } else if (activeLtp > 0 && activeLtp <= slPrice) {
+          freezeExit('SL_HIT', activeLtp);
           status = 'SL_HIT';
         } else {
           status = 'IN_TRADE';
@@ -1611,6 +1662,9 @@ class NiftyOptionFeedService {
     const primaryCeLtp = currentCeLtp > 0 ? currentCeLtp : cache.ceOpen0925;
     const primaryPeLtp = currentPeLtp > 0 ? currentPeLtp : cache.peOpen0925;
 
+    const ceArmedHigh = istMinutes >= gate0930 ? Math.max(cache.ceArmedHigh ?? 0, primaryCeLtp) : primaryCeLtp;
+    const peArmedHigh = istMinutes >= gate0930 ? Math.max(cache.peArmedHigh ?? 0, primaryPeLtp) : primaryPeLtp;
+
     const ceCandidate: Candidate180Contract = {
       type: 'CE',
       strike: cache.ceStrike,
@@ -1618,6 +1672,8 @@ class NiftyOptionFeedService {
       price0925: cache.ceOpen0925,
       distanceTo180: +Math.max(0, effectiveThreshold - primaryCeLtp).toFixed(2),
       currentLtp: primaryCeLtp,
+      armedHigh: ceArmedHigh,
+      dayHigh: Math.max(this.getLiveDayHigh(cache.ceStrike, 'CE'), ceArmedHigh),
       isTriggered: cache.triggeredSide === 'CE',
       isDisabled: cache.triggeredSide === 'PE',
       rank: 1,
@@ -1632,6 +1688,8 @@ class NiftyOptionFeedService {
       price0925: cache.peOpen0925,
       distanceTo180: +Math.max(0, effectiveThreshold - primaryPeLtp).toFixed(2),
       currentLtp: primaryPeLtp,
+      armedHigh: peArmedHigh,
+      dayHigh: Math.max(this.getLiveDayHigh(cache.peStrike, 'PE'), peArmedHigh),
       isTriggered: cache.triggeredSide === 'PE',
       isDisabled: cache.triggeredSide === 'CE',
       rank: 1,
@@ -1639,28 +1697,33 @@ class NiftyOptionFeedService {
       lastTradeTimestamp: nowTime,
     };
 
-    const currentPrice = cache.triggeredSide === 'CE'
-      ? primaryCeLtp
+    const livePrice = cache.triggeredSide === 'CE'
+      ? (currentCeLtp > 0 ? currentCeLtp : cache.lastActiveLtp ?? primaryCeLtp)
       : cache.triggeredSide === 'PE'
-      ? primaryPeLtp
+      ? (currentPeLtp > 0 ? currentPeLtp : cache.lastActiveLtp ?? primaryPeLtp)
       : null;
+    const currentPrice = cache.exitPrice ?? livePrice;
 
     const pnlPoints = cache.entryPrice && currentPrice
       ? +(currentPrice - cache.entryPrice).toFixed(2)
       : 0;
+    const pnlText = `${pnlPoints >= 0 ? '+' : ''}${pnlPoints.toFixed(2)} pts`;
+    const levelBase = cache.entryPrice ?? effectiveThreshold;
+    const targetLevel = cache.targetPrice ?? +(levelBase + TARGET_POINTS).toFixed(2);
+    const stopLevel = cache.slPrice ?? +(levelBase - SL_POINTS).toFixed(2);
 
     let currentStep: 1 | 2 | 3 = 1;
     let outcomeText: string | undefined = undefined;
 
     if (status === 'TARGET_HIT') {
       currentStep = 3;
-      outcomeText = 'TARGET BOOKED (+40 pts)';
+      outcomeText = `TARGET BOOKED (${pnlText})`;
     } else if (status === 'SL_HIT') {
       currentStep = 3;
-      outcomeText = 'STOP LOSS HIT (-20 pts)';
+      outcomeText = `STOP LOSS HIT (${pnlText})`;
     } else if (status === 'TIME_EXIT') {
       currentStep = 3;
-      outcomeText = 'SQUARED OFF @ 09:45 AM';
+      outcomeText = `SQUARED OFF @ 09:45 AM (${pnlText})`;
     } else if (status === 'NO_TRADE_TODAY') {
       currentStep = 3;
       outcomeText = 'NO TRADE (NO BREAKOUT)';
@@ -1684,9 +1747,11 @@ class NiftyOptionFeedService {
       activeContract: cache.triggeredSide,
       entryPrice: cache.entryPrice,
       entryTime: cache.entryTime,
-      fixedTarget: 220.00,
-      fixedStopLoss: 160.00,
+      fixedTarget: targetLevel,
+      fixedStopLoss: stopLevel,
       currentPrice: currentPrice ?? null,
+      exitPrice: cache.exitPrice ?? null,
+      exitTime: cache.exitTime ?? null,
       pnlPoints,
       timeRemainingSec,
       outcomeText,

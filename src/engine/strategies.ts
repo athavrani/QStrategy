@@ -182,7 +182,7 @@ export function createBreakout180Strategy(deps: StrategyDeps): EngineStrategy {
             },
           },
           materialize: () => ({
-            notes: `🚀 09:25 Candle Open < ₹180 Breakout Triggered @ ₹${entry.toFixed(2)}. Target: ₹220, SL: ₹160.`,
+            notes: `🚀 09:25 Candle Open < ₹180 Breakout Triggered @ ₹${entry.toFixed(2)}. Target: ₹${b.fixedTarget.toFixed(2)}, SL: ₹${b.fixedStopLoss.toFixed(2)}.`,
             notify: () => deps.notifier.notify180BreakoutTriggered(contract, strike, entry, b.fixedTarget, b.fixedStopLoss),
           }),
         },
@@ -197,8 +197,8 @@ export function createBreakout180Strategy(deps: StrategyDeps): EngineStrategy {
       const strike = contract === 'CE' ? b.ceCandidate.strike : b.peCandidate.strike;
       const symbol = `NIFTY ${strike} ${contract}`;
       const entry = b.entryPrice;
-      const exitPrice =
-        b.status === 'TARGET_HIT' ? b.fixedTarget : b.status === 'SL_HIT' ? b.fixedStopLoss : (b.currentPrice ?? entry);
+      const exitPrice = b.exitPrice ??
+        (b.status === 'TARGET_HIT' ? b.fixedTarget : b.status === 'SL_HIT' ? b.fixedStopLoss : (b.currentPrice ?? entry));
       const pnlPoints = +(exitPrice - entry).toFixed(2);
       const label =
         b.status === 'TARGET_HIT' ? 'Target hit' : b.status === 'SL_HIT' ? 'Stop-loss hit' : 'Squared off at 09:45 time exit';
@@ -210,7 +210,7 @@ export function createBreakout180Strategy(deps: StrategyDeps): EngineStrategy {
           outcome: b.status === 'TARGET_HIT' ? 'WIN' : b.status === 'SL_HIT' ? 'LOSS' : 'TIME_EXIT',
           exitPrice,
           pnlPoints,
-          timestamp: ctx.istTime,
+          timestamp: b.exitTime ?? ctx.istTime,
           notes: `${label} @ ₹${exitPrice.toFixed(2)} (${pnlPoints >= 0 ? '+' : ''}${pnlPoints.toFixed(2)} pts).`,
           latch: {
             key: `EXIT_BREAKOUT_180_${symbol.replace(/\s+/g, '_')}`,

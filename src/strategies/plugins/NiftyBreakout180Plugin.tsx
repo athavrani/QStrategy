@@ -26,6 +26,10 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
     const activeStrike = activeContract === 'CE' ? ce?.strike : pe?.strike;
     const activeSymbol = activeStrike ? `NIFTY ${activeStrike} ${activeContract}` : 'NONE';
     const status = live?.status || 'IN_TRADE';
+    const targetLevel = live?.fixedTarget ?? threshold + 40;
+    const stopLevel = live?.fixedStopLoss ?? threshold - 20;
+    const exitPnl = live?.pnlPoints ?? 0;
+    const exitPnlText = `${exitPnl >= 0 ? '+' : ''}${exitPnl.toFixed(2)} pts`;
     const currentStep = live?.currentStep || (status === 'IN_TRADE' ? 2 : status === 'TARGET_HIT' || status === 'SL_HIT' || status === 'TIME_EXIT' ? 3 : 1);
 
     let badgeTone: StrategySignalOutput['badgeTone'] = 'cyan';
@@ -52,6 +56,9 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
       badgeTone = 'warning';
       statusBadgeText = 'STEP 1: LOCKED (< ' + Math.round(threshold) + ')';
       headline = `Watching ${ce?.strike} CE (₹${ce?.price0925.toFixed(1)}) & ${pe?.strike} PE (₹${pe?.price0925.toFixed(1)}) [< ₹${threshold.toFixed(2)}]`;
+      if (/^\d/.test(ctx.istTime ?? '') && ctx.istTime < '09:30:00') {
+        headline = `Strikes locked ${ce?.strike} CE & ${pe?.strike} PE • Entry check at 09:30`;
+      }
     } else if (status === 'IN_TRADE') {
       badgeTone = 'cyan';
       statusBadgeText = 'STEP 2: ACTIVE 🚀';
@@ -59,15 +66,15 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
     } else if (status === 'TARGET_HIT') {
       badgeTone = 'bullish';
       statusBadgeText = 'STEP 3: TARGET BOOKED 🎯';
-      headline = `🎯 ${activeSymbol} hit Target ₹220.00 (+40 pts booked)`;
+      headline = `🎯 ${activeSymbol} hit Target ₹${targetLevel.toFixed(2)} (${exitPnlText} booked)`;
     } else if (status === 'SL_HIT') {
       badgeTone = 'bearish';
       statusBadgeText = 'STEP 3: SL HIT 🛑';
-      headline = `🛑 ${activeSymbol} hit Stop Loss ₹160.00 (-20 pts contained)`;
+      headline = `🛑 ${activeSymbol} hit Stop Loss ₹${stopLevel.toFixed(2)} (${exitPnlText})`;
     } else if (status === 'TIME_EXIT') {
       badgeTone = 'warning';
       statusBadgeText = 'STEP 3: TIME EXIT ⏱️';
-      headline = `⏱️ 09:45 AM hard exit reached. Position closed.`;
+      headline = `⏱️ 09:45 AM hard exit reached. Position closed (${exitPnlText}).`;
     } else if (status === 'NO_TRADE_TODAY') {
       badgeTone = 'bearish';
       statusBadgeText = 'STEP 3: NO TRADE ⛔';
@@ -83,10 +90,10 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
       badgeTone,
       headline,
       primaryMetricLabel: 'TARGET / SL',
-      primaryMetricValue: '₹220.00 / ₹160.00',
-      target: '₹220.00 (+40 pts)',
-      stopLoss: '₹160.00 (-20 pts)',
-      invariantNotice: `⛔ 09:25 Open < ₹${threshold.toFixed(2)} Rule. 1st break > ₹${threshold.toFixed(2)} activates trade & disables opposite leg.`,
+      primaryMetricValue: `₹${targetLevel.toFixed(2)} / ₹${stopLevel.toFixed(2)}`,
+      target: `₹${targetLevel.toFixed(2)} (+40 pts)`,
+      stopLoss: `₹${stopLevel.toFixed(2)} (-20 pts)`,
+      invariantNotice: `⛔ 09:25 Open < ₹${threshold.toFixed(2)} Rule. 1st break > ₹${threshold.toFixed(2)} (checked from 09:30) activates trade & disables opposite leg.`,
       lastUpdated: ctx.istTime,
       legs: [
         {
@@ -95,8 +102,8 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
           strike: ce?.strike || 23150,
           refPrice: ce?.price0925 || 176.40,
           currentLtp: ceLtp,
-          slPrice: 160.00,
-          targetPrice: 220.00,
+          slPrice: stopLevel,
+          targetPrice: targetLevel,
           status: ce?.isTriggered ? 'ACTIVE' : ce?.isDisabled ? 'DISABLED' : 'ACTIVE',
         },
         {
@@ -105,8 +112,8 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
           strike: pe?.strike || 23100,
           refPrice: pe?.price0925 || 172.10,
           currentLtp: peLtp,
-          slPrice: 160.00,
-          targetPrice: 220.00,
+          slPrice: stopLevel,
+          targetPrice: targetLevel,
           status: pe?.isTriggered ? 'ACTIVE' : pe?.isDisabled ? 'DISABLED' : 'ACTIVE',
         },
       ],
@@ -157,7 +164,7 @@ function NiftyBreakout180PluginCard({
             <Text style={styles.icon}>🚀</Text>
             <View>
               <Text style={styles.title}>NIFTY 09:25 ₹180 Breakout</Text>
-              <Text style={styles.sub}>3-Step Execution • Window: 09:25 – 09:45 IST</Text>
+              <Text style={styles.sub}>3-Step Execution • Lock 09:25 • Entry 09:30 – 09:45 IST</Text>
             </View>
           </View>
           <View style={[styles.badge, { backgroundColor: colors.cyanGlow }]}>

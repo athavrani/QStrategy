@@ -51,7 +51,7 @@ export interface OptionChainFeedConfig {
 
 export interface OptionChainFeedDeps {
   fetchChain?: (expiryYmd: string, underlying: string) => Promise<ChainFetchResult | null>;
-  market?: Pick<MarketDataService, 'acquire' | 'release' | 'isConnected'>;
+  market?: Pick<MarketDataService, 'acquire' | 'release' | 'isConnected'> & Partial<Pick<MarketDataService, 'getQuote'>>;
   now?: () => number;
 }
 
@@ -93,6 +93,14 @@ export class OptionChainFeed {
     if (!row) return 0;
     const price = type === 'CE' ? row.ceLtp : row.peLtp;
     return price > 0 ? price : 0;
+  }
+
+  /** Exchange day high of a contract from its quote packets; 0 until one has arrived. */
+  getDayHigh(strike: number, type: 'CE' | 'PE'): number {
+    const row = this.chain?.[strike];
+    const secId = type === 'CE' ? row?.ceSecId : row?.peSecId;
+    if (!secId) return 0;
+    return this.market.getQuote?.(this.config.optionSegment, secId)?.dayHigh ?? 0;
   }
 
   getQuoteFreshness(): Freshness {

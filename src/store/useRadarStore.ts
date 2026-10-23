@@ -534,7 +534,9 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     const sec = parseClockSeconds(s.istTime);
     // 09:19:58 to 09:20:20 IST: the strike lock needs quotes fresher than the 10 s poll provides
     const inLockWindow = sec !== null && sec >= LOCK_WINDOW_START_SEC && sec <= LOCK_WINDOW_END_SEC;
-    if (!s.latchServiceInitialized || !(inLockWindow || isNearTrigger(s.istTime))) return;
+    // An open breakout trade is re-checked every second so its exit never waits for a tick or the poll
+    const breakoutOpen = s.niftyBreakout180?.status === 'IN_TRADE';
+    if (!s.latchServiceInitialized || !(inLockWindow || breakoutOpen || isNearTrigger(s.istTime))) return;
 
     if (inLockWindow && Date.now() - lastLockSyncAt >= LOCK_SYNC_INTERVAL_MS) {
       lastLockSyncAt = Date.now();
@@ -840,9 +842,12 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
         if (spotChanged || derivativeTickArrived) {
           if (spotChanged) {
             stateUpdates.niftySpot = newNiftySpot;
-            stateUpdates.niftyBreakout180 = niftyOptionFeedService.evaluateBreakout180(newNiftySpot, get().istTime || nowTime);
           }
           const spot = spotChanged ? newNiftySpot : get().niftySpot;
+          // Stop-loss, target and exit are checked on option ticks too, not only when the index moves
+          if (spot > 0) {
+            stateUpdates.niftyBreakout180 = niftyOptionFeedService.evaluateBreakout180(spot, get().istTime || nowTime);
+          }
           stateUpdates.oobtstState = niftyOptionFeedService.evaluateOobtst(spot, get().istTime || nowTime);
         }
 
