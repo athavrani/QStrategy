@@ -105,6 +105,16 @@ def jscFlavor = 'org.webkit:android-jsc:+'
 
 import groovy.json.JsonSlurper
 
+// expo-constants' createExpoConfig runs in the expo-constants subproject and declares no inputs, so Gradle keeps an
+// old app.config and the APK ships a stale version. Always regenerate it, in every project.
+rootProject.allprojects { p ->
+    p.tasks.configureEach { task ->
+        if (task.name == 'createExpoConfig') {
+            task.outputs.upToDateWhen { false }
+        }
+    }
+}
+
 def getAppVersion() {
     try {
         def inputFile = new File(projectDir, '../../app.json')
@@ -115,7 +125,7 @@ def getAppVersion() {
             }
         }
     } catch (Exception ignored) {}
-    return "1.1.1"
+    return "1.1.2"
 }
 
 def getAppVersionCode() {
@@ -128,7 +138,7 @@ def getAppVersionCode() {
             }
         }
     } catch (Exception ignored) {}
-    return 21
+    return 22
 }
 
 // Release signing secrets come from the environment or ~/.gradle/gradle.properties, never from the repo.

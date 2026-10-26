@@ -173,6 +173,9 @@ if (-not $SkipBuild) {
 
     Push-Location "android"
     try {
+        # A leftover app.config from an earlier build would ship the old version, so always drop it
+        Remove-Item -Force -ErrorAction SilentlyContinue "app/build/intermediates/assets/release/app.config"
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "app/build/generated/assets/expo-constants"
         if ($Clean) {
             Write-Host "-> Cleaning previous Gradle build caches and outputs (gradlew clean)..." -ForegroundColor Cyan
             .\gradlew.bat clean
@@ -192,6 +195,25 @@ if (-not $SkipBuild) {
     $versionedApk = ("QStrategy v{0}.apk" -f $targetVer)
 
     if (Test-Path $sourceApk) {
+        # The version baked into the APK must match app.json, or the app shows (and compares) the wrong version
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $sourceApk).Path)
+        try {
+            $entry = $zip.GetEntry("assets/app.config")
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            $embeddedCfg = $reader.ReadToEnd() | ConvertFrom-Json
+            $reader.Close()
+        } finally {
+            $zip.Dispose()
+        }
+        $embedded = ("{0}|{1}" -f $embeddedCfg.version, $embeddedCfg.android.versionCode)
+        $expected = ("{0}|{1}" -f $targetVer, $targetCode)
+        if ($embedded -ne $expected) {
+            Write-Host ("[ERROR] APK embeds version '{0}' but app.json says '{1}'. Aborting release." -f $embedded, $expected) -ForegroundColor Red
+            exit 1
+        }
+        Write-Host ("[OK] APK embeds v{0} (Build {1})." -f $targetVer, $targetCode) -ForegroundColor Green
+
         Copy-Item -Path $sourceApk -Destination $targetApk -Force
         Copy-Item -Path $sourceApk -Destination $versionedApk -Force
         $apkItem = Get-Item $versionedApk

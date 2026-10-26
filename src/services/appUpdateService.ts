@@ -1,5 +1,6 @@
 import { Linking } from 'react-native';
 import Constants from 'expo-constants';
+import * as Application from 'expo-application';
 
 export interface UpdateCheckResult {
   updateAvailable: boolean;
@@ -58,6 +59,22 @@ export function compareSemver(v1: string, v2: string): number {
   return 0;
 }
 
+/**
+ * Picks the installed version: the native APK values when present, then the bundled app config, then defaults.
+ */
+export function resolveInstalledVersion(
+  native: { version?: string | null; build?: string | null },
+  config: { version?: string | null; versionCode?: number | null }
+): { version: string; versionCode: number } {
+  const nativeCode = parseInt(native.build ?? '', 10);
+  const hasNative = !!native.version && Number.isFinite(nativeCode) && nativeCode > 0;
+  if (hasNative) return { version: native.version as string, versionCode: nativeCode };
+  return {
+    version: config.version || DEFAULT_LOCAL_VERSION,
+    versionCode: config.versionCode ?? DEFAULT_LOCAL_VERSION_CODE,
+  };
+}
+
 export class AppUpdateService {
   private static instance: AppUpdateService;
   private lastCheckResult: UpdateCheckResult | null = null;
@@ -73,13 +90,17 @@ export class AppUpdateService {
   }
 
   /**
-   * Retrieves the currently installed version & versionCode from expoConfig.
+   * The installed version and build. The native values come from the installed APK itself, so they cannot
+   * go stale. The bundled app config is only a fallback: its asset can be left over from an older build.
    */
   public getCurrentVersionInfo(): { version: string; versionCode: number } {
-    const version = Constants.expoConfig?.version || DEFAULT_LOCAL_VERSION;
-    const versionCode =
-      Constants.expoConfig?.android?.versionCode ?? DEFAULT_LOCAL_VERSION_CODE;
-    return { version, versionCode };
+    return resolveInstalledVersion(
+      { version: Application.nativeApplicationVersion, build: Application.nativeBuildVersion },
+      {
+        version: Constants.expoConfig?.version,
+        versionCode: Constants.expoConfig?.android?.versionCode,
+      }
+    );
   }
 
   /**

@@ -1,5 +1,6 @@
 import {
   compareSemver,
+  resolveInstalledVersion,
   appUpdateService,
   AppUpdateService,
 } from '../services/appUpdateService';
@@ -27,6 +28,27 @@ describe('AppUpdateService', () => {
       expect(compareSemver('v1.0.1', '1.0.0')).toBe(1);
       expect(compareSemver('V2.0.0', 'v1.9.9')).toBe(1);
       expect(compareSemver('v1.0.0', '1.0.0')).toBe(0);
+    });
+  });
+
+  describe('resolveInstalledVersion', () => {
+    it('prefers the native APK version over a stale bundled config', () => {
+      expect(
+        resolveInstalledVersion(
+          { version: '1.1.2', build: '22' },
+          { version: '1.0.18', versionCode: 19 }
+        )
+      ).toEqual({ version: '1.1.2', versionCode: 22 });
+    });
+
+    it('falls back to the bundled config, then to defaults, when native values are missing', () => {
+      expect(
+        resolveInstalledVersion({ version: null, build: null }, { version: '1.0.18', versionCode: 19 })
+      ).toEqual({ version: '1.0.18', versionCode: 19 });
+      expect(resolveInstalledVersion({ version: '1.1.2', build: 'abc' }, {})).toEqual({
+        version: '1.0.0',
+        versionCode: 1,
+      });
     });
   });
 
