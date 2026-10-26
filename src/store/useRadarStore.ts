@@ -111,7 +111,8 @@ let latchReadyPromise: Promise<void> | null = null;
 const lastStockTickAt = new Map<string, number>();
 const STOCK_TICK_FRESH_MS = 15_000;
 const LOCK_WINDOW_START_SEC = 9 * 3600 + 19 * 60 + 58;
-const LOCK_WINDOW_END_SEC = 9 * 3600 + 20 * 60 + 20;
+// Runs past the 09:20:05 lock and its candle-open fetch retries (deadline 09:21:05)
+const LOCK_WINDOW_END_SEC = 9 * 3600 + 21 * 60 + 10;
 const LOCK_SYNC_INTERVAL_MS = 2000;
 let lastLockSyncAt = 0;
 

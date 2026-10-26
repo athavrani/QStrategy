@@ -3,6 +3,7 @@ import { niftyOptionFeedService as nifty } from '../services/niftyOptionFeedServ
 import { sensexOptionFeedService as sensex } from '../services/sensexOptionFeedService';
 import { marketData } from '../services/marketdata/MarketDataService';
 import { triggerProgressPct } from '../utils/triggerProgress';
+import { formatDateKeyIST } from '../constants/nseHolidays';
 
 afterEach(() => {
   jest.restoreAllMocks();
@@ -30,6 +31,11 @@ describe('09:20 OOBTST NIFTY progress follows the armed high', () => {
       24850: { ceLtp: 75.0, peLtp: 72.0, ceSecId: '101', peSecId: '102' },
       24900: { ceLtp: 62.5, peLtp: 85.0, ceSecId: '103', peSecId: '104' },
       24800: { ceLtp: 90.0, peLtp: 63.0, ceSecId: '105', peSecId: '106' },
+    };
+    (nifty as any).candleOpens0920 = {
+      date: formatDateKeyIST(),
+      opens: { CE_24850: 75.0, CE_24900: 62.5, CE_24800: 90.0, PE_24850: 72.0, PE_24900: 85.0, PE_24800: 63.0 },
+      pending: 0,
     };
     nifty.getOrCreateDayAnchor(24850, '09:20:05 AM');
   };

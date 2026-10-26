@@ -5,6 +5,14 @@ export const LOCK_RETRY_WINDOW_SEC = 20;
 /** Strikes on each side of spot whose contracts are streamed and ranked. */
 export const RANK_WINDOW_STRIKES = 10;
 
+/** NIFTY OOBTST locks this many seconds after 09:20:00, once the 09:20 candle has opened and its open can be read. */
+export const OOBTST_LOCK_DELAY_SEC = 5;
+/** Seconds after 09:20:00 by which the 09:20 candle opens must be available, otherwise the lock fails. */
+export const OOBTST_CANDLE_DEADLINE_SEC = 65;
+/** A locked OOBTST leg must have a 09:20 candle open inside this premium band. */
+export const OOBTST_BAND_MIN = 50;
+export const OOBTST_BAND_MAX = 75;
+
 export type LockFreshness = 'FRESH' | 'WAIT' | 'STALE';
 
 export function assessLockFreshness(

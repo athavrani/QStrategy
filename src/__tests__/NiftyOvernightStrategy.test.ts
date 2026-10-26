@@ -3,6 +3,7 @@ import { TradingCalendarService } from '../services/TradingCalendarService';
 import { OptionChainResult } from '../services/dhan/DhanOptionChainService';
 import { niftyOptionFeedService } from '../services/niftyOptionFeedService';
 import { dhanDirectService } from '../services/dhanDirectService';
+import { formatDateKeyIST } from '../constants/nseHolidays';
 
 describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
   let strategy: NiftyOvernightStrategy;
@@ -265,6 +266,16 @@ describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
       24500: { ceLtp: 150.00, peLtp: 68.00, ceOi: 10000, peOi: 35000, ceSecId: 'SEC_24500_CE', peSecId: 'SEC_24500_PE' },
     };
 
+    // The lock ranks on 09:20 candle opens; here they equal the mock chain prices.
+    const seedCandleOpens = () => {
+      const opens: Record<string, number> = {};
+      for (const [strike, row] of Object.entries(mockOptionChain)) {
+        opens[`CE_${strike}`] = row.ceLtp;
+        opens[`PE_${strike}`] = row.peLtp;
+      }
+      (niftyOptionFeedService as any).candleOpens0920 = { date: formatDateKeyIST(), opens, pending: 0 };
+    };
+
     beforeEach(async () => {
       niftyOptionFeedService.resetAnchor();
       await niftyOptionFeedService.setTargetPremium(62.50);
@@ -370,8 +381,14 @@ describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
     test('Requirement 4: Exact 09:20 AM Lock selects single CE/PE, captures open prices, and locks permanently for session', async () => {
       await niftyOptionFeedService.syncLiveOptionChain();
 
-      // At exactly 09:20:00 AM
-      const lockedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+      // Between 09:20:00 and 09:20:05 nothing is armed yet
+      const waiting = niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+      expect(waiting.isLocked).toBe(false);
+      expect(waiting.isProvisional).toBe(true);
+
+      // At 09:20:05 AM the lock reads the 09:20 candle opens
+      seedCandleOpens();
+      const lockedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:20:05 AM');
 
       expect(lockedEval.currentStep).toBe(2);
       expect(lockedEval.status).toBe('ARMED');
@@ -400,8 +417,8 @@ describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
     test('Requirement 4 (Lock Failure): Missing quote data at 09:20:00 causes LOCK FAILED — DATA UNAVAILABLE and disarms strategy', () => {
       niftyOptionFeedService.resetAnchor();
 
-      // At 09:20:00 with no live quotes available
-      const failedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+      // No candle opens ever arrive: the lock fails once the 09:21:05 deadline passes
+      const failedEval = niftyOptionFeedService.evaluateOobtst(24850, '09:21:10 AM');
 
       expect(failedEval.currentStep).toBe(1);
       expect(failedEval.status).toBe('LOCK_FAILED');
@@ -415,8 +432,9 @@ describe('Strategy 2 Engine: NIFTY 09:20 Overnight Strangle Suite', () => {
     test('Requirement 6: Downstream 1.5x trigger, OCO cancel opposing leg, 50% SL, and overnight carry rules preserved', async () => {
       await niftyOptionFeedService.syncLiveOptionChain();
 
-      // Lock at 09:20:00
-      niftyOptionFeedService.evaluateOobtst(24850, '09:20:00 AM');
+      // Lock at 09:20:05
+      seedCandleOpens();
+      niftyOptionFeedService.evaluateOobtst(24850, '09:20:05 AM');
 
       // CE trigger is 94.20. Simulate CE surging past 94.20 to 95.00
       niftyOptionFeedService.updateOptionPriceFromTick('SEC_25100_CE', 95.00);

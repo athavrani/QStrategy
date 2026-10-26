@@ -5,6 +5,7 @@ import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { alertLatchService } from '../services/alertLatchService';
 import { monotonicLatchService } from '../services/MonotonicLatchService';
 import { useRadarStore } from '../store/useRadarStore';
+import { formatDateKeyIST } from '../constants/nseHolidays';
 
 describe('Production Strategy Persistence & Monotonic Duplicate Alert Suppression', () => {
   const today = alertLatchService.getTodayISTDateString();
@@ -27,6 +28,12 @@ describe('Production Strategy Persistence & Monotonic Duplicate Alert Suppressio
         24850: { ceLtp: 75.0, peLtp: 72.0, ceSecId: '101', peSecId: '102' },
         24900: { ceLtp: 62.5, peLtp: 85.0, ceSecId: '103', peSecId: '104' },
         24800: { ceLtp: 90.0, peLtp: 63.0, ceSecId: '105', peSecId: '106' },
+      };
+
+      (niftyOptionFeedService as any).candleOpens0920 = {
+        date: formatDateKeyIST(),
+        opens: { CE_24850: 75.0, CE_24900: 62.5, CE_24800: 90.0, PE_24850: 72.0, PE_24900: 85.0, PE_24800: 63.0 },
+        pending: 0,
       };
 
       const lockedAnchor = niftyOptionFeedService.getOrCreateDayAnchor(24850, '09:20:05 AM');

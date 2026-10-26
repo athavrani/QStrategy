@@ -26,6 +26,12 @@ describe('DailyStrategyLockService — Date-Wise 09:20 & 09:25 Strike Persistenc
         24800: { ceLtp: 90.0, peLtp: 63.0, ceSecId: '105', peSecId: '106' },
       };
 
+      (niftyOptionFeedService as any).candleOpens0920 = {
+        date: today,
+        opens: { CE_24850: 75.0, CE_24900: 62.5, CE_24800: 90.0, PE_24850: 72.0, PE_24900: 85.0, PE_24800: 63.0 },
+        pending: 0,
+      };
+
       const lockedAnchor = niftyOptionFeedService.getOrCreateDayAnchor(24850, '09:20:05 AM');
       expect(lockedAnchor.isConfirmed).toBe(true);
       expect(lockedAnchor.ceStrike).toBe(24900);
@@ -42,7 +48,7 @@ describe('DailyStrategyLockService — Date-Wise 09:20 & 09:25 Strike Persistenc
       expect(lockRecord!.pe_strike).toBe(24800);
       expect(lockRecord!.ce_open_price).toBe(62.5);
       expect(lockRecord!.pe_open_price).toBe(63.0);
-      expect(lockRecord!.lock_time).toBe('09:20:00 IST');
+      expect(lockRecord!.lock_time).toBe('09:20:05 IST');
 
       // Simulate App Restart (Clear in-memory cache)
       (niftyOptionFeedService as any).cachedAnchor = null;

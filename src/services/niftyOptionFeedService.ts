@@ -10,7 +10,13 @@ import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
 import { marketData } from './marketdata/MarketDataService';
 import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
-import { assessLockFreshness, RANK_WINDOW_STRIKES } from './marketdata/lockFreshness';
+import {
+  RANK_WINDOW_STRIKES,
+  OOBTST_LOCK_DELAY_SEC,
+  OOBTST_CANDLE_DEADLINE_SEC,
+  OOBTST_BAND_MIN,
+  OOBTST_BAND_MAX,
+} from './marketdata/lockFreshness';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
 import { NIFTY_LOT_SIZE } from '../constants/lotSizes';
@@ -18,6 +24,25 @@ import { triggerProgressPct } from '../utils/triggerProgress';
 
 const NIFTY_STRIKE_STEP = 50;
 const ANCHOR_TARGET_PREMIUM = 62.50;
+const CANDLE_0920_IST_SEC = 9 * 3600 + 20 * 60;
+const CANDLE_FETCH_RETRY_MS = 2000;
+const CANDLE_FETCH_CONCURRENCY = 4;
+
+/**
+ * Open of the 09:20 one-minute candle from a Dhan intraday response, or 0 when that candle is absent
+ * (no trade in that minute). start_Time is epoch seconds, so a 09:20 IST bar is 09:20 after the 5h30 shift.
+ */
+export function candleOpenAt0920(data: { open?: number[]; start_Time?: number[] } | null): number {
+  if (!data || !Array.isArray(data.open) || !Array.isArray(data.start_Time)) return 0;
+  for (let i = 0; i < data.start_Time.length; i++) {
+    const ts = data.start_Time[i];
+    const open = data.open[i];
+    if (typeof ts === 'number' && typeof open === 'number' && open > 0 && (ts + 19800) % 86400 === CANDLE_0920_IST_SEC) {
+      return open;
+    }
+  }
+  return 0;
+}
 
 /**
  * Computes current active weekly Tuesday expiry date, remaining time, and holiday preponements.
@@ -136,6 +161,14 @@ interface OobtstDayAnchor {
   targetPremium: number;
   ceCandidates: OobtstCandidateStrike[];
   peCandidates: OobtstCandidateStrike[];
+  /** What the lock saw: live top candidates versus the 09:20 candle opens it ranked on. Stored with the lock. */
+  lockAudit?: {
+    source: 'CANDLE_OPEN_0920';
+    liveCe: Array<{ strike: number; ltp: number; ageMs: number }>;
+    livePe: Array<{ strike: number; ltp: number; ageMs: number }>;
+    opensCe: Array<{ strike: number; open: number }>;
+    opensPe: Array<{ strike: number; open: number }>;
+  };
 }
 
 export function parseIstSeconds(istTimeStr?: string): { totalMinutes: number; totalSeconds: number } {
@@ -167,6 +200,10 @@ class NiftyOptionFeedService {
   private peakPeLtp: number = 0;
   private targetPremium: number = ANCHOR_TARGET_PREMIUM;
   private isTargetPremiumLoaded: boolean = false;
+  // 09:20 one-minute candle opens per contract ("CE_22650"); 0 means the API answered but the candle had no trade.
+  private candleOpens0920: { date: string; opens: Record<string, number>; pending: number } | null = null;
+  private candleFetchInflight: Promise<boolean> | null = null;
+  private lastCandleFetchAt = 0;
   private chainFeed = new OptionChainFeed({
     owner: 'nifty-options',
     underlying: 'NIFTY',
@@ -420,6 +457,102 @@ class NiftyOptionFeedService {
     };
   }
 
+  /** True once every contract in the ranking window has an answer for today's 09:20 candle. */
+  public hasCandleOpens0920(): boolean {
+    const state = this.candleOpens0920;
+    return !!state && state.date === formatDateKeyIST() && state.pending === 0 && Object.keys(state.opens).length > 0;
+  }
+
+  /**
+   * Reads the 09:20 candle open of every contract in the ranking window from Dhan's intraday API.
+   * Contracts that already have an answer are not fetched again; failures are retried on the next call.
+   */
+  public refreshCandleOpens0920(spot: number): Promise<boolean> {
+    if (this.candleFetchInflight) return this.candleFetchInflight;
+    if (this.hasCandleOpens0920()) return Promise.resolve(true);
+    if (Date.now() - this.lastCandleFetchAt < CANDLE_FETCH_RETRY_MS) return Promise.resolve(false);
+    this.lastCandleFetchAt = Date.now();
+    this.candleFetchInflight = this.fetchCandleOpens0920(spot).finally(() => {
+      this.candleFetchInflight = null;
+    });
+    return this.candleFetchInflight;
+  }
+
+  private async fetchCandleOpens0920(spot: number): Promise<boolean> {
+    const chain = this.cachedLiveOptionChain;
+    if (!chain) return false;
+    const today = formatDateKeyIST();
+    if (!this.candleOpens0920 || this.candleOpens0920.date !== today) {
+      this.candleOpens0920 = { date: today, opens: {}, pending: 0 };
+    }
+    const state = this.candleOpens0920;
+    const reach = RANK_WINDOW_STRIKES * NIFTY_STRIKE_STEP;
+    const window = Object.entries(chain).filter(([strike]) => Math.abs(Number(strike) - spot) <= reach);
+    const contracts: Array<{ key: string; secId: string }> = [];
+    for (const [strike, row] of window) {
+      if (row.ceSecId) contracts.push({ key: `CE_${strike}`, secId: String(row.ceSecId) });
+      if (row.peSecId) contracts.push({ key: `PE_${strike}`, secId: String(row.peSecId) });
+    }
+    const todo = contracts.filter((c) => state.opens[c.key] === undefined);
+    const from = `${today} 09:20:00`;
+    const to = `${today} 09:21:00`;
+    for (let i = 0; i < todo.length; i += CANDLE_FETCH_CONCURRENCY) {
+      await Promise.all(
+        todo.slice(i, i + CANDLE_FETCH_CONCURRENCY).map(async (c) => {
+          try {
+            const data = await dhanDirectService.fetchHistoricalIntraday(c.secId, from, to, 'NSE_FNO', 'OPTIDX', '1');
+            // null is a failed request and is retried; an answer without a 09:20 bar is recorded as 0 (no trade).
+            if (data) state.opens[c.key] = candleOpenAt0920(data);
+          } catch {}
+        })
+      );
+    }
+    state.pending = contracts.filter((c) => state.opens[c.key] === undefined).length;
+    return contracts.length > 0 && state.pending === 0;
+  }
+
+  /** Five candle opens closest to the target, in or out of band, so a failed lock can be diagnosed. */
+  private topOpens(type: 'CE' | 'PE'): Array<{ strike: number; open: number }> {
+    const opens = this.candleOpens0920?.opens ?? {};
+    return Object.entries(opens)
+      .filter(([key, open]) => key.startsWith(`${type}_`) && open > 0)
+      .map(([key, open]) => ({ strike: Number(key.slice(3)), open }))
+      .sort((a, b) => Math.abs(a.open - this.targetPremium) - Math.abs(b.open - this.targetPremium))
+      .slice(0, 5);
+  }
+
+  /**
+   * Ranks contracts by the 09:20 candle open against the target premium. Only opens inside the
+   * ₹50–₹75 band can win, so a thin or mispriced strike never becomes the locked leg.
+   */
+  private selectCandleOpenCandidates(): { ceCandidates: OobtstCandidateStrike[]; peCandidates: OobtstCandidateStrike[] } {
+    const chain = this.cachedLiveOptionChain ?? {};
+    const opens = this.candleOpens0920?.opens ?? {};
+    const rank = (type: 'CE' | 'PE'): OobtstCandidateStrike[] => {
+      const list: Array<{ strike: number; open: number; diff: number; secId?: string }> = [];
+      for (const [strikeStr, row] of Object.entries(chain)) {
+        const strike = Number(strikeStr);
+        const open = opens[`${type}_${strike}`];
+        if (!(open >= OOBTST_BAND_MIN && open <= OOBTST_BAND_MAX)) continue;
+        list.push({ strike, open, diff: Math.abs(open - this.targetPremium), secId: type === 'CE' ? row.ceSecId : row.peSecId });
+      }
+      list.sort((a, b) => a.diff - b.diff);
+      return list.slice(0, 2).map((item, idx) => ({
+        rank: (idx + 1) as 1 | 2,
+        type,
+        strike: item.strike,
+        symbol: `NIFTY ${item.strike} ${type}`,
+        ltp: item.open,
+        diffFromTarget: Number(item.diff.toFixed(2)),
+        quoteTimestamp: '09:20 candle open',
+        quoteAgeMs: 0,
+        isStale: false,
+        securityId: item.secId,
+      }));
+    };
+    return { ceCandidates: rank('CE'), peCandidates: rank('PE') };
+  }
+
   /**
    * Backward-compatible helper for single anchor strike selection
    */
@@ -482,7 +615,55 @@ class NiftyOptionFeedService {
       return this.cachedAnchor;
     }
 
-    const { ceCandidates, peCandidates, previewAvailable } = this.selectTopTwoCandidates(spot, this.targetPremium);
+    const live = this.selectTopTwoCandidates(spot, this.targetPremium);
+    let ceCandidates = live.ceCandidates;
+    let peCandidates = live.peCandidates;
+
+    let isConfirmed = false;
+    let isLockFailed = false;
+    let isProvisionalLock = false;
+    let lockFailureReason: string | undefined = undefined;
+    let lockAudit: OobtstDayAnchor['lockAudit'];
+
+    if (isConfirmationTime) {
+      const secsPast = totalSeconds - gate0920;
+      if (secsPast < OOBTST_LOCK_DELAY_SEC) {
+        // The lock waits until 09:20:05 so the 09:20 candle has opened and its open is final.
+        isProvisionalLock = true;
+      } else if (this.hasCandleOpens0920()) {
+        // The premium is the 09:20 candle open, not the live price at the moment the lock happens to run.
+        const fromCandle = this.selectCandleOpenCandidates();
+        ceCandidates = fromCandle.ceCandidates;
+        peCandidates = fromCandle.peCandidates;
+        if (ceCandidates.length > 0 && peCandidates.length > 0) {
+          isConfirmed = true;
+        } else {
+          isLockFailed = true;
+          lockFailureReason = ceCandidates.length === 0
+            ? `No CE with a 09:20 candle open in ₹${OOBTST_BAND_MIN}–₹${OOBTST_BAND_MAX}`
+            : `No PE with a 09:20 candle open in ₹${OOBTST_BAND_MIN}–₹${OOBTST_BAND_MAX}`;
+        }
+        lockAudit = {
+          source: 'CANDLE_OPEN_0920',
+          liveCe: live.ceCandidates.slice(0, 2).map((c) => ({ strike: c.strike, ltp: c.ltp, ageMs: c.quoteAgeMs })),
+          livePe: live.peCandidates.slice(0, 2).map((c) => ({ strike: c.strike, ltp: c.ltp, ageMs: c.quoteAgeMs })),
+          opensCe: this.topOpens('CE'),
+          opensPe: this.topOpens('PE'),
+        };
+        if (isLockFailed && !this.cachedAnchor?.isLockFailed) {
+          console.warn('[OOBTST] 09:20 lock failed:', lockFailureReason, JSON.stringify(lockAudit));
+        }
+      } else if (secsPast < OOBTST_CANDLE_DEADLINE_SEC) {
+        // Keep showing the live preview while the 09:20 candle opens are being fetched.
+        isProvisionalLock = true;
+      } else {
+        isLockFailed = true;
+        lockFailureReason = '09:20 candle open unavailable';
+        if (!this.cachedAnchor?.isLockFailed) console.warn('[OOBTST] 09:20 lock failed:', lockFailureReason);
+      }
+      // Past the failure point the fetch keeps retrying, so a late answer still locks the correct strikes.
+      if (!isConfirmed && secsPast >= OOBTST_LOCK_DELAY_SEC) void this.refreshCandleOpens0920(spot);
+    }
 
     const rank1Ce = ceCandidates.length > 0 ? ceCandidates[0] : null;
     const rank1Pe = peCandidates.length > 0 ? peCandidates[0] : null;
@@ -490,37 +671,6 @@ class NiftyOptionFeedService {
     const atm = Math.round(spot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
     const ceStrike = rank1Ce ? rank1Ce.strike : atm + 250;
     const peStrike = rank1Pe ? rank1Pe.strike : atm - 250;
-
-    let isConfirmed = false;
-    let isLockFailed = false;
-    let isProvisionalLock = false;
-    let lockFailureReason: string | undefined = undefined;
-
-    if (isConfirmationTime) {
-      // Validate that valid quotes exist for both selected contracts
-      const ceValid = rank1Ce !== null && rank1Ce.ltp > 0;
-      const peValid = rank1Pe !== null && rank1Pe.ltp > 0;
-      const freshness = ceValid && peValid
-        ? assessLockFreshness([rank1Ce!.quoteAgeMs, rank1Pe!.quoteAgeMs], totalSeconds - gate0920)
-        : 'FRESH';
-
-      if (ceValid && peValid && freshness === 'WAIT') {
-        // Keep re-ranking on fresh quotes; the lock is taken as soon as both legs are current.
-        isProvisionalLock = true;
-      } else if (ceValid && peValid && freshness === 'FRESH') {
-        isConfirmed = true;
-        isLockFailed = false;
-      } else {
-        // Rule 4: If quotes unavailable, show LOCK FAILED — DATA UNAVAILABLE and disarm until validated
-        isConfirmed = false;
-        isLockFailed = true;
-        lockFailureReason = !rank1Ce || rank1Ce.ltp <= 0
-          ? 'CE quote unavailable at 09:20'
-          : !rank1Pe || rank1Pe.ltp <= 0
-          ? 'PE quote unavailable at 09:20'
-          : 'Stale quote data at 09:20 lock point';
-      }
-    }
 
     const ceOpen = isConfirmed && rank1Ce ? rank1Ce.ltp : 0;
     const peOpen = isConfirmed && rank1Pe ? rank1Pe.ltp : 0;
@@ -542,10 +692,11 @@ class NiftyOptionFeedService {
       isMarketClosed,
       isLockFailed,
       lockFailureReason,
-      confirmedAt: isConfirmed ? '09:20:00 IST' : undefined,
+      confirmedAt: isConfirmed ? '09:20:05 IST' : undefined,
       targetPremium: this.targetPremium,
       ceCandidates,
       peCandidates,
+      lockAudit,
     };
 
     if (isConfirmed) {
@@ -865,7 +1016,8 @@ class NiftyOptionFeedService {
 
     // Case 2: Pre-Confirmation Window (09:15:00 - 09:19:59 IST)
     // Invariant: Lock future strikes provisionally, but update them if the target strike changes before confirmation.
-    if (isProvisional) {
+    // Also covers 09:20:00 up to the real lock (09:20:05 plus the candle-open fetch), when no leg is armed yet.
+    if (isProvisional || anchor.isProvisional) {
       const ceProgress = anchor.ceTrigger > 0 ? Math.min(100, Math.round((ceLtp / anchor.ceTrigger) * 100)) : 0;
       const peProgress = anchor.peTrigger > 0 ? Math.min(100, Math.round((peLtp / anchor.peTrigger) * 100)) : 0;
 
@@ -1775,6 +1927,8 @@ class NiftyOptionFeedService {
     this.cachedAnchor = null;
     this.peakCeLtp = 0;
     this.peakPeLtp = 0;
+    this.candleOpens0920 = null;
+    this.lastCandleFetchAt = 0;
     this.chainFeed.reset();
     if (clearStorage) {
       try {
