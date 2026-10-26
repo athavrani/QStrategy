@@ -13,9 +13,18 @@ import { useRadarStore } from '../store/useRadarStore';
 import { StockRadarItem } from '../types/mobile';
 import { TacticalStrikeModal } from '../components/radar/TacticalStrikeModal';
 import { LiveOptionChainModal } from '../components/options/LiveOptionChainModal';
+import { DEFAULT_RADAR_SORT, RadarSort, sortRadarStocks } from '../utils/radarSort';
 import * as Haptics from 'expo-haptics';
 
 type FilterType = 'ALL' | 'NIFTY50' | 'SENSEX' | 'GREEN' | 'RED' | 'NEAR';
+
+const SORT_OPTIONS: { key: RadarSort; label: string }[] = [
+  { key: 'NEWEST', label: 'Newest' },
+  { key: 'OLDEST', label: 'Oldest' },
+  { key: 'RATIO', label: 'Volume %' },
+  { key: 'CHANGE', label: 'Price %' },
+  { key: 'NAME', label: 'A–Z' },
+];
 
 interface RadarScreenProps {
   onNavigateToSignals?: () => void;
@@ -181,6 +190,7 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
   const clearSelectedStock = useRadarStore((s) => s.clearSelectedStock);
 
   const [filter, setFilter] = useState<FilterType>('ALL');
+  const [sort, setSort] = useState<RadarSort>(DEFAULT_RADAR_SORT);
   const [search, setSearch] = useState('');
   const [chainStock, setChainStock] = useState<StockRadarItem | null>(null);
 
@@ -199,10 +209,15 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
     setFilter(f);
   }, []);
 
-  // Memoized stock filtering: runs only when filter, search or stocks array changes
+  const handleSortPress = useCallback((s: RadarSort) => {
+    Haptics.selectionAsync();
+    setSort(s);
+  }, []);
+
+  // Memoized stock filtering and ordering: runs only when filter, search, sort or stocks change
   const filteredStocks = useMemo(() => {
     const s = search.trim().toLowerCase();
-    return stocks.filter((stock) => {
+    const matching = stocks.filter((stock) => {
       if (s) {
         const matches =
           stock.ticker.toLowerCase().includes(s) ||
@@ -219,7 +234,8 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
 
       return true;
     });
-  }, [stocks, search, filter]);
+    return sortRadarStocks(matching, sort);
+  }, [stocks, search, filter, sort]);
 
   // Single-pass O(N) counts calculation instead of 3 separate full-array .filter() passes
   const { greenCount, redCount, nearCount } = useMemo(() => {
@@ -378,6 +394,20 @@ export function RadarScreen({ onNavigateToSignals }: RadarScreenProps) {
             🟡 Near ({nearCount})
           </Text>
         </TouchableOpacity>
+      </View>
+
+      {/* Sort Chips: Newest (LIFO) is the default */}
+      <View style={styles.sortBar}>
+        <Text style={styles.sortLabel}>Sort</Text>
+        {SORT_OPTIONS.map((opt) => (
+          <TouchableOpacity
+            key={opt.key}
+            style={[styles.sortChip, sort === opt.key && styles.sortChipActive]}
+            onPress={() => handleSortPress(opt.key)}
+          >
+            <Text style={[styles.sortText, sort === opt.key && styles.sortTextActive]}>{opt.label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       {/* Screener Stock List */}
@@ -569,6 +599,43 @@ const useThemedStyles = createThemedStyles((colors) => ({
   },
   filterTextActiveAmber: {
     color: colors.warning,
+    fontWeight: '700',
+  },
+  sortBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    gap: 6,
+  },
+  sortLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+    marginRight: 2,
+  },
+  sortChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  sortChipActive: {
+    backgroundColor: colors.surfaceHover,
+    borderColor: colors.textPrimary,
+  },
+  sortText: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  sortTextActive: {
+    color: colors.textPrimary,
     fontWeight: '700',
   },
   listContent: {

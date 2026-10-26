@@ -34,6 +34,7 @@ import { avgVolumeService } from '../services/AvgVolumeService';
 import { prevCloseBook } from '../services/marketdata/PrevCloseBook';
 import { DailyStrategyLockRecord } from '../db/schema';
 import { dailyStrategyLockService } from '../services/DailyStrategyLockService';
+import { nextSignalAt } from '../utils/radarSort';
 
 interface RadarStoreState {
   // Market Global State
@@ -310,6 +311,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
           crossoverTime: undefined,
           crossoverDirection: 'BULLISH',
           circleIndicator: 'GREY',
+          signalAt: undefined,
         })),
       });
       // A session left open overnight must still pick up yesterday's BTST positions
@@ -485,6 +487,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
             crossoverTime: hasCrossed ? (existing.crossoverTime || newStock.crossoverTime || new Date().toLocaleTimeString('en-IN')) : undefined,
             crossoverDirection: (isBullish ? 'BULLISH' : 'BEARISH') as 'BULLISH' | 'BEARISH',
             circleIndicator,
+            signalAt: nextSignalAt(existing, circleIndicator),
           };
         });
 
@@ -823,6 +826,7 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
             crossoverTime: hasCrossed ? (stock.crossoverTime || new Date().toLocaleTimeString('en-IN')) : stock.crossoverTime,
             crossoverDirection: (isBullish ? 'BULLISH' : 'BEARISH') as 'BULLISH' | 'BEARISH',
             circleIndicator,
+            signalAt: nextSignalAt(stock, circleIndicator),
           };
         });
 

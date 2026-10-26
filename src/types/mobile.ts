@@ -30,6 +30,8 @@ export interface StockRadarItem {
   crossoverTime?: string;
   crossoverDirection?: 'BULLISH' | 'BEARISH';
   circleIndicator: 'GREEN' | 'RED' | 'AMBER' | 'GREY';
+  /** Epoch ms when the stock entered its current Buy/Sell/Near state; drives the Radar's newest-first order. */
+  signalAt?: number;
   strikeStep?: number;
   lotSize?: number;
   isLiveQuote?: boolean;
