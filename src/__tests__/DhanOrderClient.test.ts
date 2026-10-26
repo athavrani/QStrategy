@@ -287,3 +287,55 @@ describe('DhanOrderClient (live environment and its gate)', () => {
     }
   });
 });
+
+describe('DhanOrderClient via the order relay', () => {
+  const fetchMock = jest.fn();
+  const { relayService } = require('../services/relay/RelayService');
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    (global as any).fetch = fetchMock;
+    jest.spyOn(relayService, 'route').mockResolvedValue({
+      baseUrl: 'https://relay.example.com/dhan/v2',
+      signer: async (method: string, endpoint: string) => ({ 'x-relay-sig': `sig:${method}:${endpoint}` }),
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test('live orders go to the relay with the signature, and the Dhan token is still sent', async () => {
+    const live = new DhanOrderClient('LIVE', { gate: () => null });
+    fetchMock.mockResolvedValue(res({ orderId: '901', orderStatus: 'TRANSIT' }));
+    const out = await live.placeOrder({ ...LIMIT, correlationId: 'QS-relay1' });
+    expect(out).toMatchObject({ kind: 'PLACED', orderId: '901' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://relay.example.com/dhan/v2/orders');
+    expect(init.headers['x-relay-sig']).toBe('sig:POST:/orders');
+    expect(init.headers['access-token']).toBe('live-token');
+  });
+
+  test('a relay timeout (504) is an unknown outcome that is looked up, never a second order', async () => {
+    const live = new DhanOrderClient('LIVE', { gate: () => null, sleep: async () => {}, lookupAttempts: 1 });
+    fetchMock
+      .mockResolvedValueOnce(res({ errorCode: 'RLY-UPSTREAM-TIMEOUT', errorMessage: 'Dhan did not answer in time.' }, 504))
+      .mockResolvedValueOnce(res(bookRow({ orderId: '902', correlationId: 'QS-relay2' })));
+    const out = await live.placeAndConfirm({ ...LIMIT, correlationId: 'QS-relay2' });
+    expect(out).toMatchObject({ kind: 'PLACED', orderId: '902' });
+    expect(fetchMock.mock.calls.map((c) => c[1].method)).toEqual(['POST', 'GET']);
+  });
+
+  test('a relay refusal is reported with its message and is not treated as an expired token', async () => {
+    const live = new DhanOrderClient('LIVE', { gate: () => null });
+    fetchMock.mockResolvedValue(res({ errorCode: 'RLY-AUTH', errorMessage: 'Request signature is not valid.' }, 403));
+    const out = await live.placeOrder({ ...LIMIT, correlationId: 'QS-relay3' });
+    expect(out).toMatchObject({ kind: 'REJECTED', code: 'RLY-AUTH' });
+    expect((out as any).error).toContain('signature is not valid');
+    expect(secureVault.updateTelemetry).not.toHaveBeenCalled();
+  });
+
+  test('sandbox orders never use the relay', async () => {
+    const sandbox = new DhanOrderClient('SANDBOX');
+    fetchMock.mockResolvedValue(res({ orderId: '903', orderStatus: 'TRANSIT' }));
+    await sandbox.placeOrder(LIMIT);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://sandbox.dhan.co/v2/orders');
+  });
+});

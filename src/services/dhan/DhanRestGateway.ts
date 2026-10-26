@@ -26,6 +26,8 @@ export interface GatewayResponse {
 
 export type GatewayMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
+export type RequestSigner = (method: GatewayMethod, endpoint: string, body: string | undefined) => Promise<Record<string, string>>;
+
 export interface GatewayRequestOptions {
   /** Overrides the endpoint's default cache TTL; 0 disables caching for this call. */
   ttlMs?: number;
@@ -34,6 +36,8 @@ export interface GatewayRequestOptions {
   timeoutMs?: number;
   /** Overrides the production base URL (the sandbox uses https://sandbox.dhan.co/v2). */
   baseUrl?: string;
+  /** Returns extra headers for this request, e.g. the order relay's signature. Receives the endpoint below baseUrl. */
+  signer?: RequestSigner;
 }
 
 export interface GatewayOptions {
@@ -152,7 +156,8 @@ export class DhanRestGateway {
       creds,
       policy,
       options.timeoutMs ?? this.defaultTimeoutMs,
-      options.baseUrl ?? DHAN_REST_BASE_URL
+      options.baseUrl ?? DHAN_REST_BASE_URL,
+      options.signer
     );
   }
 
@@ -191,13 +196,15 @@ export class DhanRestGateway {
     creds: GatewayCredentials,
     policy: EndpointPolicy,
     timeoutMs: number,
-    baseUrl: string = DHAN_REST_BASE_URL
+    baseUrl: string = DHAN_REST_BASE_URL,
+    signer?: RequestSigner
   ): Promise<GatewayResponse> {
     await this.reserveSlot(policy);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      const extra = signer ? await signer(method, endpoint, bodyStr) : {};
       const raw = await this.fetchImpl(`${baseUrl}${endpoint}`, {
         method,
         headers: {
@@ -206,6 +213,7 @@ export class DhanRestGateway {
           dhanClientId: creds.clientId,
           'Content-Type': 'application/json',
           Accept: 'application/json',
+          ...extra,
         },
         ...(bodyStr !== undefined ? { body: bodyStr } : {}),
         signal: controller.signal,

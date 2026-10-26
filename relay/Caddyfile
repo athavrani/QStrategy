@@ -1,0 +1,4 @@
+{$DOMAIN} {
+	# Caddy obtains and renews the TLS certificate automatically.
+	reverse_proxy relay:8787
+}

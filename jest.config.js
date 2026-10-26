@@ -9,6 +9,7 @@ module.exports = {
     '^@/(.*)$': '<rootDir>/src/$1',
   },
   testMatch: ['**/__tests__/**/*.test.[jt]s?(x)'],
+  modulePathIgnorePatterns: ['<rootDir>/relay/'],
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',
     '!src/**/*.d.ts',

@@ -17,6 +17,7 @@ import { secureVault, isDhanJwtToken, isNumericClientId } from '../services/Secu
 import { dhanHqFeedSocket, testDhanFeedConnection } from '../services/dhan/DhanHqFeedSocket';
 import { DhanWebLoginModal } from '../components/settings/DhanWebLoginModal';
 import { OrderExecutionCard } from '../components/settings/OrderExecutionCard';
+import { RelayCard } from '../components/settings/RelayCard';
 import { SandboxCredentialsCard } from '../components/settings/SandboxCredentialsCard';
 import { ExecutionSettingsCard } from '../components/settings/ExecutionSettingsCard';
 import { LiveTradingCard } from '../components/settings/LiveTradingCard';
@@ -501,6 +502,9 @@ export function SettingsScreen() {
       </View>
 
       {/* ORDER EXECUTION: DHAN IP WHITELIST */}
+      <Text style={styles.sectionHeader}>ORDER EXECUTION · ORDER RELAY (STATIC IP)</Text>
+      <RelayCard />
+
       <Text style={styles.sectionHeader}>ORDER EXECUTION · DHAN IP WHITELIST</Text>
       <OrderExecutionCard />
 

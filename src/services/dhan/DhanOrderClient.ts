@@ -10,6 +10,7 @@
  */
 
 import { secureVault } from '../SecureCredentialVault';
+import { relayService } from '../relay/RelayService';
 import { dhanRestGateway, type GatewayResponse } from './DhanRestGateway';
 import { parseDhanError } from './dhanErrors';
 import { isLiveArmed } from '../../execution/liveArm';
@@ -181,10 +182,15 @@ export class DhanOrderClient {
       return { error: `Dhan ${this.env.toLowerCase()} credentials are not configured.`, transport: false };
     }
     try {
-      const res = await dhanRestGateway.request(method, endpoint, body, creds, {
-        baseUrl: DHAN_BASE_URLS[this.env],
-        timeoutMs: 10_000,
-      });
+      // Live orders go through the order relay (a fixed, whitelisted IP) once the phone is registered with one.
+      const route = this.env === 'LIVE' ? await relayService.route() : null;
+      const res = await dhanRestGateway.request(
+        method,
+        endpoint,
+        body,
+        creds,
+        route ? { baseUrl: route.baseUrl, signer: route.signer, timeoutMs: 15_000 } : { baseUrl: DHAN_BASE_URLS[this.env], timeoutMs: 10_000 }
+      );
       if (res.status === 401 && this.env === 'LIVE') {
         secureVault.updateTelemetry({ status: 'TOKEN_EXPIRED', lastError: 'Access token expired (HTTP 401).' });
       }

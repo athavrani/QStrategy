@@ -1,0 +1,6 @@
+node_modules/
+dist/
+data/
+.env
+# The repo root ignores package-lock.json; the relay Docker build needs it.
+!package-lock.json

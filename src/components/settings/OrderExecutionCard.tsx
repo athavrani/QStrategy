@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, Modal, Switch, ActivityIndicator } from 'react-native';
 import { createThemedStyles, useTheme } from '../../theme';
 import { secureVault } from '../../services/SecureCredentialVault';
-import { detectPublicIp } from '../../services/PublicIpService';
+import { detectPublicIp, type DetectIpResult } from '../../services/PublicIpService';
+import { relayService } from '../../services/relay/RelayService';
 import {
   dhanIpService,
   evaluateIpGuard,
@@ -32,11 +33,24 @@ export function OrderExecutionCard() {
   const [slot, setSlot] = useState<IpSlot | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [usingRelay, setUsingRelay] = useState(false);
 
   const refresh = useCallback(async () => {
     setBusy(true);
     setMessage(null);
-    const [ipRes, cfgRes] = await Promise.all([detectPublicIp(), dhanIpService.getIp()]);
+    // With an order relay, Dhan sees the relay's fixed IP rather than this phone's, so that is the one to whitelist.
+    const viaRelay = await relayService.checkEgress();
+    setUsingRelay(viaRelay !== null);
+    const ipPromise: Promise<DetectIpResult> = viaRelay
+      ? Promise.resolve(
+          viaRelay.ok
+            ? viaRelay.egressIp
+              ? { ok: true as const, ip: viaRelay.egressIp }
+              : { ok: false as const, error: 'The relay could not determine its own IP.' }
+            : { ok: false as const, error: viaRelay.error }
+        )
+      : detectPublicIp();
+    const [ipRes, cfgRes] = await Promise.all([ipPromise, dhanIpService.getIp()]);
     setDetectedIp(ipRes.ok ? ipRes.ip : null);
     setConfig(cfgRes.ok ? cfgRes.data : null);
     const problems = [!ipRes.ok ? ipRes.error : null, !cfgRes.ok ? cfgRes.error : null].filter(Boolean);
@@ -85,7 +99,7 @@ export function OrderExecutionCard() {
   return (
     <View style={styles.card}>
       <View style={styles.row}>
-        <Text style={styles.label}>This device IP</Text>
+        <Text style={styles.label}>{usingRelay ? 'Order relay IP' : 'This device IP'}</Text>
         <Text style={styles.value} testID="detected-ip">{detectedIp ?? '-'}</Text>
       </View>
       <View style={styles.row}>
@@ -121,8 +135,9 @@ export function OrderExecutionCard() {
 
       {message ? <Text style={styles.message}>{message}</Text> : null}
       <Text style={styles.sub}>
-        Dhan accepts order placement, modification and cancellation only from a whitelisted IP. Mobile network
-        addresses often change; when this device IP stops matching, orders are blocked by the app.
+        {usingRelay
+          ? 'Orders are sent through your order relay, so Dhan sees the relay IP above. Whitelist that IP with Dhan; it stays the same when your phone changes network.'
+          : 'Dhan accepts order placement, modification and cancellation only from a whitelisted IP. Mobile network addresses often change; when this device IP stops matching, orders are blocked by the app.'}
       </Text>
 
       <Modal transparent visible={slot !== null} animationType="fade" onRequestClose={() => setSlot(null)}>
@@ -130,12 +145,13 @@ export function OrderExecutionCard() {
           <View style={styles.sheet}>
             <Text style={styles.sheetTitle}>Whitelist {detectedIp} as {slot?.toLowerCase()} IP</Text>
             <Text style={styles.sheetBody}>
-              Once set, Dhan does not allow this IP to be changed for 7 days. You are on a mobile network, so this
-              address may change soon, and orders will then be blocked until it matches again or you can edit it.
+              {usingRelay
+                ? 'Once set, Dhan does not allow this IP to be changed for 7 days. This is the fixed IP of your order relay.'
+                : 'Once set, Dhan does not allow this IP to be changed for 7 days. You are on a mobile network, so this address may change soon, and orders will then be blocked until it matches again or you can edit it.'}
             </Text>
             <View style={styles.row}>
               <Text style={[styles.sheetBody, { flex: 1, paddingRight: 10 }]}>
-                I understand the address can change and is locked for 7 days
+                {usingRelay ? 'I understand this IP is locked for 7 days' : 'I understand the address can change and is locked for 7 days'}
               </Text>
               <Switch
                 value={acknowledged}

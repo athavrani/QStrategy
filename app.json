@@ -3,7 +3,7 @@
     "name": "QStrategy",
     "slug": "qstrategy",
     "scheme": "qstrategy",
-    "version": "1.1.2",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "platforms": [
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.qstrategy.app",
-      "versionCode": 22,
+      "versionCode": 23,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#080A0F"
@@ -55,7 +55,7 @@
       },
       "updateManifestUrl": "https://raw.githubusercontent.com/athavrani/QStrategy/main/app.json",
       "apkDownloadUrl": "https://github.com/athavrani/QStrategy/releases/latest/download/QStrategy.apk",
-      "releaseNotes": "v1.1.2: Fixes the app version shown under Settings > App version & updates. The installed version and build now come from the installed app itself, so they are always correct and update checks compare the right numbers. Also includes the Radar sort options (Newest first by default, Oldest, Volume %, Price %, A-Z) for the stock list and the Buy/Sell/Near filters."
+      "releaseNotes": "Order relay: send live Dhan orders through a fixed-IP relay with per-phone signed requests; relay IP check before orders; Settings relay card."
     },
     "owner": "quantpulse"
   }
