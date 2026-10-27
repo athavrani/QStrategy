@@ -3,7 +3,7 @@
     "name": "QStrategy",
     "slug": "qstrategy",
     "scheme": "qstrategy",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "platforms": [
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.qstrategy.app",
-      "versionCode": 23,
+      "versionCode": 24,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#080A0F"
@@ -55,7 +55,7 @@
       },
       "updateManifestUrl": "https://raw.githubusercontent.com/athavrani/QStrategy/main/app.json",
       "apkDownloadUrl": "https://github.com/athavrani/QStrategy/releases/latest/download/QStrategy.apk",
-      "releaseNotes": "Order relay: send live Dhan orders through a fixed-IP relay with per-phone signed requests; relay IP check before orders; Settings relay card."
+      "releaseNotes": "OOBTST locks now rank on the 09:20 candle open (fixes SENSEX 74800 CE vs 75000 CE and NIFTY Lock Failed) with an automatic 30 s retry until 09:21. New Retry button on failed NIFTY/SENSEX 09:20 OOBTST and NIFTY 09:25 Breakout 180 locks: locks on the 09:20/09:21 (breakout 09:25/09:26) candle open when available, otherwise on the latest prices."
     },
     "owner": "quantpulse"
   }
