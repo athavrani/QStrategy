@@ -9,11 +9,20 @@ import {
 } from '../strategies/SensexOobtstStrategy';
 import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { tradingCalendarService } from '../services/TradingCalendarService';
+import { dhanDirectService } from '../services/dhanDirectService';
+import { formatDateKeyIST } from '../constants/nseHolidays';
+
+/** The 09:20 candle opens the lock ranks on, keyed like the service does ("CE_80800"). */
+const seedOpens = (opens: Record<string, number>, pending = 0) => {
+  (sensexOptionFeedService as any).candleOpens0920 = { date: formatDateKeyIST(), opens, pending };
+};
 
 describe('SENSEX 09:20 OOBTST Quantitative Strategy Engine', () => {
   beforeEach(() => {
     sensexOptionFeedService.resetAnchor();
+    jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null);
   });
+  afterEach(() => jest.restoreAllMocks());
 
   describe('Requirement 1 & 2: Premium Eligibility Filtering & Ranking', () => {
     it('strictly enforces 90 <= Premium <= 120 boundary condition', () => {
@@ -99,14 +108,15 @@ describe('SENSEX 09:20 OOBTST Quantitative Strategy Engine', () => {
       expect(sensexOobtstStrategy.computeBreakoutTrigger(120.0)).toBe(180.0);
     });
 
-    it('locks selected strikes permanently after 09:20:00 IST', () => {
+    it('locks selected strikes permanently after 09:20:05 IST', () => {
       // Simulate live candidates
       (sensexOptionFeedService as any).cachedLiveOptionChain = {
         80800: { ceLtp: 95.0, peLtp: 140.0, ceOi: 1000, peOi: 1000, ceUpdatedTime: Date.now(), peUpdatedTime: Date.now() },
         81200: { ceLtp: 140.0, peLtp: 102.0, ceOi: 1000, peOi: 1000, ceUpdatedTime: Date.now(), peUpdatedTime: Date.now() },
       };
+      seedOpens({ CE_80800: 95, CE_81200: 140, PE_80800: 140, PE_81200: 102 });
 
-      const anchor = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:00 AM');
+      const anchor = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:05 AM');
       expect(anchor.isConfirmed).toBe(true);
       expect(anchor.ceStrike).toBe(80800);
       expect(anchor.peStrike).toBe(81200);
@@ -123,13 +133,92 @@ describe('SENSEX 09:20 OOBTST Quantitative Strategy Engine', () => {
       expect(lockedAnchor.peStrike).toBe(81200);
     });
 
-    it('fails lock and reports LOCK_FAILED when quotes are unavailable at 09:20', () => {
+    it('fails lock and reports LOCK_FAILED when candle opens stay unavailable', () => {
       (sensexOptionFeedService as any).cachedLiveOptionChain = {}; // Empty quotes
 
-      const state = sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:00 AM');
+      const waiting = sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:30 AM');
+      expect(waiting.isLockFailed).toBe(false);
+      expect(waiting.isProvisional).toBe(true);
+
+      const state = sensexOptionFeedService.evaluateSensexOobtst(81000, '09:21:10 AM');
       expect(state.isLockFailed).toBe(true);
       expect(state.status).toBe('LOCK_FAILED');
       expect(state.statusBadgeText).toContain('LOCK FAILED');
+    });
+
+    describe('lock on the 09:20 candle open', () => {
+      const live = (ce: Record<number, number>, pe: Record<number, number>) => {
+        const rows: Record<number, any> = {};
+        for (const k of new Set([...Object.keys(ce), ...Object.keys(pe)].map(Number))) {
+          rows[k] = { ceLtp: ce[k] ?? 0, peLtp: pe[k] ?? 0, ceSecId: `c${k}`, peSecId: `p${k}`, ceUpdatedTime: Date.now(), peUpdatedTime: Date.now() };
+        }
+        (sensexOptionFeedService as any).cachedLiveOptionChain = rows;
+      };
+
+      afterEach(async () => {
+        await sensexOptionFeedService.setTargetPremium(100);
+      });
+
+      it('locks the strike whose 09:20 open is nearest the target, not the one whose live price is (74800 CE vs 75000 CE)', async () => {
+        await sensexOptionFeedService.setTargetPremium(95);
+        // 74800 CE opened at 95 but its cached price is stale and low; 75000 CE looks closer on live price.
+        live({ 74800: 86, 75000: 97 }, { 74800: 140, 75000: 96 });
+        seedOpens({ CE_74800: 95, CE_75000: 104, PE_75000: 96, PE_74800: 130 });
+
+        const anchor = sensexOptionFeedService.getOrCreateDayAnchor(74900, '09:20:05 AM');
+        expect(anchor.isConfirmed).toBe(true);
+        expect(anchor.ceStrike).toBe(74800);
+        expect(anchor.ceOpen0920).toBe(95);
+        expect(anchor.ceTriggerPrice).toBe(142.5);
+        expect(anchor.peStrike).toBe(75000);
+      });
+
+      it('does not lock before 09:20:05, and shows PROVISIONAL while it waits', () => {
+        live({ 80800: 95 }, { 81200: 102 });
+        seedOpens({ CE_80800: 95, PE_81200: 102 });
+        const state = sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:02 AM');
+        expect(state.isLocked).toBe(false);
+        expect(state.isProvisional).toBe(true);
+        expect(state.statusBadgeText).toBe('PROVISIONAL \u2014 NOT LOCKED');
+      });
+
+      it('uses the candle open, not the live price, as the 09:20 open for the trigger', () => {
+        live({ 80800: 99 }, { 81200: 101 });
+        seedOpens({ CE_80800: 94, PE_81200: 103 });
+        const anchor = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:05 AM');
+        expect(anchor.ceOpen0920).toBe(94);
+        expect(anchor.ceTriggerPrice).toBe(141);
+        expect(anchor.peOpen0920).toBe(103);
+      });
+
+      it('fails with a retry notice, retries once 30 s later, then locks when a candle open turns up', () => {
+        live({ 80800: 95 }, { 81200: 102 });
+        seedOpens({ CE_80800: 150, PE_81200: 102 });
+
+        const failed = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:10 AM');
+        expect(failed.isLockFailed).toBe(true);
+        expect(failed.lockFailureReason).toContain('No CE with a 09:20 candle open');
+        expect(failed.lockFailureReason).toContain('Retrying at 09:20:40 IST');
+
+        // At the retry time the lock waits for the wider search instead of showing a failure.
+        const retrying = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:40 AM');
+        expect(retrying.isLockFailed).toBe(false);
+        expect(retrying.isProvisionalLock).toBe(true);
+
+        seedOpens({ CE_80800: 150, CE_80900: 108, PE_81200: 102 });
+        (sensexOptionFeedService as any).cachedLiveOptionChain[80900] = { ceLtp: 108, peLtp: 0, ceSecId: 'c80900', ceUpdatedTime: Date.now() };
+        const locked = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:45 AM');
+        expect(locked.isConfirmed).toBe(true);
+        expect(locked.ceStrike).toBe(80900);
+      });
+
+      it('schedules no retry that would start after 09:21:00', () => {
+        live({ 80800: 95 }, { 81200: 102 });
+        seedOpens({ CE_80800: 150, PE_81200: 102 });
+        const failed = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:50 AM');
+        expect(failed.isLockFailed).toBe(true);
+        expect(failed.lockFailureReason).not.toContain('Retrying');
+      });
     });
   });
 
@@ -148,7 +237,8 @@ describe('SENSEX 09:20 OOBTST Quantitative Strategy Engine', () => {
       };
 
       // 09:20 Lock
-      sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:00 AM');
+      seedOpens({ CE_80800: 95, CE_81200: 140, PE_80800: 140, PE_81200: 100 });
+      sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:05 AM');
 
       // Now at 09:22, CE crosses trigger (142.50) with tick at 145.0
       (sensexOptionFeedService as any).cachedLiveOptionChain[80800].ceLtp = 145.0;
@@ -205,7 +295,8 @@ describe('SENSEX 09:20 OOBTST Quantitative Strategy Engine', () => {
       };
 
       // 09:20 Lock
-      sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:00 AM');
+      seedOpens({ CE_80800: 95, CE_81200: 140, PE_80800: 140, PE_81200: 100 });
+      sensexOptionFeedService.evaluateSensexOobtst(81000, '09:20:05 AM');
 
       // Trigger CE
       (sensexOptionFeedService as any).cachedLiveOptionChain[80800].ceLtp = 145.0;

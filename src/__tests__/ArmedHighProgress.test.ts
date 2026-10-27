@@ -67,7 +67,12 @@ describe('09:20 OOBTST SENSEX progress follows the armed high', () => {
       80800: { ceLtp: 95.0, peLtp: 140.0, ceSecId: '201', peSecId: '202' },
       81200: { ceLtp: 140.0, peLtp: 100.0, ceSecId: '203', peSecId: '204' },
     };
-    sensex.evaluateSensexOobtst(81000, '09:20:00 AM');
+    (sensex as any).candleOpens0920 = {
+      date: formatDateKeyIST(),
+      opens: { CE_80800: 95.0, CE_81200: 140.0, PE_80800: 140.0, PE_81200: 100.0 },
+      pending: 0,
+    };
+    sensex.evaluateSensexOobtst(81000, '09:20:05 AM');
   };
 
   test('the bar keeps the highest price when the LTP pulls back, without triggering', () => {
@@ -138,7 +143,12 @@ describe('SENSEX OOBTST day high', () => {
       80800: { ceLtp: 95.0, peLtp: 140.0, ceSecId: '201', peSecId: '202' },
       81200: { ceLtp: 140.0, peLtp: 100.0, ceSecId: '203', peSecId: '204' },
     };
-    sensex.evaluateSensexOobtst(81000, '09:20:00 AM');
+    (sensex as any).candleOpens0920 = {
+      date: formatDateKeyIST(),
+      opens: { CE_80800: 95.0, CE_81200: 140.0, PE_80800: 140.0, PE_81200: 100.0 },
+      pending: 0,
+    };
+    sensex.evaluateSensexOobtst(81000, '09:20:05 AM');
   };
 
   test('a quote packet fills the exchange Day High of a locked leg', () => {

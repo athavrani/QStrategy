@@ -80,7 +80,13 @@ describe('Production Strategy Persistence & Monotonic Duplicate Alert Suppressio
         80900: { ceLtp: 120.0, peLtp: 99.5, ceSecId: '205', peSecId: '206' },
       };
 
-      const locked = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:00 AM');
+      (sensexOptionFeedService as any).candleOpens0920 = {
+        date: formatDateKeyIST(),
+        opens: { CE_81000: 105.0, CE_81100: 98.0, CE_80900: 120.0, PE_81000: 102.0, PE_81100: 115.0, PE_80900: 99.5 },
+        pending: 0,
+      };
+
+      const locked = sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:20:05 AM');
       expect(locked.isConfirmed).toBe(true);
       expect(locked.ceStrike).toBe(81100);
       expect(locked.peStrike).toBe(80900);

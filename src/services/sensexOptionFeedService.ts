@@ -14,7 +14,21 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { OptionChainFeed, OptionChainRows } from './marketdata/OptionChainFeed';
-import { assessLockFreshness, RANK_WINDOW_STRIKES } from './marketdata/lockFreshness';
+import {
+  RANK_WINDOW_STRIKES,
+  OOBTST_LOCK_DELAY_SEC,
+  OOBTST_CANDLE_DEADLINE_SEC,
+  OOBTST_ZERO_FINAL_SEC,
+} from './marketdata/lockFreshness';
+import {
+  CANDLE_FETCH_RETRY_MS,
+  LockRetry,
+  chooseCandleContracts,
+  fetchCandleOpens,
+  type CandleContract,
+  type CandleOpenState,
+} from './marketdata/candleOpens';
+import { dhanDirectService } from './dhanDirectService';
 import { tradingCalendarService } from './TradingCalendarService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
@@ -45,6 +59,8 @@ export interface SensexOobtstDayAnchor {
   isConfirmed: boolean;
   isLockFailed: boolean;
   lockFailureReason?: string;
+  /** True while the lock waits for the 09:20 candle opens, so the card shows PROVISIONAL rather than LOCKED. */
+  isProvisionalLock?: boolean;
   peakPrice: number;
   troughPrice: number;
   /** Highest LTP per leg since the 09:20 lock; a spike between evaluations still triggers. */
@@ -125,8 +141,11 @@ export class SensexOptionFeedService {
   }
   private cachedAnchor: SensexOobtstDayAnchor | null = null;
 
-  // 09:20 candle open tick capture cache
-  private openingCandleTicks: Record<string, number> = {};
+  // 09:20 one-minute candle opens per contract ("CE_81000"); 0 is a confirmed no-trade minute, a missing key is unknown.
+  private candleOpens0920: CandleOpenState | null = null;
+  private candleFetchInflight: Promise<boolean> | null = null;
+  private lastCandleFetchAt = 0;
+  private lockRetry = new LockRetry();
 
   public getTargetPremium(): number {
     return this.targetPremium;
@@ -166,7 +185,9 @@ export class SensexOptionFeedService {
 
   public async resetAnchor(clearStorage = false): Promise<void> {
     this.cachedAnchor = null;
-    this.openingCandleTicks = {};
+    this.candleOpens0920 = null;
+    this.lastCandleFetchAt = 0;
+    this.lockRetry = new LockRetry();
     this.chainFeed.reset();
     if (clearStorage) {
       try {
@@ -438,20 +459,126 @@ export class SensexOptionFeedService {
     return { ceCandidates, peCandidates, previewAvailable };
   }
 
+  /** True once every contract being fetched has an answer for today's 09:20 candle. */
+  public hasCandleOpens0920(): boolean {
+    const state = this.candleOpens0920;
+    return !!state && state.date === formatDateKeyIST() && state.pending === 0 && Object.keys(state.opens).length > 0;
+  }
+
+  /**
+   * Reads the 09:20 candle open of the contracts that can matter from Dhan's intraday API: those whose live price is
+   * near the band first, and every contract in the window after a retry or once the 09:20 minute has closed.
+   */
+  public refreshCandleOpens0920(spot: number, zerosFinal = false): Promise<boolean> {
+    if (this.candleFetchInflight) return this.candleFetchInflight;
+    if (this.hasCandleOpens0920()) return Promise.resolve(true);
+    if (Date.now() - this.lastCandleFetchAt < CANDLE_FETCH_RETRY_MS) return Promise.resolve(false);
+    this.lastCandleFetchAt = Date.now();
+    this.candleFetchInflight = this.fetchCandleOpens0920(spot, zerosFinal).finally(() => {
+      this.candleFetchInflight = null;
+    });
+    return this.candleFetchInflight;
+  }
+
+  /** A retry looks at every contract in the window, so the lock waits for those answers before it decides again. */
+  private widenCandleSearch(): void {
+    if (this.candleOpens0920) this.candleOpens0920.pending = Math.max(1, this.candleOpens0920.pending);
+    this.lastCandleFetchAt = 0;
+  }
+
+  private async fetchCandleOpens0920(spot: number, zerosFinal: boolean): Promise<boolean> {
+    const chain = this.cachedLiveOptionChain;
+    if (!chain) return false;
+    const today = formatDateKeyIST();
+    if (!this.candleOpens0920 || this.candleOpens0920.date !== today) {
+      this.candleOpens0920 = { date: today, opens: {}, pending: 0 };
+    }
+    const reach = RANK_WINDOW_STRIKES * SENSEX_STRIKE_STEP;
+    const all: CandleContract[] = [];
+    for (const [strike, row] of Object.entries(chain)) {
+      if (Math.abs(Number(strike) - spot) > reach) continue;
+      if (row.ceSecId) all.push({ key: `CE_${strike}`, secId: String(row.ceSecId), liveLtp: row.ceLtp });
+      if (row.peSecId) all.push({ key: `PE_${strike}`, secId: String(row.peSecId), liveLtp: row.peLtp });
+    }
+    const contracts = chooseCandleContracts(
+      all,
+      { min: SENSEX_MIN_ELIGIBLE_PREMIUM, max: SENSEX_MAX_ELIGIBLE_PREMIUM },
+      this.targetPremium,
+      this.lockRetry.wide || zerosFinal
+    );
+    const from = `${today} 09:20:00`;
+    const to = `${today} 09:21:00`;
+    return fetchCandleOpens({
+      state: this.candleOpens0920,
+      contracts,
+      load: (secId) => dhanDirectService.fetchHistoricalIntraday(secId, from, to, 'BSE_FNO', 'OPTIDX', '1'),
+      zeroIsFinal: zerosFinal,
+    });
+  }
+
+  /** Five candle opens closest to the target, in or out of band, so a failed lock can be diagnosed. */
+  private topOpens(type: 'CE' | 'PE'): Array<{ strike: number; open: number }> {
+    const opens = this.candleOpens0920?.opens ?? {};
+    return Object.entries(opens)
+      .filter(([key, open]) => key.startsWith(`${type}_`) && open > 0)
+      .map(([key, open]) => ({ strike: Number(key.slice(3)), open }))
+      .sort((a, b) => Math.abs(a.open - this.targetPremium) - Math.abs(b.open - this.targetPremium))
+      .slice(0, 5);
+  }
+
+  /**
+   * Ranks contracts by the 09:20 candle open against the target premium. Only opens inside ₹90–₹120 can win.
+   * Ties go to the lower strike for CE and the higher strike for PE.
+   */
+  private selectCandleOpenCandidates(): { ceCandidates: OobtstCandidateStrike[]; peCandidates: OobtstCandidateStrike[] } {
+    const chain = this.cachedLiveOptionChain ?? {};
+    const opens = this.candleOpens0920?.opens ?? {};
+    const rank = (type: 'CE' | 'PE'): OobtstCandidateStrike[] => {
+      const list: Array<{ strike: number; open: number; diff: number; secId?: string }> = [];
+      for (const [strikeStr, row] of Object.entries(chain)) {
+        const strike = Number(strikeStr);
+        const open = opens[`${type}_${strike}`];
+        if (!(open >= SENSEX_MIN_ELIGIBLE_PREMIUM && open <= SENSEX_MAX_ELIGIBLE_PREMIUM)) continue;
+        list.push({ strike, open, diff: Math.abs(open - this.targetPremium), secId: type === 'CE' ? row.ceSecId : row.peSecId });
+      }
+      list.sort((a, b) => {
+        if (Math.abs(a.diff - b.diff) > 0.001) return a.diff - b.diff;
+        return type === 'CE' ? a.strike - b.strike : b.strike - a.strike;
+      });
+      return list.slice(0, 2).map((item, idx) => ({
+        rank: (idx + 1) as 1 | 2,
+        type,
+        strike: item.strike,
+        symbol: `SENSEX ${item.strike} ${type}`,
+        ltp: item.open,
+        diffFromTarget: Number(item.diff.toFixed(2)),
+        quoteTimestamp: '09:20 candle open',
+        quoteAgeMs: 0,
+        isStale: false,
+        securityId: item.secId,
+      }));
+    };
+    return { ceCandidates: rank('CE'), peCandidates: rank('PE') };
+  }
+
+  private lastLockFailureLogged = '';
+
+  private logLockFailure(reason: string): void {
+    if (reason === this.lastLockFailureLogged) return;
+    this.lastLockFailureLogged = reason;
+    console.warn('[SENSEX OOBTST] 09:20 lock failed:', reason, JSON.stringify({ ce: this.topOpens('CE'), pe: this.topOpens('PE') }));
+  }
+
   /**
    * Captures or initializes the 09:20 day anchor.
    * Invariants:
    * 1. Market Closed (< 09:15): Strikes unlocked, labeled PREVIEW — NOT CONFIRMED (or PREVIEW UNAVAILABLE).
-   * 2. Provisional (09:15 - 09:19:59): Top two CE and PE candidates update dynamically from live ticks.
-   * 3. 09:20:00 Lock: Selects single closest CE and PE within ₹90-₹120, captures 09:20 opening prices,
-   *    and locks permanently for session.
-   *    Never replaces a locked strike. If quotes are invalid/unavailable, marks LOCK FAILED — DATA UNAVAILABLE.
+   * 2. Provisional (09:15 - 09:20:04): Top two CE and PE candidates update dynamically from live ticks.
+   * 3. 09:20:05 Lock: Selects the single CE and PE whose 09:20 candle open is closest to the target within ₹90-₹120,
+   *    and locks permanently for session. Never replaces a locked strike.
+   *    A failed lock is retried 30 s later, until 09:21:00. If the candle opens stay unavailable the lock fails.
    */
-  public getOrCreateDayAnchor(
-    spot: number,
-    istTimeStr?: string,
-    candleOpens?: Record<string, number>
-  ): SensexOobtstDayAnchor {
+  public getOrCreateDayAnchor(spot: number, istTimeStr?: string): SensexOobtstDayAnchor {
     const today = formatDateKeyIST();
     const { expiryStr } = tradingCalendarService.getActiveWeeklySensexExpiry(new Date(), true);
     const { totalSeconds } = parseIstSeconds(istTimeStr);
@@ -474,7 +601,50 @@ export class SensexOptionFeedService {
       return this.cachedAnchor;
     }
 
-    const { ceCandidates, peCandidates, previewAvailable } = this.selectTopTwoCandidates(spot, this.targetPremium);
+    const live = this.selectTopTwoCandidates(spot, this.targetPremium);
+    let ceCandidates = live.ceCandidates;
+    let peCandidates = live.peCandidates;
+
+    let isConfirmed = false;
+    let isLockFailed = false;
+    let isProvisionalLock = false;
+    let lockFailureReason: string | undefined = undefined;
+
+    if (isConfirmationTime) {
+      const secsPast = totalSeconds - gate0920;
+      this.lockRetry.sync(today);
+      if (secsPast < OOBTST_LOCK_DELAY_SEC) {
+        // The lock waits until 09:20:05 so the 09:20 candle has opened and its open is final.
+        isProvisionalLock = true;
+      } else {
+        // A failed lock is retried 30 s later, until 09:21:00; the retry looks at every contract in the window.
+        if (this.lockRetry.due(secsPast)) this.widenCandleSearch();
+        if (this.hasCandleOpens0920()) {
+          // The premium is the 09:20 candle open, not the live price at the moment the lock happens to run.
+          const fromCandle = this.selectCandleOpenCandidates();
+          ceCandidates = fromCandle.ceCandidates;
+          peCandidates = fromCandle.peCandidates;
+          if (ceCandidates.length > 0 && peCandidates.length > 0) {
+            isConfirmed = true;
+          } else {
+            isLockFailed = true;
+            lockFailureReason =
+              `No ${ceCandidates.length === 0 ? 'CE' : 'PE'} with a 09:20 candle open in ₹${SENSEX_MIN_ELIGIBLE_PREMIUM}–₹${SENSEX_MAX_ELIGIBLE_PREMIUM}.` +
+              this.lockRetry.onFailure(secsPast);
+            this.logLockFailure(lockFailureReason);
+          }
+        } else if (secsPast < OOBTST_CANDLE_DEADLINE_SEC) {
+          // Keep showing the live preview while the 09:20 candle opens are being fetched.
+          isProvisionalLock = true;
+        } else {
+          isLockFailed = true;
+          lockFailureReason = 'Sensex 09:20 candle open unavailable';
+          this.logLockFailure(lockFailureReason);
+        }
+        // Past the failure point the fetch keeps going, so a late answer still locks the correct strikes.
+        if (!isConfirmed) void this.refreshCandleOpens0920(spot, secsPast >= OOBTST_ZERO_FINAL_SEC);
+      }
+    }
 
     const rank1Ce = ceCandidates.length > 0 ? ceCandidates[0] : null;
     const rank1Pe = peCandidates.length > 0 ? peCandidates[0] : null;
@@ -483,84 +653,9 @@ export class SensexOptionFeedService {
     const ceStrike = rank1Ce ? rank1Ce.strike : atm + 500;
     const peStrike = rank1Pe ? rank1Pe.strike : atm - 500;
 
-    let isConfirmed = false;
-    let isLockFailed = false;
-    let isLockPending = false;
-    let lockFailureReason: string | undefined = undefined;
-
-    if (isConfirmationTime) {
-      const ceValid = rank1Ce !== null && rank1Ce.ltp > 0;
-      const peValid = rank1Pe !== null && rank1Pe.ltp > 0;
-      const freshness = ceValid && peValid
-        ? assessLockFreshness([rank1Ce!.quoteAgeMs, rank1Pe!.quoteAgeMs], totalSeconds - gate0920)
-        : 'FRESH';
-
-      if (ceValid && peValid && freshness === 'WAIT') {
-        // Keep re-ranking on fresh quotes; lock as soon as both legs are current.
-        isLockPending = true;
-      } else if (ceValid && peValid && freshness === 'FRESH') {
-        isConfirmed = true;
-        isLockFailed = false;
-      } else {
-        isConfirmed = false;
-        isLockFailed = true;
-        lockFailureReason = !rank1Ce || rank1Ce.ltp <= 0
-          ? 'Sensex CE quote unavailable at 09:20'
-          : !rank1Pe || rank1Pe.ltp <= 0
-          ? 'Sensex PE quote unavailable at 09:20'
-          : 'Stale Sensex quote data at 09:20 lock point';
-      }
-    }
-
-    // The 09:20 open is captured only once the lock can actually be taken
-    const captureOpen = isConfirmationTime && !isLockPending;
-
-    // Capture exact 09:20 candle open price
-    let ceOpen = 0;
-    let peOpen = 0;
-
-    if (rank1Ce) {
-      const secKey = rank1Ce.securityId || `CE_${rank1Ce.strike}`;
-      if (candleOpens && candleOpens[secKey] && candleOpens[secKey] > 0) {
-        ceOpen = candleOpens[secKey];
-        this.openingCandleTicks[secKey] = ceOpen;
-      } else if (this.openingCandleTicks[secKey] && this.openingCandleTicks[secKey] > 0) {
-        ceOpen = this.openingCandleTicks[secKey];
-      } else if (captureOpen && rank1Ce.ltp > 0) {
-        ceOpen = rank1Ce.ltp;
-        this.openingCandleTicks[secKey] = ceOpen;
-      } else {
-        ceOpen = rank1Ce.ltp;
-      }
-    }
-
-    if (rank1Pe) {
-      const secKey = rank1Pe.securityId || `PE_${rank1Pe.strike}`;
-      if (candleOpens && candleOpens[secKey] && candleOpens[secKey] > 0) {
-        peOpen = candleOpens[secKey];
-        this.openingCandleTicks[secKey] = peOpen;
-      } else if (this.openingCandleTicks[secKey] && this.openingCandleTicks[secKey] > 0) {
-        peOpen = this.openingCandleTicks[secKey];
-      } else if (captureOpen && rank1Pe.ltp > 0) {
-        peOpen = rank1Pe.ltp;
-        this.openingCandleTicks[secKey] = peOpen;
-      } else {
-        peOpen = rank1Pe.ltp;
-      }
-    }
-
-    // Validate 90 <= 09:20 Candle Open <= 120 at lock point
-    if (isConfirmationTime && !isLockFailed && !isLockPending) {
-      if (ceOpen < SENSEX_MIN_ELIGIBLE_PREMIUM || ceOpen > SENSEX_MAX_ELIGIBLE_PREMIUM) {
-        isLockFailed = true;
-        isConfirmed = false;
-        lockFailureReason = `Sensex CE open ₹${ceOpen.toFixed(2)} outside ₹90-₹120 range`;
-      } else if (peOpen < SENSEX_MIN_ELIGIBLE_PREMIUM || peOpen > SENSEX_MAX_ELIGIBLE_PREMIUM) {
-        isLockFailed = true;
-        isConfirmed = false;
-        lockFailureReason = `Sensex PE open ₹${peOpen.toFixed(2)} outside ₹90-₹120 range`;
-      }
-    }
+    // Once confirmed this is the 09:20 candle open; before that it is the live preview price.
+    const ceOpen = rank1Ce ? rank1Ce.ltp : 0;
+    const peOpen = rank1Pe ? rank1Pe.ltp : 0;
 
     const ceTrigger = Number((ceOpen * 1.5).toFixed(2));
     const peTrigger = Number((peOpen * 1.5).toFixed(2));
@@ -582,6 +677,7 @@ export class SensexOptionFeedService {
       isConfirmed,
       isLockFailed,
       lockFailureReason,
+      isProvisionalLock,
       peakPrice: 0,
       troughPrice: 99999,
       status: isLockFailed ? 'LOCK_FAILED' : (isConfirmed ? 'ARMED' : 'SCANNING'),
@@ -601,21 +697,18 @@ export class SensexOptionFeedService {
   /**
    * Main evaluation method returning standardized OobtstLiveState
    */
-  public evaluateSensexOobtst(
-    spot: number,
-    istTimeStr?: string,
-    candleOpens?: Record<string, number>
-  ): OobtstLiveState {
+  public evaluateSensexOobtst(spot: number, istTimeStr?: string): OobtstLiveState {
     const { istMinutes, totalSeconds } = parseIstSeconds(istTimeStr);
     const gate0915 = 9 * 3600 + 15 * 60; // 09:15:00 AM
     const gate0920 = 9 * 3600 + 20 * 60; // 09:20:00 AM
     const gate1530 = 15 * 3600 + 30 * 60; // 15:30:00 PM
 
     const isMarketClosed = totalSeconds < gate0915 || totalSeconds >= gate1530;
-    const isProvisional = totalSeconds >= gate0915 && totalSeconds < gate0920;
     const isConfirmationTime = totalSeconds >= gate0920;
 
-    const anchor = this.getOrCreateDayAnchor(spot, istTimeStr, candleOpens);
+    const anchor = this.getOrCreateDayAnchor(spot, istTimeStr);
+    // Also provisional while the lock waits for the 09:20 candle opens, so the card does not claim a lock it has not taken.
+    const isProvisional = (totalSeconds >= gate0915 && totalSeconds < gate0920) || Boolean(anchor.isProvisionalLock);
     const { ceCandidates, peCandidates, previewAvailable } = this.selectTopTwoCandidates(spot, this.targetPremium);
     const { expiryStr, daysToExpiry } = tradingCalendarService.getActiveWeeklySensexExpiry(new Date(), true);
 
