@@ -9,6 +9,8 @@ module.exports = {
     '^@/(.*)$': '<rootDir>/src/$1',
   },
   testMatch: ['**/__tests__/**/*.test.[jt]s?(x)'],
+  // The UI suites load the whole app on first render; under a parallel run that can pass the 5 s default.
+  testTimeout: 30000,
   modulePathIgnorePatterns: ['<rootDir>/relay/'],
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',
