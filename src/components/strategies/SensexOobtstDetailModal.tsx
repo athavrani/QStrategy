@@ -19,6 +19,7 @@ import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
 import { SENSEX_LOT_SIZE } from '../../constants/lotSizes';
 import { triggerProgressPct } from '../../utils/triggerProgress';
+import { LockRetryButton } from './LockRetryButton';
 
 interface SensexOobtstDetailModalProps {
   visible: boolean;
@@ -78,6 +79,7 @@ export function SensexOobtstDetailModal({
   const isLocked = sensexOobtstLive?.isLocked ?? stepDetails?.step1?.isLocked ?? false;
   const isLockFailed = sensexOobtstLive?.isLockFailed ?? stepDetails?.step1?.isLockFailed ?? false;
   const lockFailureReason = sensexOobtstLive?.lockFailureReason || stepDetails?.step1?.lockFailureReason;
+  const lockSource = sensexOobtstLive?.lockSource ?? stepDetails?.step1?.lockSource;
   const previewAvailable = sensexOobtstLive?.previewAvailable ?? stepDetails?.step1?.previewAvailable ?? false;
   const quoteFreshness = sensexOobtstLive?.quoteFreshness || stepDetails?.quoteFreshness || stepDetails?.step1?.quoteFreshness || 'STALE';
 
@@ -400,6 +402,10 @@ export function SensexOobtstDetailModal({
                       : 'Market Closed: Preview unavailable (Awaiting 09:15 open)'
                     : isProvisional
                     ? 'Provisional Window (09:15–09:19:59): 300ms live monitoring from Dhan ticks'
+                    : lockSource === 'MANUAL_CANDLE'
+                    ? `Locked by Retry at ${step1.timestamp} on the 09:20/09:21 candle open`
+                    : lockSource === 'MANUAL_LIVE'
+                    ? `Locked by Retry at ${step1.timestamp} on live prices (09:20 candle open was unavailable)`
                     : 'Locked precisely at 09:20:00 IST candle opening tick'}
                 </Text>
               </View>
@@ -450,6 +456,10 @@ export function SensexOobtstDetailModal({
                 <Text style={[styles.calloutDesc, { color: colors.textMuted, marginTop: 4 }]}>
                   Strategy arming was prevented to protect capital. Stale or fabricated prices are never substituted silently.
                 </Text>
+                <Text style={[styles.calloutDesc, { color: colors.textMuted, marginTop: 4 }]}>
+                  Retry locks on the 09:20/09:21 candle open when available, otherwise on the latest prices at that moment.
+                </Text>
+                <LockRetryButton strategy="SENSEX" />
               </View>
             )}
 

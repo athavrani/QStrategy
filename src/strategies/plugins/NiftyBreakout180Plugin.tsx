@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../types';
 import { useTheme, createThemedStyles } from '../../theme';
 import * as Haptics from 'expo-haptics';
+import { LockRetryButton } from '../../components/strategies/LockRetryButton';
 
 export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
   id: 'NIFTY_BREAKOUT_180',
@@ -94,6 +95,7 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
       target: `₹${targetLevel.toFixed(2)} (+40 pts)`,
       stopLoss: `₹${stopLevel.toFixed(2)} (-20 pts)`,
       invariantNotice: `⛔ 09:25 Open < ₹${threshold.toFixed(2)} Rule. 1st break > ₹${threshold.toFixed(2)} (checked from 09:30) activates trade & disables opposite leg.`,
+      isLockFailed: status === 'LOCK_FAILED' || Boolean(live?.isLockFailed),
       lastUpdated: ctx.istTime,
       legs: [
         {
@@ -223,6 +225,7 @@ function NiftyBreakout180PluginCard({
         </View>
 
         {/* 3-Step Sub-Page Drilldown Trigger */}
+        {state.isLockFailed && <LockRetryButton strategy="BREAKOUT" />}
         <TouchableOpacity
           activeOpacity={0.8}
           style={styles.drilldownBar}

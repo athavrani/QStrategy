@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../types';
 import { useTheme, createThemedStyles } from '../../theme';
 import { sensexOptionFeedService } from '../../services/sensexOptionFeedService';
+import { LockRetryButton } from '../../components/strategies/LockRetryButton';
 import * as Haptics from 'expo-haptics';
 import { SENSEX_LOT_SIZE } from '../../constants/lotSizes';
 
@@ -107,6 +108,7 @@ export const SensexOobtstPlugin: BaseStrategyPlugin = {
           isMarketClosed: live.isMarketClosed,
           isLockFailed: live.isLockFailed,
           lockFailureReason: live.lockFailureReason,
+          lockSource: live.lockSource,
           previewAvailable: live.previewAvailable,
           targetPremium: live.targetPremium,
           ceCandidates: live.ceCandidates,
@@ -411,6 +413,7 @@ function SensexOobtstPluginCard({
       )}
 
       {/* Deep Dive Action Button (Matching NIFTY OOBTST) */}
+      {step1?.isLockFailed && <LockRetryButton strategy="SENSEX" />}
       <TouchableOpacity
         style={styles.detailBtn}
         onPress={handleCardPress}

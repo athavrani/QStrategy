@@ -30,6 +30,7 @@ import { StatusBadge } from '../common/StatusBadge';
 import { dailyStrategyLockService } from '../../services/DailyStrategyLockService';
 import { DailyStrategyLockRecord } from '../../db/schema';
 import * as Haptics from 'expo-haptics';
+import { LockRetryButton } from './LockRetryButton';
 
 const QUICK_THRESHOLDS = [160, 170, 180, 190];
 
@@ -300,6 +301,10 @@ export function BreakoutDetailModal({
               <Text style={styles.lockFailedSub}>
                 Live market feed quotes or 09:25 candle ticks unavailable. Engine prevented from arming to avoid entering with stale data.
               </Text>
+              <Text style={styles.lockFailedSub}>
+                Retry locks on the 09:25/09:26 candle open when available, otherwise on the latest prices at that moment.
+              </Text>
+              <LockRetryButton strategy="BREAKOUT" />
             </View>
           ) : isNoEligibleStrike ? (
             <View style={styles.lockFailedBanner}>
@@ -319,6 +324,17 @@ export function BreakoutDetailModal({
               </Text>
             </View>
           ) : null}
+
+          {data?.lockSource && (
+            <View style={styles.provisionalBanner}>
+              <Text style={styles.provisionalTitle}>🔁 LOCKED BY RETRY</Text>
+              <Text style={styles.provisionalSub}>
+                {data.lockSource === 'MANUAL_CANDLE'
+                  ? `Locked at ${data.lockedAt} on the 09:25/09:26 candle open.`
+                  : `Locked at ${data.lockedAt} on live prices (09:25 candle open was unavailable).`}
+              </Text>
+            </View>
+          )}
 
           {/* Strategy Lifecycle Meta Banner */}
           <View style={styles.metaBanner}>

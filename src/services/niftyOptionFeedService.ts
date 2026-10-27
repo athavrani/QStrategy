@@ -5,7 +5,7 @@
 // =====================================================================
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { OobtstLiveState, OobtstLegDetail, OobtstCandidateStrike } from '../strategies/types';
+import { OobtstLiveState, OobtstLegDetail, OobtstCandidateStrike, OobtstLockSource } from '../strategies/types';
 import { NiftyBreakout180State, Candidate180Contract } from '../types/mobile';
 import { dhanDirectService } from './dhanDirectService';
 import { marketData } from './marketdata/MarketDataService';
@@ -19,12 +19,25 @@ import {
   OOBTST_BAND_MAX,
 } from './marketdata/lockFreshness';
 import {
+  CANDLE_0920_IST_SEC,
+  CANDLE_0925_IST_SEC,
   CANDLE_FETCH_RETRY_MS,
+  MANUAL_BREAKOUT_WINDOW_MESSAGE,
+  MANUAL_RETRY_WINDOW_MESSAGE,
   LockRetry,
+  canRetryBreakoutLock,
+  canRetryLock,
   chooseCandleContracts,
+  clockAfter0920,
   fetchCandleOpens,
+  fetchRetryOpens,
+  istClock,
+  openAtOrAfter,
+  pickFreshInBand,
+  zeroIsFinalAfter,
   type CandleContract,
   type CandleOpenState,
+  type ManualLockResult,
 } from './marketdata/candleOpens';
 import { getAdjustedExpiryDate, formatDateKey, formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
@@ -150,12 +163,14 @@ interface OobtstDayAnchor {
   isLockFailed?: boolean;
   lockFailureReason?: string;
   confirmedAt?: string;
+  /** MANUAL_LIVE when the Retry button locked on live prices after the 09:20 candle open could not be had. */
+  lockSource?: OobtstLockSource;
   targetPremium: number;
   ceCandidates: OobtstCandidateStrike[];
   peCandidates: OobtstCandidateStrike[];
   /** What the lock saw: live top candidates versus the 09:20 candle opens it ranked on. Stored with the lock. */
   lockAudit?: {
-    source: 'CANDLE_OPEN_0920';
+    source: OobtstLockSource;
     liveCe: Array<{ strike: number; ltp: number; ageMs: number }>;
     livePe: Array<{ strike: number; ltp: number; ageMs: number }>;
     opensCe: Array<{ strike: number; open: number }>;
@@ -197,6 +212,9 @@ class NiftyOptionFeedService {
   private candleFetchInflight: Promise<boolean> | null = null;
   private lastCandleFetchAt = 0;
   private lockRetry = new LockRetry();
+  private manualLock: { opens: Record<string, number> | null } | null = null;
+  private manualRetryInflight: Promise<ManualLockResult> | null = null;
+  private breakoutRetryInflight: Promise<ManualLockResult> | null = null;
   private chainFeed = new OptionChainFeed({
     owner: 'nifty-options',
     underlying: 'NIFTY',
@@ -478,6 +496,18 @@ class NiftyOptionFeedService {
     this.lastCandleFetchAt = 0;
   }
 
+  /** Every contract in the ranking window that has a security id. */
+  private windowContracts(spot: number): CandleContract[] {
+    const reach = RANK_WINDOW_STRIKES * NIFTY_STRIKE_STEP;
+    const all: CandleContract[] = [];
+    for (const [strike, row] of Object.entries(this.cachedLiveOptionChain ?? {})) {
+      if (Math.abs(Number(strike) - spot) > reach) continue;
+      if (row.ceSecId) all.push({ key: `CE_${strike}`, secId: String(row.ceSecId), liveLtp: row.ceLtp });
+      if (row.peSecId) all.push({ key: `PE_${strike}`, secId: String(row.peSecId), liveLtp: row.peLtp });
+    }
+    return all;
+  }
+
   private async fetchCandleOpens0920(spot: number, zerosFinal: boolean): Promise<boolean> {
     const chain = this.cachedLiveOptionChain;
     if (!chain) return false;
@@ -485,15 +515,8 @@ class NiftyOptionFeedService {
     if (!this.candleOpens0920 || this.candleOpens0920.date !== today) {
       this.candleOpens0920 = { date: today, opens: {}, pending: 0 };
     }
-    const reach = RANK_WINDOW_STRIKES * NIFTY_STRIKE_STEP;
-    const all: CandleContract[] = [];
-    for (const [strike, row] of Object.entries(chain)) {
-      if (Math.abs(Number(strike) - spot) > reach) continue;
-      if (row.ceSecId) all.push({ key: `CE_${strike}`, secId: String(row.ceSecId), liveLtp: row.ceLtp });
-      if (row.peSecId) all.push({ key: `PE_${strike}`, secId: String(row.peSecId), liveLtp: row.peLtp });
-    }
     const contracts = chooseCandleContracts(
-      all,
+      this.windowContracts(spot),
       { min: OOBTST_BAND_MIN, max: OOBTST_BAND_MAX },
       this.targetPremium,
       this.lockRetry.wide || zerosFinal
@@ -509,8 +532,10 @@ class NiftyOptionFeedService {
   }
 
   /** Five candle opens closest to the target, in or out of band, so a failed lock can be diagnosed. */
-  private topOpens(type: 'CE' | 'PE'): Array<{ strike: number; open: number }> {
-    const opens = this.candleOpens0920?.opens ?? {};
+  private topOpens(
+    type: 'CE' | 'PE',
+    opens: Record<string, number> = this.candleOpens0920?.opens ?? {}
+  ): Array<{ strike: number; open: number }> {
     return Object.entries(opens)
       .filter(([key, open]) => key.startsWith(`${type}_`) && open > 0)
       .map(([key, open]) => ({ strike: Number(key.slice(3)), open }))
@@ -522,9 +547,10 @@ class NiftyOptionFeedService {
    * Ranks contracts by the 09:20 candle open against the target premium. Only opens inside the
    * ₹50–₹75 band can win, so a thin or mispriced strike never becomes the locked leg.
    */
-  private selectCandleOpenCandidates(): { ceCandidates: OobtstCandidateStrike[]; peCandidates: OobtstCandidateStrike[] } {
+  private selectCandleOpenCandidates(
+    opens: Record<string, number> = this.candleOpens0920?.opens ?? {}
+  ): { ceCandidates: OobtstCandidateStrike[]; peCandidates: OobtstCandidateStrike[] } {
     const chain = this.cachedLiveOptionChain ?? {};
-    const opens = this.candleOpens0920?.opens ?? {};
     const rank = (type: 'CE' | 'PE'): OobtstCandidateStrike[] => {
       const list: Array<{ strike: number; open: number; diff: number; secId?: string }> = [];
       for (const [strikeStr, row] of Object.entries(chain)) {
@@ -621,11 +647,42 @@ class NiftyOptionFeedService {
     let isProvisionalLock = false;
     let lockFailureReason: string | undefined = undefined;
     let lockAudit: OobtstDayAnchor['lockAudit'];
+    let lockSource: OobtstLockSource | undefined;
+    let confirmedAt: string | undefined;
 
     if (isConfirmationTime) {
       const secsPast = totalSeconds - gate0920;
       this.lockRetry.sync(today);
-      if (secsPast < OOBTST_LOCK_DELAY_SEC) {
+      if (this.manualLock) {
+        // The Retry button locks on the 09:20 (else 09:21) candle open when it could be read, otherwise on prices fetched just now.
+        const band = { min: OOBTST_BAND_MIN, max: OOBTST_BAND_MAX };
+        const liveAudit = {
+          liveCe: live.ceCandidates.slice(0, 2).map((c) => ({ strike: c.strike, ltp: c.ltp, ageMs: c.quoteAgeMs })),
+          livePe: live.peCandidates.slice(0, 2).map((c) => ({ strike: c.strike, ltp: c.ltp, ageMs: c.quoteAgeMs })),
+        };
+        const opens = this.manualLock.opens;
+        const fromCandle = opens ? this.selectCandleOpenCandidates(opens) : null;
+        const ce = pickFreshInBand(live.ceCandidates, band);
+        const pe = pickFreshInBand(live.peCandidates, band);
+        if (opens && fromCandle && fromCandle.ceCandidates.length > 0 && fromCandle.peCandidates.length > 0) {
+          ceCandidates = fromCandle.ceCandidates;
+          peCandidates = fromCandle.peCandidates;
+          isConfirmed = true;
+          lockSource = 'MANUAL_CANDLE';
+          confirmedAt = `${clockAfter0920(secsPast)} IST`;
+          lockAudit = { source: 'MANUAL_CANDLE', ...liveAudit, opensCe: this.topOpens('CE', opens), opensPe: this.topOpens('PE', opens) };
+        } else if (ce && pe) {
+          ceCandidates = [{ ...ce, rank: 1 }];
+          peCandidates = [{ ...pe, rank: 1 }];
+          isConfirmed = true;
+          lockSource = 'MANUAL_LIVE';
+          confirmedAt = `${clockAfter0920(secsPast)} IST`;
+          lockAudit = { source: 'MANUAL_LIVE', ...liveAudit, opensCe: [], opensPe: [] };
+        } else {
+          isLockFailed = true;
+          lockFailureReason = `Retry found no ${ce ? 'PE' : 'CE'} priced ₹${OOBTST_BAND_MIN}–₹${OOBTST_BAND_MAX} on the 09:20/09:21 candle or right now.`;
+        }
+      } else if (secsPast < OOBTST_LOCK_DELAY_SEC) {
         // The lock waits until 09:20:05 so the 09:20 candle has opened and its open is final.
         isProvisionalLock = true;
       } else {
@@ -696,7 +753,8 @@ class NiftyOptionFeedService {
       isMarketClosed,
       isLockFailed,
       lockFailureReason,
-      confirmedAt: isConfirmed ? '09:20:05 IST' : undefined,
+      confirmedAt: isConfirmed ? (confirmedAt ?? '09:20:05 IST') : undefined,
+      lockSource: isConfirmed ? (lockSource ?? 'CANDLE_OPEN_0920') : undefined,
       targetPremium: this.targetPremium,
       ceCandidates,
       peCandidates,
@@ -713,6 +771,59 @@ class NiftyOptionFeedService {
     }
 
     return newAnchor;
+  }
+
+  /**
+   * Retry button after a failed lock: locks on the 09:20 candle open (else the 09:21 one) when Dhan returns it, and
+   * otherwise on the latest prices at this moment. Either way the strikes must sit inside the ₹50–₹75 band and the
+   * 1.5x trigger comes from the locked price.
+   */
+  public retryLock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (!this.manualRetryInflight) {
+      this.manualRetryInflight = this.runManualRetry(spot, istTimeStr).finally(() => {
+        this.manualRetryInflight = null;
+      });
+    }
+    return this.manualRetryInflight;
+  }
+
+  private async runManualRetry(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    const held = this.cachedAnchor;
+    if (held && held.tradeDate === formatDateKeyIST() && held.isConfirmed && !held.isLockFailed) {
+      return { ok: true, message: 'Already locked for today.' };
+    }
+    const { totalSeconds } = parseIstSeconds(istTimeStr);
+    if (!canRetryLock(totalSeconds)) {
+      return { ok: false, message: MANUAL_RETRY_WINDOW_MESSAGE };
+    }
+    const synced = await this.syncLiveOptionChain().catch(() => false);
+    if (!synced) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
+
+    const liveSpot = spot > 0 ? spot : this.lastLiveSpot ?? 0;
+    const today = formatDateKeyIST();
+    const opens = await fetchRetryOpens({
+      contracts: chooseCandleContracts(
+        this.windowContracts(liveSpot),
+        { min: OOBTST_BAND_MIN, max: OOBTST_BAND_MAX },
+        this.targetPremium,
+        true
+      ),
+      load: (secId) =>
+        dhanDirectService.fetchHistoricalIntraday(secId, `${today} 09:20:00`, `${today} 09:22:00`, 'NSE_FNO', 'OPTIDX', '1'),
+      pick: openAtOrAfter(CANDLE_0920_IST_SEC),
+      zeroIsFinal: zeroIsFinalAfter(totalSeconds, CANDLE_0920_IST_SEC),
+    });
+
+    this.manualLock = { opens };
+    let anchor: OobtstDayAnchor;
+    try {
+      anchor = this.getOrCreateDayAnchor(liveSpot, istTimeStr);
+    } finally {
+      this.manualLock = null;
+    }
+    if (!anchor.isConfirmed) return { ok: false, message: anchor.lockFailureReason ?? 'Retry failed: no usable prices.' };
+    const basis = anchor.lockSource === 'MANUAL_CANDLE' ? 'the 09:20/09:21 candle open' : 'live prices';
+    return { ok: true, message: `Locked at ${anchor.confirmedAt} on ${basis}.` };
   }
 
   /**
@@ -1267,11 +1378,12 @@ class NiftyOptionFeedService {
       expiryDate: expiryStr,
       daysToExpiry,
       niftySpot: spot,
-      anchorTime: '09:20:00 IST',
+      anchorTime: anchor.lockSource?.startsWith('MANUAL') && anchor.confirmedAt ? anchor.confirmedAt : '09:20:00 IST',
       isLocked: true,
       isProvisional: false,
       isMarketClosed: false,
       isLockFailed: false,
+      lockSource: anchor.lockSource,
       previewAvailable: false,
       targetPremium: this.targetPremium,
       ceCandidates: anchor.ceCandidates,
@@ -1315,6 +1427,8 @@ class NiftyOptionFeedService {
     isLocked?: boolean;
     isLockFailed?: boolean;
     lockFailureReason?: string;
+    lockSource?: 'MANUAL_CANDLE' | 'MANUAL_LIVE';
+    lockedAt?: string;
     noEligibleSide?: 'CE' | 'PE' | 'BOTH' | null;
     isHistoricalSession?: boolean;
     historicalDate?: string;
@@ -1332,7 +1446,7 @@ class NiftyOptionFeedService {
       await dailyStrategyLockService.saveLock({
         trade_date: state.date,
         strategy_id: 'NIFTY_BREAKOUT_180',
-        lock_time: '09:25:00 IST',
+        lock_time: state.lockedAt || '09:25:00 IST',
         underlying_symbol: 'NIFTY',
         underlying_spot: this.lastLiveSpot || 24850,
         expiry_str: state.expiryStr || '',
@@ -1664,13 +1778,13 @@ class NiftyOptionFeedService {
 
         if (candleOpens && Object.keys(candleOpens).length > 0) {
           for (const [key, openPrice] of Object.entries(candleOpens)) {
-            if (key.startsWith('CE_') && openPrice < threshold) {
+            if (key.startsWith('CE_') && openPrice > 0 && openPrice < threshold) {
               const k = parseInt(key.replace('CE_', ''), 10);
               if (k >= atm && openPrice > bestCeOpen) {
                 bestCeOpen = openPrice;
                 bestCeStrike = k;
               }
-            } else if (key.startsWith('PE_') && openPrice < threshold) {
+            } else if (key.startsWith('PE_') && openPrice > 0 && openPrice < threshold) {
               const k = parseInt(key.replace('PE_', ''), 10);
               if (k <= atm && openPrice > bestPeOpen) {
                 bestPeOpen = openPrice;
@@ -1920,8 +2034,76 @@ class NiftyOptionFeedService {
       historicalStatus: cache.historicalStatus,
       isLockFailed: cache.isLockFailed,
       lockFailureReason: cache.lockFailureReason,
+      lockSource: cache.isLocked ? cache.lockSource : undefined,
+      lockedAt: cache.isLocked ? cache.lockedAt : undefined,
       noEligibleSide: cache.noEligibleSide,
     };
+  }
+
+  /**
+   * Retry button after a failed 09:25 lock: locks on the 09:25 candle open (else the 09:26 one) when Dhan returns it,
+   * and otherwise on the latest prices at this moment. The usual rules apply: CE at or above ATM, PE at or below,
+   * each priced below the threshold, highest first.
+   */
+  public retryBreakoutLock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (!this.breakoutRetryInflight) {
+      this.breakoutRetryInflight = this.runBreakoutRetry(spot, istTimeStr).finally(() => {
+        this.breakoutRetryInflight = null;
+      });
+    }
+    return this.breakoutRetryInflight;
+  }
+
+  private async runBreakoutRetry(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (this.cachedBreakout180?.isLocked) return { ok: true, message: 'Already locked for today.' };
+    const { totalSeconds } = parseIstSeconds(istTimeStr);
+    if (!canRetryBreakoutLock(totalSeconds)) return { ok: false, message: MANUAL_BREAKOUT_WINDOW_MESSAGE };
+    const synced = await this.syncLiveOptionChain().catch(() => false);
+    if (!synced) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
+
+    const liveSpot = spot > 0 ? spot : this.lastLiveSpot ?? 0;
+    const atm = Math.round(liveSpot / NIFTY_STRIKE_STEP) * NIFTY_STRIKE_STEP;
+    const today = formatDateKeyIST();
+    const contracts = this.windowContracts(liveSpot).filter((c) => {
+      const strike = Number(c.key.slice(3));
+      return c.key.startsWith('CE_') ? strike >= atm : strike <= atm;
+    });
+    const opens = await fetchRetryOpens({
+      contracts,
+      load: (secId) =>
+        dhanDirectService.fetchHistoricalIntraday(secId, `${today} 09:25:00`, `${today} 09:27:00`, 'NSE_FNO', 'OPTIDX', '1'),
+      pick: openAtOrAfter(CANDLE_0925_IST_SEC),
+      zeroIsFinal: zeroIsFinalAfter(totalSeconds, CANDLE_0925_IST_SEC),
+    });
+
+    // The candle open first; if it yields no lock the prices of this moment are used.
+    let source: 'MANUAL_CANDLE' | 'MANUAL_LIVE' = 'MANUAL_CANDLE';
+    for (const attempt of opens ? [opens, undefined] : [undefined]) {
+      this.clearBreakoutFailure();
+      this.evaluateBreakout180(liveSpot, istTimeStr, attempt);
+      source = attempt ? 'MANUAL_CANDLE' : 'MANUAL_LIVE';
+      if (this.cachedBreakout180?.isLocked) break;
+    }
+
+    const cache = this.cachedBreakout180;
+    if (!cache?.isLocked) {
+      const side = cache?.noEligibleSide;
+      const missing = !side || side === 'BOTH' ? 'CE or PE' : side;
+      return { ok: false, message: `Retry found no ${missing} priced below ₹${this.breakoutThreshold.toFixed(2)} on the 09:25/09:26 candle or right now.` };
+    }
+    cache.lockSource = source;
+    cache.lockedAt = `${istClock(totalSeconds)} IST`;
+    this.persistBreakoutState(cache);
+    const basis = source === 'MANUAL_CANDLE' ? 'the 09:25/09:26 candle open' : 'live prices';
+    return { ok: true, message: `Locked at ${cache.lockedAt} on ${basis}.` };
+  }
+
+  private clearBreakoutFailure(): void {
+    const cache = this.cachedBreakout180;
+    if (!cache) return;
+    cache.isLockFailed = false;
+    cache.lockFailureReason = undefined;
+    cache.noEligibleSide = null;
   }
 
   /**

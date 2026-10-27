@@ -35,6 +35,7 @@ import { prevCloseBook } from '../services/marketdata/PrevCloseBook';
 import { DailyStrategyLockRecord } from '../db/schema';
 import { dailyStrategyLockService } from '../services/DailyStrategyLockService';
 import { nextSignalAt } from '../utils/radarSort';
+import type { ManualLockResult } from '../services/marketdata/candleOpens';
 
 interface RadarStoreState {
   // Market Global State
@@ -102,6 +103,9 @@ interface RadarStoreState {
   setOobtstTargetPremium: (target: number) => Promise<boolean>;
   setBreakoutThreshold: (target: number) => Promise<boolean>;
   setSensexOobtstTargetPremium: (target: number) => Promise<boolean>;
+  /** Retry button on a failed 09:20 lock: locks on the latest live prices and re-evaluates the strategy. */
+  /** Retry button on a failed lock: locks on the 09:20/09:21 (breakout: 09:25/09:26) candle open or the latest prices. */
+  retryStrategyLock: (which: 'NIFTY' | 'SENSEX' | 'BREAKOUT') => Promise<ManualLockResult>;
   fetchAvailableLockDates: () => Promise<string[]>;
   selectLockDate: (date: string | null) => Promise<void>;
   fetchAvailableJournalDates: () => Promise<string[]>;
@@ -611,6 +615,48 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       set({ sensexOobtstTargetPremium: target, sensexOobtstState: updated });
     }
     return ok;
+  },
+
+  retryStrategyLock: async (which) => {
+    const ist = get().istTime !== '--:--:--' ? get().istTime : undefined;
+    let result: ManualLockResult;
+    let strategyId: string;
+
+    if (which === 'SENSEX') {
+      result = await sensexOptionFeedService.retryLock(get().sensexSpot, ist);
+      const spot = get().sensexSpot || sensexOptionFeedService.getLastLiveSpot() || 81000;
+      set({ sensexOobtstState: sensexOptionFeedService.evaluateSensexOobtst(spot, ist) });
+      strategyId = STRATEGY_IDS.OOBTST_SENSEX;
+    } else {
+      result =
+        which === 'NIFTY'
+          ? await niftyOptionFeedService.retryLock(get().niftySpot, ist)
+          : await niftyOptionFeedService.retryBreakoutLock(get().niftySpot, ist);
+      const spot = get().niftySpot || niftyOptionFeedService.getLastLiveSpot() || 24850;
+      if (which === 'NIFTY') set({ oobtstState: niftyOptionFeedService.evaluateOobtst(spot, ist) });
+      else set({ niftyBreakout180: niftyOptionFeedService.evaluateBreakout180(spot, ist) });
+      strategyId = which === 'NIFTY' ? STRATEGY_IDS.OOBTST_NIFTY : STRATEGY_IDS.BREAKOUT_180;
+    }
+
+    if (result.ok && get().latchServiceInitialized) {
+      const state = get();
+      strategyEngine
+        .evaluate(
+          {
+            istTime: state.istTime,
+            carry: state.carryTrades,
+            breakout: state.niftyBreakout180,
+            niftyOobtst: state.oobtstState,
+            sensexOobtst: state.sensexOobtstState,
+          },
+          [strategyId]
+        )
+        .then((entries) => {
+          if (entries.length > 0) set((prev) => withNewEntries(prev, entries));
+        })
+        .catch(() => {});
+    }
+    return result;
   },
 
   fetchAvailableLockDates: async () => {

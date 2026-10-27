@@ -43,6 +43,8 @@ export interface OobtstLegDetail {
   isProvisional?: boolean;
 }
 
+export type OobtstLockSource = 'CANDLE_OPEN_0920' | 'MANUAL_CANDLE' | 'MANUAL_LIVE';
+
 export interface OobtstLiveState {
   currentStep: 1 | 2 | 3;
   status: 'SCANNING' | 'ARMED' | 'ACTIVE' | 'SL_HIT' | 'BTST_HOLD' | 'LOCK_FAILED';
@@ -56,6 +58,8 @@ export interface OobtstLiveState {
   isMarketClosed: boolean;
   isLockFailed?: boolean;
   lockFailureReason?: string;
+  /** MANUAL_CANDLE or MANUAL_LIVE when the Retry button locked the strikes: on the 09:20/09:21 candle open, or on live prices. */
+  lockSource?: OobtstLockSource;
   previewAvailable?: boolean;
   targetPremium: number;
   ceCandidates: OobtstCandidateStrike[];
@@ -94,6 +98,8 @@ export interface StrategySignalOutput {
   target?: string;
   stopLoss?: string;
   invariantNotice?: string;
+  /** The strategy's lock failed, so the card offers the Retry button. */
+  isLockFailed?: boolean;
   lastUpdated: string;
   legs?: {
     type: 'CE' | 'PE' | 'EQUITY';
@@ -122,6 +128,7 @@ export interface StrategySignalOutput {
       isMarketClosed?: boolean;
       isLockFailed?: boolean;
       lockFailureReason?: string;
+      lockSource?: OobtstLockSource;
       previewAvailable?: boolean;
       targetPremium?: number;
       ceCandidates?: OobtstCandidateStrike[];

@@ -138,6 +138,9 @@ export interface NiftyBreakout180State {
   historicalStatus?: 'HISTORICAL SESSION RESULTS' | 'HISTORICAL DATA UNAVAILABLE';
   isLockFailed?: boolean;
   lockFailureReason?: string;
+  /** Set when the Retry button locked the strikes: on the 09:25/09:26 candle open, or on live prices. */
+  lockSource?: 'MANUAL_CANDLE' | 'MANUAL_LIVE';
+  lockedAt?: string;
   noEligibleSide?: 'CE' | 'PE' | 'BOTH' | null;
 }
 

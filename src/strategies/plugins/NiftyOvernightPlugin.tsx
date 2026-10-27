@@ -4,6 +4,7 @@ import { BaseStrategyPlugin, StrategyContext, StrategySignalOutput } from '../ty
 import { useTheme, createThemedStyles } from '../../theme';
 import { dhanDirectService } from '../../services/dhanDirectService';
 import { niftyOptionFeedService } from '../../services/niftyOptionFeedService';
+import { LockRetryButton } from '../../components/strategies/LockRetryButton';
 import * as Haptics from 'expo-haptics';
 import { NIFTY_LOT_SIZE } from '../../constants/lotSizes';
 
@@ -108,6 +109,7 @@ export const NiftyOvernightPlugin: BaseStrategyPlugin = {
           isMarketClosed: live.isMarketClosed,
           isLockFailed: live.isLockFailed,
           lockFailureReason: live.lockFailureReason,
+          lockSource: live.lockSource,
           previewAvailable: live.previewAvailable,
           targetPremium: live.targetPremium,
           ceCandidates: live.ceCandidates,
@@ -414,6 +416,7 @@ function NiftyOvernightPluginCard({
         )}
 
         {/* Deep Dive Action Button */}
+        {step1?.isLockFailed && <LockRetryButton strategy="NIFTY" />}
         <TouchableOpacity
           style={styles.detailBtn}
           onPress={handleCardPress}

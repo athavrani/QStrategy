@@ -21,18 +21,27 @@ import {
   OOBTST_ZERO_FINAL_SEC,
 } from './marketdata/lockFreshness';
 import {
+  CANDLE_0920_IST_SEC,
   CANDLE_FETCH_RETRY_MS,
+  MANUAL_RETRY_WINDOW_MESSAGE,
   LockRetry,
+  canRetryLock,
   chooseCandleContracts,
+  clockAfter0920,
   fetchCandleOpens,
+  fetchRetryOpens,
+  openAtOrAfter,
+  pickFreshInBand,
+  zeroIsFinalAfter,
   type CandleContract,
   type CandleOpenState,
+  type ManualLockResult,
 } from './marketdata/candleOpens';
 import { dhanDirectService } from './dhanDirectService';
 import { tradingCalendarService } from './TradingCalendarService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { dailyStrategyLockService } from './DailyStrategyLockService';
-import { OobtstCandidateStrike, OobtstLiveState, OobtstLegDetail } from '../strategies/types';
+import { OobtstCandidateStrike, OobtstLiveState, OobtstLegDetail, OobtstLockSource } from '../strategies/types';
 import { SENSEX_LOT_SIZE } from '../constants/lotSizes';
 import { triggerProgressPct } from '../utils/triggerProgress';
 
@@ -61,6 +70,9 @@ export interface SensexOobtstDayAnchor {
   lockFailureReason?: string;
   /** True while the lock waits for the 09:20 candle opens, so the card shows PROVISIONAL rather than LOCKED. */
   isProvisionalLock?: boolean;
+  /** MANUAL_LIVE when the Retry button locked on live prices after the 09:20 candle open could not be had. */
+  lockSource?: OobtstLockSource;
+  confirmedAt?: string;
   peakPrice: number;
   troughPrice: number;
   /** Highest LTP per leg since the 09:20 lock; a spike between evaluations still triggers. */
@@ -146,6 +158,8 @@ export class SensexOptionFeedService {
   private candleFetchInflight: Promise<boolean> | null = null;
   private lastCandleFetchAt = 0;
   private lockRetry = new LockRetry();
+  private manualLock: { opens: Record<string, number> | null } | null = null;
+  private manualRetryInflight: Promise<ManualLockResult> | null = null;
 
   public getTargetPremium(): number {
     return this.targetPremium;
@@ -208,7 +222,7 @@ export class SensexOptionFeedService {
       await dailyStrategyLockService.saveLock({
         trade_date: anchor.tradeDate,
         strategy_id: 'SENSEX_OOBTST',
-        lock_time: '09:20:00 IST',
+        lock_time: anchor.confirmedAt || '09:20:00 IST',
         underlying_symbol: 'SENSEX',
         underlying_spot: this.lastLiveSpot || 81000,
         expiry_str: anchor.expiryStr,
@@ -486,6 +500,18 @@ export class SensexOptionFeedService {
     this.lastCandleFetchAt = 0;
   }
 
+  /** Every contract in the ranking window that has a security id. */
+  private windowContracts(spot: number): CandleContract[] {
+    const reach = RANK_WINDOW_STRIKES * SENSEX_STRIKE_STEP;
+    const all: CandleContract[] = [];
+    for (const [strike, row] of Object.entries(this.cachedLiveOptionChain ?? {})) {
+      if (Math.abs(Number(strike) - spot) > reach) continue;
+      if (row.ceSecId) all.push({ key: `CE_${strike}`, secId: String(row.ceSecId), liveLtp: row.ceLtp });
+      if (row.peSecId) all.push({ key: `PE_${strike}`, secId: String(row.peSecId), liveLtp: row.peLtp });
+    }
+    return all;
+  }
+
   private async fetchCandleOpens0920(spot: number, zerosFinal: boolean): Promise<boolean> {
     const chain = this.cachedLiveOptionChain;
     if (!chain) return false;
@@ -493,15 +519,8 @@ export class SensexOptionFeedService {
     if (!this.candleOpens0920 || this.candleOpens0920.date !== today) {
       this.candleOpens0920 = { date: today, opens: {}, pending: 0 };
     }
-    const reach = RANK_WINDOW_STRIKES * SENSEX_STRIKE_STEP;
-    const all: CandleContract[] = [];
-    for (const [strike, row] of Object.entries(chain)) {
-      if (Math.abs(Number(strike) - spot) > reach) continue;
-      if (row.ceSecId) all.push({ key: `CE_${strike}`, secId: String(row.ceSecId), liveLtp: row.ceLtp });
-      if (row.peSecId) all.push({ key: `PE_${strike}`, secId: String(row.peSecId), liveLtp: row.peLtp });
-    }
     const contracts = chooseCandleContracts(
-      all,
+      this.windowContracts(spot),
       { min: SENSEX_MIN_ELIGIBLE_PREMIUM, max: SENSEX_MAX_ELIGIBLE_PREMIUM },
       this.targetPremium,
       this.lockRetry.wide || zerosFinal
@@ -517,8 +536,10 @@ export class SensexOptionFeedService {
   }
 
   /** Five candle opens closest to the target, in or out of band, so a failed lock can be diagnosed. */
-  private topOpens(type: 'CE' | 'PE'): Array<{ strike: number; open: number }> {
-    const opens = this.candleOpens0920?.opens ?? {};
+  private topOpens(
+    type: 'CE' | 'PE',
+    opens: Record<string, number> = this.candleOpens0920?.opens ?? {}
+  ): Array<{ strike: number; open: number }> {
     return Object.entries(opens)
       .filter(([key, open]) => key.startsWith(`${type}_`) && open > 0)
       .map(([key, open]) => ({ strike: Number(key.slice(3)), open }))
@@ -530,9 +551,10 @@ export class SensexOptionFeedService {
    * Ranks contracts by the 09:20 candle open against the target premium. Only opens inside ₹90–₹120 can win.
    * Ties go to the lower strike for CE and the higher strike for PE.
    */
-  private selectCandleOpenCandidates(): { ceCandidates: OobtstCandidateStrike[]; peCandidates: OobtstCandidateStrike[] } {
+  private selectCandleOpenCandidates(
+    opens: Record<string, number> = this.candleOpens0920?.opens ?? {}
+  ): { ceCandidates: OobtstCandidateStrike[]; peCandidates: OobtstCandidateStrike[] } {
     const chain = this.cachedLiveOptionChain ?? {};
-    const opens = this.candleOpens0920?.opens ?? {};
     const rank = (type: 'CE' | 'PE'): OobtstCandidateStrike[] => {
       const list: Array<{ strike: number; open: number; diff: number; secId?: string }> = [];
       for (const [strikeStr, row] of Object.entries(chain)) {
@@ -609,11 +631,36 @@ export class SensexOptionFeedService {
     let isLockFailed = false;
     let isProvisionalLock = false;
     let lockFailureReason: string | undefined = undefined;
+    let lockSource: OobtstLockSource | undefined;
+    let confirmedAt: string | undefined;
 
     if (isConfirmationTime) {
       const secsPast = totalSeconds - gate0920;
       this.lockRetry.sync(today);
-      if (secsPast < OOBTST_LOCK_DELAY_SEC) {
+      if (this.manualLock) {
+        // The Retry button locks on the 09:20 (else 09:21) candle open when it could be read, otherwise on prices fetched just now.
+        const band = { min: SENSEX_MIN_ELIGIBLE_PREMIUM, max: SENSEX_MAX_ELIGIBLE_PREMIUM };
+        const opens = this.manualLock.opens;
+        const fromCandle = opens ? this.selectCandleOpenCandidates(opens) : null;
+        const ce = pickFreshInBand(live.ceCandidates, band);
+        const pe = pickFreshInBand(live.peCandidates, band);
+        if (fromCandle && fromCandle.ceCandidates.length > 0 && fromCandle.peCandidates.length > 0) {
+          ceCandidates = fromCandle.ceCandidates;
+          peCandidates = fromCandle.peCandidates;
+          isConfirmed = true;
+          lockSource = 'MANUAL_CANDLE';
+          confirmedAt = `${clockAfter0920(secsPast)} IST`;
+        } else if (ce && pe) {
+          ceCandidates = [{ ...ce, rank: 1 }];
+          peCandidates = [{ ...pe, rank: 1 }];
+          isConfirmed = true;
+          lockSource = 'MANUAL_LIVE';
+          confirmedAt = `${clockAfter0920(secsPast)} IST`;
+        } else {
+          isLockFailed = true;
+          lockFailureReason = `Retry found no ${ce ? 'PE' : 'CE'} priced ₹${SENSEX_MIN_ELIGIBLE_PREMIUM}–₹${SENSEX_MAX_ELIGIBLE_PREMIUM} on the 09:20/09:21 candle or right now.`;
+        }
+      } else if (secsPast < OOBTST_LOCK_DELAY_SEC) {
         // The lock waits until 09:20:05 so the 09:20 candle has opened and its open is final.
         isProvisionalLock = true;
       } else {
@@ -678,6 +725,8 @@ export class SensexOptionFeedService {
       isLockFailed,
       lockFailureReason,
       isProvisionalLock,
+      lockSource: isConfirmed ? (lockSource ?? 'CANDLE_OPEN_0920') : undefined,
+      confirmedAt: isConfirmed ? confirmedAt : undefined,
       peakPrice: 0,
       troughPrice: 99999,
       status: isLockFailed ? 'LOCK_FAILED' : (isConfirmed ? 'ARMED' : 'SCANNING'),
@@ -692,6 +741,59 @@ export class SensexOptionFeedService {
     }
 
     return anchor;
+  }
+
+  /**
+   * Retry button after a failed lock: locks on the 09:20 candle open (else the 09:21 one) when Dhan returns it, and
+   * otherwise on the latest prices at this moment. Either way the strikes must sit inside ₹90–₹120 and the
+   * 1.5x trigger comes from the locked price.
+   */
+  public retryLock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (!this.manualRetryInflight) {
+      this.manualRetryInflight = this.runManualRetry(spot, istTimeStr).finally(() => {
+        this.manualRetryInflight = null;
+      });
+    }
+    return this.manualRetryInflight;
+  }
+
+  private async runManualRetry(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    const held = this.cachedAnchor;
+    if (held && held.tradeDate === formatDateKeyIST() && held.isConfirmed && !held.isLockFailed) {
+      return { ok: true, message: 'Already locked for today.' };
+    }
+    const { totalSeconds } = parseIstSeconds(istTimeStr);
+    if (!canRetryLock(totalSeconds)) {
+      return { ok: false, message: MANUAL_RETRY_WINDOW_MESSAGE };
+    }
+    const synced = await this.syncLiveOptionChain().catch(() => false);
+    if (!synced) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
+
+    const liveSpot = spot > 0 ? spot : this.lastLiveSpot ?? 0;
+    const today = formatDateKeyIST();
+    const opens = await fetchRetryOpens({
+      contracts: chooseCandleContracts(
+        this.windowContracts(liveSpot),
+        { min: SENSEX_MIN_ELIGIBLE_PREMIUM, max: SENSEX_MAX_ELIGIBLE_PREMIUM },
+        this.targetPremium,
+        true
+      ),
+      load: (secId) =>
+        dhanDirectService.fetchHistoricalIntraday(secId, `${today} 09:20:00`, `${today} 09:22:00`, 'BSE_FNO', 'OPTIDX', '1'),
+      pick: openAtOrAfter(CANDLE_0920_IST_SEC),
+      zeroIsFinal: zeroIsFinalAfter(totalSeconds, CANDLE_0920_IST_SEC),
+    });
+
+    this.manualLock = { opens };
+    let anchor: SensexOobtstDayAnchor;
+    try {
+      anchor = this.getOrCreateDayAnchor(liveSpot, istTimeStr);
+    } finally {
+      this.manualLock = null;
+    }
+    if (!anchor.isConfirmed) return { ok: false, message: anchor.lockFailureReason ?? 'Retry failed: no usable prices.' };
+    const basis = anchor.lockSource === 'MANUAL_CANDLE' ? 'the 09:20/09:21 candle open' : 'live prices';
+    return { ok: true, message: `Locked at ${anchor.confirmedAt} on ${basis}.` };
   }
 
   /**
@@ -878,12 +980,13 @@ export class SensexOptionFeedService {
       expiryDate: expiryStr,
       daysToExpiry,
       niftySpot: spot, // holds index spot
-      anchorTime: '09:20:00 IST',
+      anchorTime: anchor.lockSource?.startsWith('MANUAL') && anchor.confirmedAt ? anchor.confirmedAt : '09:20:00 IST',
       isLocked: anchor.isConfirmed && !anchor.isLockFailed,
       isProvisional,
       isMarketClosed,
       isLockFailed: anchor.isLockFailed,
       lockFailureReason: anchor.lockFailureReason,
+      lockSource: anchor.isConfirmed ? anchor.lockSource : undefined,
       previewAvailable,
       targetPremium: this.targetPremium,
       ceCandidates,
