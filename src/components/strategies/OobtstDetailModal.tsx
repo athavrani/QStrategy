@@ -504,11 +504,17 @@ export function OobtstDetailModal({
             {isLocked && !isLockFailed && (
               <View style={[styles.calloutBox, { backgroundColor: 'rgba(16, 185, 129, 0.08)', borderColor: 'rgba(16, 185, 129, 0.25)' }]}>
                 <Text style={[styles.calloutTitle, { color: colors.bullish }]}>
-                  🔒 LOCKED AT 09:20:00 CANDLE OPEN
+                  {lockSource === 'MANUAL_LIVE'
+                    ? `🔒 LOCKED AT ${step1.timestamp} ON LIVE PRICES`
+                    : lockSource === 'MANUAL_CANDLE'
+                    ? `🔒 LOCKED AT ${step1.timestamp} ON CANDLE OPEN`
+                    : '🔒 LOCKED AT 09:20:00 CANDLE OPEN'}
                 </Text>
                 <Text style={[styles.calloutDesc, { color: colors.textSecondary }]}>
-                  Selected CE ({step1.ceStrike} @ ₹{step1.ceOpen.toFixed(2)}) and PE ({step1.peStrike} @ ₹{step1.peOpen.toFixed(2)}) are permanently locked for today's session.
+                  Selected CE ({step1.ceStrike} @ ₹{step1.ceOpen.toFixed(2)}) and PE ({step1.peStrike} @ ₹{step1.peOpen.toFixed(2)}) are locked for today's session.
+                  {currentStep < 3 ? ' Re-lock selects the strikes again from the latest prices until a leg triggers.' : ''}
                 </Text>
+                {currentStep < 3 && <LockRetryButton strategy="NIFTY" relock />}
               </View>
             )}
 

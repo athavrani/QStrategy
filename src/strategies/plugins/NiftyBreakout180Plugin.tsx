@@ -96,6 +96,7 @@ export const NiftyBreakout180Plugin: BaseStrategyPlugin = {
       stopLoss: `₹${stopLevel.toFixed(2)} (-20 pts)`,
       invariantNotice: `⛔ 09:25 Open < ₹${threshold.toFixed(2)} Rule. 1st break > ₹${threshold.toFixed(2)} (checked from 09:30) activates trade & disables opposite leg.`,
       isLockFailed: status === 'LOCK_FAILED' || Boolean(live?.isLockFailed),
+      canRelock: status === 'MONITORING_BREAKOUT' || status === 'CANDIDATES_LOCKED',
       lastUpdated: ctx.istTime,
       legs: [
         {
@@ -226,6 +227,7 @@ function NiftyBreakout180PluginCard({
 
         {/* 3-Step Sub-Page Drilldown Trigger */}
         {state.isLockFailed && <LockRetryButton strategy="BREAKOUT" />}
+        {state.canRelock && <LockRetryButton strategy="BREAKOUT" relock />}
         <TouchableOpacity
           activeOpacity={0.8}
           style={styles.drilldownBar}

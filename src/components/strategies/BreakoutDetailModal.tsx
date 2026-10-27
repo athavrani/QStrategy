@@ -331,8 +331,19 @@ export function BreakoutDetailModal({
               <Text style={styles.provisionalSub}>
                 {data.lockSource === 'MANUAL_CANDLE'
                   ? `Locked at ${data.lockedAt} on the 09:25/09:26 candle open.`
-                  : `Locked at ${data.lockedAt} on live prices (09:25 candle open was unavailable).`}
+                  : `Locked at ${data.lockedAt} on live prices.`}
               </Text>
+            </View>
+          )}
+
+          {/* Re-lock: select the strikes again from the latest prices until a trade is taken */}
+          {data?.lockedThreshold != null && !isLockFailed && !data.activeContract && !isNoEligibleStrike && (
+            <View style={styles.provisionalBanner}>
+              <Text style={styles.provisionalTitle}>🔒 LOCKED</Text>
+              <Text style={styles.provisionalSub}>
+                Re-lock selects the strikes again from the latest prices until a trade is taken.
+              </Text>
+              <LockRetryButton strategy="BREAKOUT" relock />
             </View>
           )}
 

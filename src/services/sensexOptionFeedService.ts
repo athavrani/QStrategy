@@ -24,6 +24,8 @@ import {
   CANDLE_0920_IST_SEC,
   CANDLE_FETCH_RETRY_MS,
   MANUAL_RETRY_WINDOW_MESSAGE,
+  RELOCK_TRIGGERED_MESSAGE,
+  RELOCK_WINDOW_MESSAGE,
   LockRetry,
   canRetryLock,
   chooseCandleContracts,
@@ -158,7 +160,7 @@ export class SensexOptionFeedService {
   private candleFetchInflight: Promise<boolean> | null = null;
   private lastCandleFetchAt = 0;
   private lockRetry = new LockRetry();
-  private manualLock: { opens: Record<string, number> | null } | null = null;
+  private manualLock: { opens: Record<string, number> | null; relock?: boolean } | null = null;
   private manualRetryInflight: Promise<ManualLockResult> | null = null;
 
   public getTargetPremium(): number {
@@ -618,7 +620,8 @@ export class SensexOptionFeedService {
       this.cachedAnchor.tradeDate === today &&
       this.cachedAnchor.expiryStr === expiryStr &&
       this.cachedAnchor.isConfirmed &&
-      !this.cachedAnchor.isLockFailed
+      !this.cachedAnchor.isLockFailed &&
+      !this.manualLock
     ) {
       return this.cachedAnchor;
     }
@@ -658,7 +661,9 @@ export class SensexOptionFeedService {
           confirmedAt = `${clockAfter0920(secsPast)} IST`;
         } else {
           isLockFailed = true;
-          lockFailureReason = `Retry found no ${ce ? 'PE' : 'CE'} priced ₹${SENSEX_MIN_ELIGIBLE_PREMIUM}–₹${SENSEX_MAX_ELIGIBLE_PREMIUM} on the 09:20/09:21 candle or right now.`;
+          lockFailureReason = this.manualLock.relock
+            ? `Re-lock found no ${ce ? 'PE' : 'CE'} priced ₹${SENSEX_MIN_ELIGIBLE_PREMIUM}–₹${SENSEX_MAX_ELIGIBLE_PREMIUM} right now. The current lock is unchanged.`
+            : `Retry found no ${ce ? 'PE' : 'CE'} priced ₹${SENSEX_MIN_ELIGIBLE_PREMIUM}–₹${SENSEX_MAX_ELIGIBLE_PREMIUM} on the 09:20/09:21 candle or right now.`;
         }
       } else if (secsPast < OOBTST_LOCK_DELAY_SEC) {
         // The lock waits until 09:20:05 so the 09:20 candle has opened and its open is final.
@@ -794,6 +799,55 @@ export class SensexOptionFeedService {
     if (!anchor.isConfirmed) return { ok: false, message: anchor.lockFailureReason ?? 'Retry failed: no usable prices.' };
     const basis = anchor.lockSource === 'MANUAL_CANDLE' ? 'the 09:20/09:21 candle open' : 'live prices';
     return { ok: true, message: `Locked at ${anchor.confirmedAt} on ${basis}.` };
+  }
+
+  /**
+   * Re-lock button on a locked strategy: refetches the option chain, selects the strikes by the usual rules from the
+   * latest prices and locks on them. Refused once a leg has triggered; a failed re-lock leaves the current lock in place.
+   */
+  public relock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (!this.manualRetryInflight) {
+      this.manualRetryInflight = this.runRelock(spot, istTimeStr).finally(() => {
+        this.manualRetryInflight = null;
+      });
+    }
+    return this.manualRetryInflight;
+  }
+
+  private async runRelock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    const held = this.cachedAnchor;
+    if (!held || held.tradeDate !== formatDateKeyIST() || !held.isConfirmed || held.isLockFailed) {
+      return { ok: false, message: 'Nothing to re-lock yet. Use Retry lock once the lock has failed.' };
+    }
+    const { totalSeconds } = parseIstSeconds(istTimeStr);
+    if (!canRetryLock(totalSeconds)) return { ok: false, message: RELOCK_WINDOW_MESSAGE };
+    if (this.isOobtstTriggered(held)) return { ok: false, message: RELOCK_TRIGGERED_MESSAGE };
+    const synced = await this.syncLiveOptionChain().catch(() => false);
+    if (!synced) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
+    // The trade may have triggered while the chain was being fetched
+    if (this.isOobtstTriggered(held)) return { ok: false, message: RELOCK_TRIGGERED_MESSAGE };
+
+    const liveSpot = spot > 0 ? spot : this.lastLiveSpot ?? 0;
+    this.manualLock = { opens: null, relock: true };
+    let anchor: SensexOobtstDayAnchor;
+    try {
+      anchor = this.getOrCreateDayAnchor(liveSpot, istTimeStr);
+    } finally {
+      this.manualLock = null;
+    }
+    if (!anchor.isConfirmed) {
+      this.cachedAnchor = held;
+      return { ok: false, message: anchor.lockFailureReason ?? 'Re-lock failed: no usable prices.' };
+    }
+    return { ok: true, message: `Re-locked at ${anchor.confirmedAt} on live prices.` };
+  }
+
+  /** True once a leg has been entered or either leg has reached its 1.5x trigger. */
+  private isOobtstTriggered(anchor: SensexOobtstDayAnchor): boolean {
+    if (anchor.activeLeg) return true;
+    const ceHigh = Math.max(anchor.ceArmedHigh ?? 0, this.getLiveOptionPrice(anchor.ceStrike, 'CE'));
+    const peHigh = Math.max(anchor.peArmedHigh ?? 0, this.getLiveOptionPrice(anchor.peStrike, 'PE'));
+    return (anchor.ceTriggerPrice > 0 && ceHigh >= anchor.ceTriggerPrice) || (anchor.peTriggerPrice > 0 && peHigh >= anchor.peTriggerPrice);
   }
 
   /**

@@ -414,6 +414,7 @@ function SensexOobtstPluginCard({
 
       {/* Deep Dive Action Button (Matching NIFTY OOBTST) */}
       {step1?.isLockFailed && <LockRetryButton strategy="SENSEX" />}
+      {step1?.isLocked && !step1.isLockFailed && !isStep3 && <LockRetryButton strategy="SENSEX" relock />}
       <TouchableOpacity
         style={styles.detailBtn}
         onPress={handleCardPress}

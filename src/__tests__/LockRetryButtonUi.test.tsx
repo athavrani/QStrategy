@@ -113,6 +113,134 @@ describe('LockRetryButton', () => {
   });
 });
 
+describe('Re-lock button', () => {
+  test('asks the store to re-lock and confirms what it locked', async () => {
+    const retry = jest.fn().mockResolvedValue({ ok: true, message: 'Re-locked at 11:05:00 IST on live prices.' });
+    useRadarStore.setState({ retryStrategyLock: retry });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<LockRetryButton strategy="NIFTY" relock />);
+    });
+    expect(tree.root.findAllByProps({ testID: 'lock-retry-nifty' })).toHaveLength(0);
+
+    await act(async () => tree.root.findByProps({ testID: 'lock-relock-nifty' }).props.onPress());
+    await flush();
+
+    expect(retry).toHaveBeenCalledWith('NIFTY', true);
+    expect(textOf(tree)).toContain('Re-locked at 11:05:00 IST on live prices.');
+    act(() => tree.unmount());
+  });
+
+  test('shows why the re-lock failed', async () => {
+    const retry = jest.fn().mockResolvedValue({ ok: false, message: 'Re-lock is unavailable once a leg has triggered.' });
+    useRadarStore.setState({ retryStrategyLock: retry });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<LockRetryButton strategy="BREAKOUT" relock />);
+    });
+
+    await act(async () => tree.root.findByProps({ testID: 'lock-relock-breakout' }).props.onPress());
+    await flush();
+    expect(textOf(tree)).toContain('Re-lock is unavailable once a leg has triggered.');
+    act(() => tree.unmount());
+  });
+
+  test('the store action routes a re-lock to each service', async () => {
+    const nifty = jest.spyOn(niftyOptionFeedService, 'relock').mockResolvedValue({ ok: false, message: 'n' });
+    const sensex = jest.spyOn(sensexOptionFeedService, 'relock').mockResolvedValue({ ok: false, message: 's' });
+    const breakout = jest.spyOn(niftyOptionFeedService, 'relockBreakout').mockResolvedValue({ ok: false, message: 'b' });
+    const retry = jest.spyOn(niftyOptionFeedService, 'retryLock');
+    useRadarStore.setState({ istTime: '11:05:00 AM', niftySpot: 24850, sensexSpot: 81000 });
+
+    expect(await useRadarStore.getState().retryStrategyLock('NIFTY', true)).toEqual({ ok: false, message: 'n' });
+    expect(await useRadarStore.getState().retryStrategyLock('SENSEX', true)).toEqual({ ok: false, message: 's' });
+    expect(await useRadarStore.getState().retryStrategyLock('BREAKOUT', true)).toEqual({ ok: false, message: 'b' });
+
+    expect(nifty).toHaveBeenCalledWith(24850, '11:05:00 AM');
+    expect(sensex).toHaveBeenCalledWith(81000, '11:05:00 AM');
+    expect(breakout).toHaveBeenCalledWith(24850, '11:05:00 AM');
+    expect(retry).not.toHaveBeenCalled();
+    useRadarStore.setState({ istTime: '--:--:--' });
+  });
+});
+
+describe('Re-lock on the strategy cards', () => {
+  const ctx = (extra: object) => ({ istTime: '11:05:00 AM', marketStatus: 'REGULAR_HOURS', stocks: [], ...extra }) as any;
+
+  const lockedLive = (activeLeg: 'CE' | null) =>
+    ({
+      currentStep: activeLeg ? 3 : 2,
+      status: activeLeg ? 'ACTIVE' : 'ARMED',
+      statusBadgeText: 'LOCKED / ARMED_1.5X',
+      expiryDate: '',
+      daysToExpiry: 1,
+      niftySpot: 24850,
+      anchorTime: '09:20:00 IST',
+      isLocked: true,
+      isProvisional: false,
+      isMarketClosed: false,
+      isLockFailed: false,
+      targetPremium: 62.5,
+      ceCandidates: [],
+      peCandidates: [],
+      ceLeg: { type: 'CE', strike: 24850, symbol: 'NIFTY 24850 CE', openPrice: 60, triggerPrice: 90, currentLtp: 65, progressPct: 10, armedHigh: 65, status: 'ARMED' },
+      peLeg: { type: 'PE', strike: 24800, symbol: 'NIFTY 24800 PE', openPrice: 62, triggerPrice: 93, currentLtp: 61, progressPct: 0, armedHigh: 62, status: 'ARMED' },
+      activeLeg,
+      lastUpdated: '',
+    }) as any;
+
+  const render = async (element: React.ReactElement) => {
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(element);
+    });
+    return tree;
+  };
+
+  test('the NIFTY card shows Re-lock while locked and hides it once a leg has triggered', async () => {
+    const armed = NiftyOvernightPlugin.evaluate(ctx({ oobtstLiveState: lockedLive(null) }));
+    let tree = await render(<>{NiftyOvernightPlugin.renderCard!({ state: armed, onOpenBroker: jest.fn() } as any)}</>);
+    expect(tree.root.findAllByProps({ testID: 'lock-relock-nifty' }).length).toBeGreaterThan(0);
+    expect(tree.root.findAllByProps({ testID: 'lock-retry-nifty' })).toHaveLength(0);
+    act(() => tree.unmount());
+
+    const triggered = NiftyOvernightPlugin.evaluate(ctx({ oobtstLiveState: lockedLive('CE') }));
+    tree = await render(<>{NiftyOvernightPlugin.renderCard!({ state: triggered, onOpenBroker: jest.fn() } as any)}</>);
+    expect(tree.root.findAllByProps({ testID: 'lock-relock-nifty' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
+  test('the SENSEX card shows Re-lock while locked and hides it once a leg has triggered', async () => {
+    const armed = SensexOobtstPlugin.evaluate(ctx({ sensexOobtstLiveState: lockedLive(null) }));
+    let tree = await render(<>{SensexOobtstPlugin.renderCard!({ state: armed, onOpenBroker: jest.fn() } as any)}</>);
+    expect(tree.root.findAllByProps({ testID: 'lock-relock-sensex' }).length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+
+    const triggered = SensexOobtstPlugin.evaluate(ctx({ sensexOobtstLiveState: lockedLive('CE') }));
+    tree = await render(<>{SensexOobtstPlugin.renderCard!({ state: triggered, onOpenBroker: jest.fn() } as any)}</>);
+    expect(tree.root.findAllByProps({ testID: 'lock-relock-sensex' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
+  test('the breakout card shows Re-lock while locked and no trade is taken', async () => {
+    await niftyOptionFeedService.resetAnchor(true);
+    await niftyOptionFeedService.resetBreakout180(true);
+    const base = niftyOptionFeedService.evaluateBreakout180(24850, '09:25:05 AM');
+
+    const locked = NiftyBreakout180Plugin.evaluate(ctx({ breakout180LiveState: { ...base, status: 'MONITORING_BREAKOUT', isLockFailed: false } }));
+    expect(locked.canRelock).toBe(true);
+    let tree = await render(<>{NiftyBreakout180Plugin.renderCard!({ state: locked, onOpenBroker: jest.fn() } as any)}</>);
+    expect(tree.root.findAllByProps({ testID: 'lock-relock-breakout' }).length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+
+    const inTrade = NiftyBreakout180Plugin.evaluate(ctx({ breakout180LiveState: { ...base, status: 'IN_TRADE', isLockFailed: false } }));
+    expect(inTrade.canRelock).toBe(false);
+    tree = await render(<>{NiftyBreakout180Plugin.renderCard!({ state: inTrade, onOpenBroker: jest.fn() } as any)}</>);
+    expect(tree.root.findAllByProps({ testID: 'lock-relock-breakout' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+});
+
 describe('Retry on the strategy cards', () => {
   const ctx = (extra: object) => ({ istTime: '09:21:10 AM', marketStatus: 'REGULAR_HOURS', stocks: [], ...extra }) as any;
 

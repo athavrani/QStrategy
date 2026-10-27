@@ -151,6 +151,9 @@ export interface ManualLockResult {
 
 export const MANUAL_RETRY_WINDOW_MESSAGE = 'Retry is available from 09:20:05 until 15:30 IST.';
 export const MANUAL_BREAKOUT_WINDOW_MESSAGE = 'Retry is available from 09:25 until 09:45 IST.';
+export const RELOCK_TRIGGERED_MESSAGE = 'Re-lock is unavailable once a leg has triggered.';
+export const RELOCK_WINDOW_MESSAGE = 'Re-lock is available from 09:20:05 until 15:30 IST.';
+export const RELOCK_BREAKOUT_WINDOW_MESSAGE = 'Re-lock is available from 09:25 until 09:45 IST.';
 
 /** A manual retry makes sense once the 09:20 lock has had its chance, until the market closes. */
 export function canRetryLock(totalSeconds: number): boolean {

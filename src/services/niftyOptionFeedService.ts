@@ -24,6 +24,9 @@ import {
   CANDLE_FETCH_RETRY_MS,
   MANUAL_BREAKOUT_WINDOW_MESSAGE,
   MANUAL_RETRY_WINDOW_MESSAGE,
+  RELOCK_BREAKOUT_WINDOW_MESSAGE,
+  RELOCK_TRIGGERED_MESSAGE,
+  RELOCK_WINDOW_MESSAGE,
   LockRetry,
   canRetryBreakoutLock,
   canRetryLock,
@@ -212,7 +215,7 @@ class NiftyOptionFeedService {
   private candleFetchInflight: Promise<boolean> | null = null;
   private lastCandleFetchAt = 0;
   private lockRetry = new LockRetry();
-  private manualLock: { opens: Record<string, number> | null } | null = null;
+  private manualLock: { opens: Record<string, number> | null; relock?: boolean } | null = null;
   private manualRetryInflight: Promise<ManualLockResult> | null = null;
   private breakoutRetryInflight: Promise<ManualLockResult> | null = null;
   private chainFeed = new OptionChainFeed({
@@ -633,7 +636,8 @@ class NiftyOptionFeedService {
       this.cachedAnchor.tradeDate === today &&
       this.cachedAnchor.expiryStr === expiryStr &&
       this.cachedAnchor.isConfirmed &&
-      !this.cachedAnchor.isLockFailed
+      !this.cachedAnchor.isLockFailed &&
+      !this.manualLock
     ) {
       return this.cachedAnchor;
     }
@@ -680,7 +684,9 @@ class NiftyOptionFeedService {
           lockAudit = { source: 'MANUAL_LIVE', ...liveAudit, opensCe: [], opensPe: [] };
         } else {
           isLockFailed = true;
-          lockFailureReason = `Retry found no ${ce ? 'PE' : 'CE'} priced ₹${OOBTST_BAND_MIN}–₹${OOBTST_BAND_MAX} on the 09:20/09:21 candle or right now.`;
+          lockFailureReason = this.manualLock.relock
+            ? `Re-lock found no ${ce ? 'PE' : 'CE'} priced ₹${OOBTST_BAND_MIN}–₹${OOBTST_BAND_MAX} right now. The current lock is unchanged.`
+            : `Retry found no ${ce ? 'PE' : 'CE'} priced ₹${OOBTST_BAND_MIN}–₹${OOBTST_BAND_MAX} on the 09:20/09:21 candle or right now.`;
         }
       } else if (secsPast < OOBTST_LOCK_DELAY_SEC) {
         // The lock waits until 09:20:05 so the 09:20 candle has opened and its open is final.
@@ -824,6 +830,56 @@ class NiftyOptionFeedService {
     if (!anchor.isConfirmed) return { ok: false, message: anchor.lockFailureReason ?? 'Retry failed: no usable prices.' };
     const basis = anchor.lockSource === 'MANUAL_CANDLE' ? 'the 09:20/09:21 candle open' : 'live prices';
     return { ok: true, message: `Locked at ${anchor.confirmedAt} on ${basis}.` };
+  }
+
+  /**
+   * Re-lock button on a locked strategy: refetches the option chain, selects the strikes by the usual rules from the
+   * latest prices and locks on them. Refused once a leg has triggered; a failed re-lock leaves the current lock in place.
+   */
+  public relock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (!this.manualRetryInflight) {
+      this.manualRetryInflight = this.runRelock(spot, istTimeStr).finally(() => {
+        this.manualRetryInflight = null;
+      });
+    }
+    return this.manualRetryInflight;
+  }
+
+  private async runRelock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    const held = this.cachedAnchor;
+    if (!held || held.tradeDate !== formatDateKeyIST() || !held.isConfirmed || held.isLockFailed) {
+      return { ok: false, message: 'Nothing to re-lock yet. Use Retry lock once the lock has failed.' };
+    }
+    const { totalSeconds } = parseIstSeconds(istTimeStr);
+    if (!canRetryLock(totalSeconds)) return { ok: false, message: RELOCK_WINDOW_MESSAGE };
+    if (this.isOobtstTriggered(held)) return { ok: false, message: RELOCK_TRIGGERED_MESSAGE };
+    const synced = await this.syncLiveOptionChain().catch(() => false);
+    if (!synced) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
+    // The trade may have triggered while the chain was being fetched
+    if (this.isOobtstTriggered(held)) return { ok: false, message: RELOCK_TRIGGERED_MESSAGE };
+
+    const liveSpot = spot > 0 ? spot : this.lastLiveSpot ?? 0;
+    this.manualLock = { opens: null, relock: true };
+    let anchor: OobtstDayAnchor;
+    try {
+      anchor = this.getOrCreateDayAnchor(liveSpot, istTimeStr);
+    } finally {
+      this.manualLock = null;
+    }
+    if (!anchor.isConfirmed) {
+      this.cachedAnchor = held;
+      return { ok: false, message: anchor.lockFailureReason ?? 'Re-lock failed: no usable prices.' };
+    }
+    return { ok: true, message: `Re-locked at ${anchor.confirmedAt} on live prices.` };
+  }
+
+  /** True once either leg has reached its 1.5x trigger, live or at its peak since the lock. */
+  private isOobtstTriggered(anchor: OobtstDayAnchor): boolean {
+    const ceLtp = this.getLiveOptionPrice(anchor.ceStrike, 'CE');
+    const peLtp = this.getLiveOptionPrice(anchor.peStrike, 'PE');
+    const ce = anchor.ceTrigger > 0 && (ceLtp >= anchor.ceTrigger || this.peakCeLtp >= anchor.ceTrigger);
+    const pe = anchor.peTrigger > 0 && (peLtp >= anchor.peTrigger || this.peakPeLtp >= anchor.peTrigger);
+    return ce || pe;
   }
 
   /**
@@ -2096,6 +2152,68 @@ class NiftyOptionFeedService {
     this.persistBreakoutState(cache);
     const basis = source === 'MANUAL_CANDLE' ? 'the 09:25/09:26 candle open' : 'live prices';
     return { ok: true, message: `Locked at ${cache.lockedAt} on ${basis}.` };
+  }
+
+  /**
+   * Re-lock button on a locked 09:25 breakout: selects the strikes by the usual rules from the latest prices and
+   * locks on them. Refused once a trade has been taken; a failed re-lock leaves the current lock in place.
+   */
+  public relockBreakout(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    if (!this.breakoutRetryInflight) {
+      this.breakoutRetryInflight = this.runBreakoutRelock(spot, istTimeStr).finally(() => {
+        this.breakoutRetryInflight = null;
+      });
+    }
+    return this.breakoutRetryInflight;
+  }
+
+  private async runBreakoutRelock(spot: number, istTimeStr?: string): Promise<ManualLockResult> {
+    const held = this.cachedBreakout180;
+    if (!held || !held.isLocked) return { ok: false, message: 'Nothing to re-lock yet. Use Retry lock once the lock has failed.' };
+    const { totalSeconds } = parseIstSeconds(istTimeStr);
+    if (!canRetryBreakoutLock(totalSeconds)) return { ok: false, message: RELOCK_BREAKOUT_WINDOW_MESSAGE };
+    if (held.triggeredSide || held.exitStatus) return { ok: false, message: RELOCK_TRIGGERED_MESSAGE };
+    const synced = await this.syncLiveOptionChain().catch(() => false);
+    if (!synced) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
+    // The trade may have been taken while the chain was being fetched
+    if (held.triggeredSide || held.exitStatus) return { ok: false, message: RELOCK_TRIGGERED_MESSAGE };
+
+    const liveSpot = spot > 0 ? spot : this.lastLiveSpot ?? 0;
+    const previous = { ...held };
+    held.isLocked = false;
+    held.lockedThreshold = undefined;
+    held.ceArmedHigh = undefined;
+    held.peArmedHigh = undefined;
+    this.clearBreakoutFailure();
+    this.evaluateBreakout180(liveSpot, istTimeStr);
+
+    const cache = this.cachedBreakout180;
+    if (!cache?.isLocked) {
+      this.cachedBreakout180 = previous;
+      // The failed attempt may have been stored as a failed lock; put the held lock back.
+      this.persistBreakoutState(previous);
+      const side = cache?.noEligibleSide;
+      const missing = !side || side === 'BOTH' ? 'CE or PE' : side;
+      return {
+        ok: false,
+        message: `Re-lock found no ${missing} priced below ₹${this.breakoutThreshold.toFixed(2)} right now. The current lock is unchanged.`,
+      };
+    }
+    cache.lockSource = 'MANUAL_LIVE';
+    cache.lockedAt = `${istClock(totalSeconds)} IST`;
+    this.persistBreakoutState(cache);
+    this.releaseBreakoutStrikes(previous, cache);
+    return { ok: true, message: `Re-locked at ${cache.lockedAt} on live prices.` };
+  }
+
+  /** Stops streaming a strike the re-lock moved away from. */
+  private releaseBreakoutStrikes(previous: { ceStrike: number; peStrike: number }, current: { ceStrike: number; peStrike: number }): void {
+    const chain = this.cachedLiveOptionChain ?? {};
+    const subs: { exchangeSegment: string; securityId: string }[] = [];
+    const ceId = previous.ceStrike !== current.ceStrike ? chain[previous.ceStrike]?.ceSecId : undefined;
+    const peId = previous.peStrike !== current.peStrike ? chain[previous.peStrike]?.peSecId : undefined;
+    for (const securityId of [ceId, peId]) if (securityId) subs.push({ exchangeSegment: 'NSE_FNO', securityId });
+    if (subs.length > 0) marketData.release('nifty-breakout', subs);
   }
 
   private clearBreakoutFailure(): void {

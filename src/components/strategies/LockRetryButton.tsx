@@ -6,10 +6,15 @@ import { useRadarStore } from '../../store/useRadarStore';
 
 interface LockRetryButtonProps {
   strategy: 'NIFTY' | 'SENSEX' | 'BREAKOUT';
+  /** Re-lock an already locked strategy on the latest prices instead of retrying a failed lock. */
+  relock?: boolean;
 }
 
-/** Shown while a 09:20 lock is failed: fetches the latest prices, locks on them and reports what happened. */
-export function LockRetryButton({ strategy }: LockRetryButtonProps) {
+/**
+ * Shown while a lock is failed (Retry lock) or after it succeeded (Re-lock): fetches the latest prices, locks on them
+ * and reports what happened.
+ */
+export function LockRetryButton({ strategy, relock = false }: LockRetryButtonProps) {
   const { colors } = useTheme();
   const styles = useThemedStyles();
   const retryStrategyLock = useRadarStore((s) => s.retryStrategyLock);
@@ -22,13 +27,18 @@ export function LockRetryButton({ strategy }: LockRetryButtonProps) {
     setBusy(true);
     setResult(null);
     try {
-      setResult(await retryStrategyLock(strategy));
+      setResult(relock ? await retryStrategyLock(strategy, true) : await retryStrategyLock(strategy));
     } catch {
-      setResult({ ok: false, message: 'Retry failed. Try again.' });
+      setResult({ ok: false, message: `${relock ? 'Re-lock' : 'Retry'} failed. Try again.` });
     } finally {
       setBusy(false);
     }
   };
+
+  const label = relock ? 'Re-lock' : 'Retry lock';
+  const testId = `${relock ? 'lock-relock' : 'lock-retry'}-${strategy.toLowerCase()}`;
+  // A failed retry shows why; a re-lock also confirms what it locked, since the card looked locked before it.
+  const showMessage = result && (!result.ok || relock);
 
   return (
     <View style={styles.wrap}>
@@ -37,13 +47,13 @@ export function LockRetryButton({ strategy }: LockRetryButtonProps) {
         onPress={onPress}
         disabled={busy}
         accessibilityRole="button"
-        accessibilityLabel="Retry lock"
-        testID={`lock-retry-${strategy.toLowerCase()}`}
+        accessibilityLabel={label}
+        testID={testId}
       >
-        {busy ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.buttonText}>Retry lock</Text>}
+        {busy ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.buttonText}>{relock ? '🔄 ' : ''}{label}</Text>}
       </TouchableOpacity>
-      {result && !result.ok && (
-        <Text style={[styles.message, { color: colors.bearish }]} testID={`lock-retry-${strategy.toLowerCase()}-message`}>
+      {result && showMessage && (
+        <Text style={[styles.message, { color: result.ok ? colors.bullish : colors.bearish }]} testID={`${testId}-message`}>
           {result.message}
         </Text>
       )}

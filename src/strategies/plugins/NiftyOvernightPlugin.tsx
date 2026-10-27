@@ -417,6 +417,7 @@ function NiftyOvernightPluginCard({
 
         {/* Deep Dive Action Button */}
         {step1?.isLockFailed && <LockRetryButton strategy="NIFTY" />}
+        {step1?.isLocked && !step1.isLockFailed && !isStep3 && <LockRetryButton strategy="NIFTY" relock />}
         <TouchableOpacity
           style={styles.detailBtn}
           onPress={handleCardPress}

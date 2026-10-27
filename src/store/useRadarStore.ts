@@ -105,7 +105,8 @@ interface RadarStoreState {
   setSensexOobtstTargetPremium: (target: number) => Promise<boolean>;
   /** Retry button on a failed 09:20 lock: locks on the latest live prices and re-evaluates the strategy. */
   /** Retry button on a failed lock: locks on the 09:20/09:21 (breakout: 09:25/09:26) candle open or the latest prices. */
-  retryStrategyLock: (which: 'NIFTY' | 'SENSEX' | 'BREAKOUT') => Promise<ManualLockResult>;
+  /** `relock` re-selects and re-locks a strategy that is already locked; without it the lock is retried after a failure. */
+  retryStrategyLock: (which: 'NIFTY' | 'SENSEX' | 'BREAKOUT', relock?: boolean) => Promise<ManualLockResult>;
   fetchAvailableLockDates: () => Promise<string[]>;
   selectLockDate: (date: string | null) => Promise<void>;
   fetchAvailableJournalDates: () => Promise<string[]>;
@@ -617,21 +618,28 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     return ok;
   },
 
-  retryStrategyLock: async (which) => {
+  retryStrategyLock: async (which, relock = false) => {
     const ist = get().istTime !== '--:--:--' ? get().istTime : undefined;
     let result: ManualLockResult;
     let strategyId: string;
 
     if (which === 'SENSEX') {
-      result = await sensexOptionFeedService.retryLock(get().sensexSpot, ist);
+      result = relock
+        ? await sensexOptionFeedService.relock(get().sensexSpot, ist)
+        : await sensexOptionFeedService.retryLock(get().sensexSpot, ist);
       const spot = get().sensexSpot || sensexOptionFeedService.getLastLiveSpot() || 81000;
       set({ sensexOobtstState: sensexOptionFeedService.evaluateSensexOobtst(spot, ist) });
       strategyId = STRATEGY_IDS.OOBTST_SENSEX;
     } else {
-      result =
-        which === 'NIFTY'
-          ? await niftyOptionFeedService.retryLock(get().niftySpot, ist)
+      if (which === 'NIFTY') {
+        result = relock
+          ? await niftyOptionFeedService.relock(get().niftySpot, ist)
+          : await niftyOptionFeedService.retryLock(get().niftySpot, ist);
+      } else {
+        result = relock
+          ? await niftyOptionFeedService.relockBreakout(get().niftySpot, ist)
           : await niftyOptionFeedService.retryBreakoutLock(get().niftySpot, ist);
+      }
       const spot = get().niftySpot || niftyOptionFeedService.getLastLiveSpot() || 24850;
       if (which === 'NIFTY') set({ oobtstState: niftyOptionFeedService.evaluateOobtst(spot, ist) });
       else set({ niftyBreakout180: niftyOptionFeedService.evaluateBreakout180(spot, ist) });

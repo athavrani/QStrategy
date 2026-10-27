@@ -100,6 +100,8 @@ export interface StrategySignalOutput {
   invariantNotice?: string;
   /** The strategy's lock failed, so the card offers the Retry button. */
   isLockFailed?: boolean;
+  /** The strategy is locked and no trade has been taken, so the card offers the Re-lock button. */
+  canRelock?: boolean;
   lastUpdated: string;
   legs?: {
     type: 'CE' | 'PE' | 'EQUITY';
