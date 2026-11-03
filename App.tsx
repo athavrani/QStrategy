@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 import { useRadarStore } from './src/store/useRadarStore';
 import { useTheme } from './src/theme';
 import { notificationService } from './src/services/notificationService';
@@ -7,7 +8,8 @@ import { dhanDirectService } from './src/services/dhanDirectService';
 import { AppUpdateModal } from './src/components/common';
 import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateService';
 import { formatDateKeyIST } from './src/constants/nseHolidays';
-import { syncBackgroundMonitor } from './src/services/backgroundMonitorService';
+import { setBackgroundTickHandler, syncBackgroundMonitor } from './src/services/backgroundMonitorService';
+import { istClockString } from './src/services/marketdata/lockSchedule';
 import { startPositionMonitor, stopPositionMonitor } from './src/execution/positionMonitor';
 
 export default function App() {
@@ -48,15 +50,13 @@ export default function App() {
     }, 10000);
 
     // 4. Live IST Clock Timer (1 second interval)
-    const clockTimer = setInterval(() => {
-      const now = new Date();
-      // Calculate Indian Standard Time (UTC + 5:30)
-      const istHours = (now.getUTCHours() + 5 + Math.floor((now.getUTCMinutes() + 30) / 60)) % 24;
-      const istMinutes = (now.getUTCMinutes() + 30) % 60;
-      const istSeconds = now.getUTCSeconds();
-      const timeStr = `${String(istHours).padStart(2, '0')}:${String(istMinutes).padStart(2, '0')}:${String(istSeconds).padStart(2, '0')} IST`;
-      setIstTime(timeStr);
+    // Reads the wall clock each time, so a late tick after the timers were paused still sees the real time.
+    const evaluateClock = () => {
+      setIstTime(istClockString());
       runClockEvaluation();
+    };
+    const clockTimer = setInterval(() => {
+      evaluateClock();
 
       // Instant day change detection: triggers refreshAll the moment midnight IST strikes
       const currentSession = useRadarStore.getState().sessionDate;
@@ -65,6 +65,18 @@ export default function App() {
         refreshAll(false);
       }
     }, 1000);
+
+    // The background task has its own loop, which keeps running while the screen timers are paused.
+    setBackgroundTickHandler(evaluateClock);
+
+    // Back in the foreground the paused timers missed the 09:20 lock; refresh the chain and catch up straight away.
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      evaluateClock();
+      refreshAll(false)
+        .catch(() => {})
+        .then(evaluateClock);
+    });
 
     // 5. Silent background app update check (runs after 2.5s to keep startup instantaneous)
     const updateCheckTimeout = setTimeout(async () => {
@@ -83,6 +95,8 @@ export default function App() {
       clearInterval(clockTimer);
       clearInterval(backgroundSyncTimer);
       clearTimeout(updateCheckTimeout);
+      appStateSub.remove();
+      setBackgroundTickHandler(null);
       stopPositionMonitor();
     };
   }, []);

@@ -248,6 +248,7 @@ describe('Retry on the strategy cards', () => {
     await niftyOptionFeedService.resetAnchor(true);
     jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null as any);
     (niftyOptionFeedService as any).lastCandleFetchAt = Date.now();
+    (niftyOptionFeedService as any).candleFetchAttempts = 1;
     const failed = niftyOptionFeedService.evaluateOobtst(24850, '09:21:10 AM');
     expect(failed.isLockFailed).toBe(true);
 
@@ -271,6 +272,7 @@ describe('Retry on the strategy cards', () => {
     await sensexOptionFeedService.resetAnchor(true);
     jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null as any);
     (sensexOptionFeedService as any).lastCandleFetchAt = Date.now();
+    (sensexOptionFeedService as any).candleFetchAttempts = 1;
     const failed = sensexOptionFeedService.evaluateSensexOobtst(81000, '09:21:10 AM');
     expect(failed.isLockFailed).toBe(true);
 

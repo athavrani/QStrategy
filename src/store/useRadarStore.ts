@@ -359,9 +359,11 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
       await niftyOptionFeedService.loadSavedTargetPremium();
       await niftyOptionFeedService.loadSavedBreakoutThreshold();
       await niftyOptionFeedService.loadPersistedAnchor();
+      await niftyOptionFeedService.loadPersistedCandleOpens();
       await niftyOptionFeedService.loadPersistedBreakoutState();
       await sensexOptionFeedService.loadSavedTargetPremium();
       await sensexOptionFeedService.loadPersistedAnchor();
+      await sensexOptionFeedService.loadPersistedCandleOpens();
       await get().fetchAvailableLockDates();
       const [
         sessionRes,

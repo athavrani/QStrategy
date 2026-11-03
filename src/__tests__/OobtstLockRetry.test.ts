@@ -83,6 +83,7 @@ describe('NIFTY lock retry timeline', () => {
     jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null as any);
     svc.chainFeed.chain = { 22650: row(300, 20, '1'), 22700: row(95, 30, '2'), 22750: row(40, 64, '3') };
     svc.lastCandleFetchAt = Date.now();
+    svc.candleFetchAttempts = 1;
   });
   afterEach(() => jest.restoreAllMocks());
 

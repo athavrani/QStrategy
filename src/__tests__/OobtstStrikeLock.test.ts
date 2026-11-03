@@ -45,7 +45,8 @@ describe('NIFTY strike ranking and 09:20 lock', () => {
 
     beforeEach(() => {
       svc.candleOpens0920 = null;
-      svc.lastCandleFetchAt = Date.now(); // keeps the background fetch quiet unless a test resets it
+      svc.lastCandleFetchAt = Date.now();
+      svc.candleFetchAttempts = 1; // keeps the background fetch quiet unless a test resets it
       svc.chainFeed.chain = chain();
     });
 

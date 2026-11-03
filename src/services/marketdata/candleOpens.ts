@@ -9,7 +9,9 @@ import {
   OOBTST_LOCK_RETRY_SEC,
   OOBTST_RETRY_CUTOFF_SEC,
 } from './lockFreshness';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { OobtstCandidateStrike } from '../../strategies/types';
+import type { OptionChainRows } from './OptionChainFeed';
 
 export const CANDLE_0920_IST_SEC = 9 * 3600 + 20 * 60;
 export const CANDLE_0925_IST_SEC = 9 * 3600 + 25 * 60;
@@ -66,6 +68,57 @@ export interface CandleContract {
   secId: string;
   /** Live price, used only to decide what to fetch first and what can be skipped. */
   liveLtp: number;
+}
+
+/**
+ * Contracts whose 09:20 open can matter for the lock. Everything within `reach` points of spot is included. A strike
+ * further out is included too when its live price shows it could open inside the band, because the premium nearest
+ * the target can sit well beyond the strikes around spot.
+ */
+export function lockWindowContracts(
+  chain: OptionChainRows | null,
+  spot: number,
+  reach: number,
+  band: { min: number; max: number }
+): CandleContract[] {
+  const lo = band.min * 0.5;
+  const hi = band.max * 2;
+  const reachable = (ltp: number) => ltp >= lo && ltp <= hi;
+  const all: CandleContract[] = [];
+  for (const [strike, row] of Object.entries(chain ?? {})) {
+    const near = Math.abs(Number(strike) - spot) <= reach;
+    if (row.ceSecId && (near || reachable(row.ceLtp))) all.push({ key: `CE_${strike}`, secId: String(row.ceSecId), liveLtp: row.ceLtp });
+    if (row.peSecId && (near || reachable(row.peLtp))) all.push({ key: `PE_${strike}`, secId: String(row.peSecId), liveLtp: row.peLtp });
+  }
+  return all;
+}
+
+const candleOpensKey = (owner: string, date: string) => `@qstrategy_${owner}_candle_opens_0920_${date}`;
+
+/** Keeps the 09:20 opens on the device so a late resume or restart still locks on the real candle open. */
+export async function saveCandleOpens(owner: string, state: CandleOpenState | null): Promise<void> {
+  if (!state || Object.keys(state.opens).length === 0) return;
+  try {
+    await AsyncStorage.setItem(candleOpensKey(owner, state.date), JSON.stringify(state));
+  } catch {}
+}
+
+export async function loadCandleOpens(owner: string, date: string): Promise<CandleOpenState | null> {
+  try {
+    const json = await AsyncStorage.getItem(candleOpensKey(owner, date));
+    if (!json) return null;
+    const parsed = JSON.parse(json) as CandleOpenState;
+    if (parsed?.date !== date || typeof parsed.opens !== 'object' || parsed.opens === null) return null;
+    return { date, opens: parsed.opens, pending: Number(parsed.pending) > 0 ? Number(parsed.pending) : 0 };
+  } catch {
+    return null;
+  }
+}
+
+export async function clearCandleOpens(owner: string, date: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(candleOpensKey(owner, date));
+  } catch {}
 }
 
 /**

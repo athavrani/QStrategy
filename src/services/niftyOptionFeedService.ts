@@ -31,12 +31,16 @@ import {
   canRetryBreakoutLock,
   canRetryLock,
   chooseCandleContracts,
+  clearCandleOpens,
   clockAfter0920,
   fetchCandleOpens,
   fetchRetryOpens,
   istClock,
+  loadCandleOpens,
+  lockWindowContracts,
   openAtOrAfter,
   pickFreshInBand,
+  saveCandleOpens,
   zeroIsFinalAfter,
   type CandleContract,
   type CandleOpenState,
@@ -214,6 +218,8 @@ class NiftyOptionFeedService {
   private candleOpens0920: CandleOpenState | null = null;
   private candleFetchInflight: Promise<boolean> | null = null;
   private lastCandleFetchAt = 0;
+  // Finished candle fetches today; the lock is not declared failed on a late start before one has been tried.
+  private candleFetchAttempts = 0;
   private lockRetry = new LockRetry();
   private manualLock: { opens: Record<string, number> | null; relock?: boolean } | null = null;
   private manualRetryInflight: Promise<ManualLockResult> | null = null;
@@ -367,8 +373,6 @@ class NiftyOptionFeedService {
     peCandidates: OobtstCandidateStrike[];
     previewAvailable: boolean;
   } {
-    const reach = RANK_WINDOW_STRIKES * NIFTY_STRIKE_STEP;
-
     if (!this.cachedLiveOptionChain || Object.keys(this.cachedLiveOptionChain).length === 0) {
       return { ceCandidates: [], peCandidates: [], previewAvailable: false };
     }
@@ -379,8 +383,7 @@ class NiftyOptionFeedService {
 
     for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
       const strike = Number(strikeStr);
-      // Every strike near spot competes on premium distance alone; there is no ATM cut-off.
-      if (Math.abs(strike - spot) > reach) continue;
+      // Every strike in the chain competes on premium distance alone; the nearest premium can be far from spot.
       if (data.ceLtp > 0) {
         ceList.push({
           strike,
@@ -398,36 +401,6 @@ class NiftyOptionFeedService {
           secId: data.peSecId,
           lastUpdated: data.peUpdatedTime || this.lastOptionChainSyncTime || now,
         });
-      }
-    }
-
-    // Fallback if the window has too few priced strikes: search all strikes with price > 0
-    if (ceList.length < 2) {
-      for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
-        const strike = Number(strikeStr);
-        if (data.ceLtp > 0 && !ceList.some((c) => c.strike === strike)) {
-          ceList.push({
-            strike,
-            ltp: data.ceLtp,
-            diff: Math.abs(data.ceLtp - targetPremium),
-            secId: data.ceSecId,
-            lastUpdated: data.ceUpdatedTime || this.lastOptionChainSyncTime || now,
-          });
-        }
-      }
-    }
-    if (peList.length < 2) {
-      for (const [strikeStr, data] of Object.entries(this.cachedLiveOptionChain)) {
-        const strike = Number(strikeStr);
-        if (data.peLtp > 0 && !peList.some((p) => p.strike === strike)) {
-          peList.push({
-            strike,
-            ltp: data.peLtp,
-            diff: Math.abs(data.peLtp - targetPremium),
-            secId: data.peSecId,
-            lastUpdated: data.peUpdatedTime || this.lastOptionChainSyncTime || now,
-          });
-        }
       }
     }
 
@@ -489,8 +462,13 @@ class NiftyOptionFeedService {
     this.lastCandleFetchAt = Date.now();
     this.candleFetchInflight = this.fetchCandleOpens0920(spot, zerosFinal).finally(() => {
       this.candleFetchInflight = null;
+      this.candleFetchAttempts += this.hasOptionChain() ? 1 : 0;
     });
     return this.candleFetchInflight;
+  }
+
+  private hasOptionChain(): boolean {
+    return Object.keys(this.cachedLiveOptionChain ?? {}).length > 0;
   }
 
   /** A retry looks at every contract in the window, so the lock waits for those answers before it decides again. */
@@ -511,27 +489,57 @@ class NiftyOptionFeedService {
     return all;
   }
 
+  /**
+   * Every contract that could open inside the band for the 09:20 lock: the strikes around spot, plus any further out
+   * whose live price is in range. The nearest premium to the target is not always within a fixed number of strikes.
+   */
+  private lockContracts(spot: number): CandleContract[] {
+    return lockWindowContracts(
+      this.cachedLiveOptionChain,
+      spot,
+      RANK_WINDOW_STRIKES * NIFTY_STRIKE_STEP,
+      { min: OOBTST_BAND_MIN, max: OOBTST_BAND_MAX }
+    );
+  }
+
+  /** Restores today's 09:20 candle opens saved earlier, so a late resume or restart does not depend on a fresh fetch. */
+  public async loadPersistedCandleOpens(): Promise<void> {
+    const saved = await loadCandleOpens('nifty', formatDateKeyIST());
+    if (!saved) return;
+    const current = this.candleOpens0920;
+    if (current && current.date === saved.date) {
+      for (const [key, open] of Object.entries(saved.opens)) {
+        if (current.opens[key] === undefined) current.opens[key] = open;
+      }
+    } else {
+      this.candleOpens0920 = saved;
+    }
+  }
+
   private async fetchCandleOpens0920(spot: number, zerosFinal: boolean): Promise<boolean> {
     const chain = this.cachedLiveOptionChain;
     if (!chain) return false;
     const today = formatDateKeyIST();
     if (!this.candleOpens0920 || this.candleOpens0920.date !== today) {
       this.candleOpens0920 = { date: today, opens: {}, pending: 0 };
+      this.candleFetchAttempts = 0;
     }
     const contracts = chooseCandleContracts(
-      this.windowContracts(spot),
+      this.lockContracts(spot),
       { min: OOBTST_BAND_MIN, max: OOBTST_BAND_MAX },
       this.targetPremium,
       this.lockRetry.wide || zerosFinal
     );
     const from = `${today} 09:20:00`;
     const to = `${today} 09:21:00`;
-    return fetchCandleOpens({
+    const done = await fetchCandleOpens({
       state: this.candleOpens0920,
       contracts,
       load: (secId) => dhanDirectService.fetchHistoricalIntraday(secId, from, to, 'NSE_FNO', 'OPTIDX', '1'),
       zeroIsFinal: zerosFinal,
     });
+    void saveCandleOpens('nifty', this.candleOpens0920);
+    return done;
   }
 
   /** Five candle opens closest to the target, in or out of band, so a failed lock can be diagnosed. */
@@ -719,8 +727,9 @@ class NiftyOptionFeedService {
           if (isLockFailed && !this.cachedAnchor?.isLockFailed) {
             console.warn('[OOBTST] 09:20 lock failed:', lockFailureReason, JSON.stringify(lockAudit));
           }
-        } else if (secsPast < OOBTST_CANDLE_DEADLINE_SEC) {
-          // Keep showing the live preview while the 09:20 candle opens are being fetched.
+        } else if (secsPast < OOBTST_CANDLE_DEADLINE_SEC || (this.candleFetchAttempts === 0 && this.hasOptionChain())) {
+          // Keep showing the live preview while the 09:20 candle opens are being fetched. After the deadline (app
+          // resumed from the background) a chain that has not been used for a fetch yet still gets one first.
           isProvisionalLock = true;
         } else {
           isLockFailed = true;
@@ -809,7 +818,7 @@ class NiftyOptionFeedService {
     const today = formatDateKeyIST();
     const opens = await fetchRetryOpens({
       contracts: chooseCandleContracts(
-        this.windowContracts(liveSpot),
+        this.lockContracts(liveSpot),
         { min: OOBTST_BAND_MIN, max: OOBTST_BAND_MAX },
         this.targetPremium,
         true
@@ -2233,6 +2242,7 @@ class NiftyOptionFeedService {
     this.peakPeLtp = 0;
     this.candleOpens0920 = null;
     this.lastCandleFetchAt = 0;
+    this.candleFetchAttempts = 0;
     this.lockRetry = new LockRetry();
     this.chainFeed.reset();
     if (clearStorage) {
@@ -2240,6 +2250,7 @@ class NiftyOptionFeedService {
         const today = formatDateKeyIST();
         await AsyncStorage.removeItem(`@qstrategy_oobtst_anchor_${today}`);
       } catch {}
+      await clearCandleOpens('nifty', formatDateKeyIST());
     }
   }
 

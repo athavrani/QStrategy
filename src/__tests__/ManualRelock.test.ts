@@ -23,6 +23,7 @@ describe('NIFTY Re-lock after a successful lock', () => {
     jest.spyOn(niftyOptionFeedService, 'syncLiveOptionChain').mockResolvedValue(true);
     svc.chainFeed.chain = { 22650: row(110, 20, '1'), 22700: row(64, 35, '2'), 22750: row(40, 60, '3') };
     svc.lastCandleFetchAt = Date.now();
+    svc.candleFetchAttempts = 1;
     niftyOptionFeedService.getOrCreateDayAnchor(22700, '09:21:10 AM');
     await niftyOptionFeedService.retryLock(22700, '11:02:10 AM');
   });
@@ -119,6 +120,7 @@ describe('SENSEX Re-lock after a successful lock', () => {
     jest.spyOn(sensexOptionFeedService, 'syncLiveOptionChain').mockResolvedValue(true);
     svc.cachedLiveOptionChain = { 80900: row(140, 101, '1'), 81000: row(98, 125, '2'), 81100: row(125, 96, '3') };
     svc.lastCandleFetchAt = Date.now();
+    svc.candleFetchAttempts = 1;
     sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:21:10 AM');
     await sensexOptionFeedService.retryLock(81000, '10:15:30 AM');
   });

@@ -62,6 +62,7 @@ describe('NIFTY Retry after a failed lock', () => {
     // Live prices at the moment of the retry; the 09:20 candle opens were never available.
     svc.chainFeed.chain = { 22650: row(110, 20, '1'), 22700: row(64, 35, '2'), 22750: row(40, 60, '3') };
     svc.lastCandleFetchAt = Date.now();
+    svc.candleFetchAttempts = 1;
     niftyOptionFeedService.getOrCreateDayAnchor(22700, '09:21:10 AM');
   });
   afterEach(() => jest.restoreAllMocks());
@@ -189,6 +190,7 @@ describe('SENSEX Retry after a failed lock', () => {
     jest.spyOn(sensexOptionFeedService, 'syncLiveOptionChain').mockResolvedValue(true);
     svc.cachedLiveOptionChain = { 80900: row(140, 101, '1'), 81000: row(98, 125, '2'), 81100: row(125, 96, '3') };
     svc.lastCandleFetchAt = Date.now();
+    svc.candleFetchAttempts = 1;
     sensexOptionFeedService.getOrCreateDayAnchor(81000, '09:21:10 AM');
   });
   afterEach(() => jest.restoreAllMocks());

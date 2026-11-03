@@ -1,15 +1,29 @@
 import { Linking, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import BackgroundService from 'react-native-background-actions';
+import { backgroundTickDelayMs } from './marketdata/lockSchedule';
 
 const PREF_KEY = '@qstrategy_background_monitor';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// The task only keeps the foreground service (and with it the JS timers and Dhan socket) alive.
+let tickHandler: (() => void) | null = null;
+
+/** Registers the clock evaluation that the background task runs, so time triggers do not rely on the screen's timers. */
+export function setBackgroundTickHandler(handler: (() => void) | null): void {
+  tickHandler = handler;
+}
+
+// Keeps the foreground service alive and drives the clock evaluation from its own loop, which keeps running while
+// the app is minimised and the UI timers are paused.
 const keepAliveTask = async (): Promise<void> => {
   while (BackgroundService.isRunning()) {
-    await sleep(5000);
+    try {
+      tickHandler?.();
+    } catch {
+      // A failed evaluation must not stop the service
+    }
+    await sleep(backgroundTickDelayMs());
   }
 };
 
