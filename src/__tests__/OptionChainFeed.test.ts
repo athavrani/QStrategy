@@ -28,7 +28,7 @@ function setup(selected: Array<{ ce: string[]; pe: string[] }>) {
         };
       },
     },
-    { fetchChain, market, now: () => clock }
+    { fetchChain, market, now: () => clock, sleep: async () => {} }
   );
   return { feed, market, fetchChain, advance: (ms: number) => (clock += ms) };
 }
@@ -76,10 +76,13 @@ describe('OptionChainFeed', () => {
   test('failed or empty fetch returns false and keeps the previous chain', async () => {
     const { feed, fetchChain } = setup([{ ce: [], pe: [] }]);
     await feed.sync();
-    fetchChain.mockResolvedValueOnce(null as any);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchChain.mockResolvedValueOnce(null as any).mockResolvedValueOnce(null as any);
     expect(await feed.sync()).toBe(false);
-    fetchChain.mockRejectedValueOnce(new Error('net'));
+    fetchChain.mockRejectedValueOnce(new Error('net')).mockRejectedValueOnce(new Error('net'));
     expect(await feed.sync()).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
     expect(feed.getLiveOptionPrice(24800, 'CE')).toBe(60);
   });
 
@@ -116,5 +119,24 @@ describe('OptionChainFeed', () => {
       { exchangeSegment: 'NSE_FNO', securityId: '101' },
       { exchangeSegment: 'NSE_FNO', securityId: '102' },
     ]);
+  });
+
+  test('a failed sync is retried once and the retry result is used', async () => {
+    const { feed, fetchChain } = setup([{ ce: [], pe: [] }]);
+    fetchChain.mockRejectedValueOnce(new Error('net'));
+    expect(await feed.sync()).toBe(true);
+    expect(fetchChain).toHaveBeenCalledTimes(2);
+    expect(feed.getQuoteFreshness()).toBe('FRESH');
+  });
+
+  test('streamed ticks keep the quotes fresh while the REST poll is late', async () => {
+    const { feed, advance } = setup([{ ce: [], pe: [] }]);
+    await feed.sync();
+    advance(20_000);
+    expect(feed.getQuoteFreshness()).toBe('STALE');
+    feed.updateFromTick('103', 38.5);
+    expect(feed.getQuoteFreshness()).toBe('FRESH');
+    advance(6_000);
+    expect(feed.getQuoteFreshness()).toBe('AGING');
   });
 });

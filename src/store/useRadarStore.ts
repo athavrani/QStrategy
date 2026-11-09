@@ -32,6 +32,7 @@ import { OobtstLiveState } from '../strategies/types';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { avgVolumeService } from '../services/AvgVolumeService';
 import { prevCloseBook } from '../services/marketdata/PrevCloseBook';
+import { chainSyncIntervalMs } from '../services/marketdata/lockSchedule';
 import { DailyStrategyLockRecord } from '../db/schema';
 import { dailyStrategyLockService } from '../services/DailyStrategyLockService';
 import { nextSignalAt } from '../utils/radarSort';
@@ -119,7 +120,6 @@ const STOCK_TICK_FRESH_MS = 15_000;
 const LOCK_WINDOW_START_SEC = 9 * 3600 + 19 * 60 + 58;
 // Runs past the 09:20:05 lock and its candle-open fetch retries (deadline 09:21:05)
 const LOCK_WINDOW_END_SEC = 9 * 3600 + 21 * 60 + 10;
-const LOCK_SYNC_INTERVAL_MS = 2000;
 let lastLockSyncAt = 0;
 
 function withNewEntries(prev: RadarStoreState, entries: SignalJournalItem[]): Partial<RadarStoreState> {
@@ -545,17 +545,33 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
   runClockEvaluation: () => {
     const s = get();
     const sec = parseClockSeconds(s.istTime);
-    // 09:19:58 to 09:20:20 IST: the strike lock needs quotes fresher than the 10 s poll provides
+    // 09:19:58 to 09:21:10 IST: the strike lock evaluates every second
     const inLockWindow = sec !== null && sec >= LOCK_WINDOW_START_SEC && sec <= LOCK_WINDOW_END_SEC;
+
+    // The chains are refreshed from here too, so the background loop keeps quotes fresh when the 10 s UI poll is throttled.
+    // From 09:19:00 every 2 s, so the 09:20 lock never starts from a quote that aged in the background.
+    const syncEvery = chainSyncIntervalMs(sec);
+    if (syncEvery !== null && Date.now() - lastLockSyncAt >= syncEvery) {
+      lastLockSyncAt = Date.now();
+      Promise.allSettled([
+        niftyOptionFeedService.syncLiveOptionChain(),
+        sensexOptionFeedService.syncLiveOptionChain(),
+      ]).then(() => {
+        // Outside the lock window nothing else re-evaluates between polls, so the screen would keep an old freshness badge.
+        const now = get();
+        if (!now.latchServiceInitialized || inLockWindow) return;
+        const refreshed: Partial<RadarStoreState> = {};
+        if (now.niftySpot > 0) refreshed.oobtstState = niftyOptionFeedService.evaluateOobtst(now.niftySpot, now.istTime);
+        if (now.sensexSpot > 0) {
+          refreshed.sensexOobtstState = sensexOptionFeedService.evaluateSensexOobtst(now.sensexSpot, now.istTime);
+        }
+        if (Object.keys(refreshed).length > 0) set(refreshed);
+      });
+    }
+
     // An open breakout trade is re-checked every second so its exit never waits for a tick or the poll
     const breakoutOpen = s.niftyBreakout180?.status === 'IN_TRADE';
     if (!s.latchServiceInitialized || !(inLockWindow || breakoutOpen || isNearTrigger(s.istTime))) return;
-
-    if (inLockWindow && Date.now() - lastLockSyncAt >= LOCK_SYNC_INTERVAL_MS) {
-      lastLockSyncAt = Date.now();
-      niftyOptionFeedService.syncLiveOptionChain().catch(() => {});
-      sensexOptionFeedService.syncLiveOptionChain().catch(() => {});
-    }
 
     const ist = s.istTime;
     const updates: Partial<RadarStoreState> = {};

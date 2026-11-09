@@ -9,7 +9,8 @@ import { AppUpdateModal } from './src/components/common';
 import { appUpdateService, UpdateCheckResult } from './src/services/appUpdateService';
 import { formatDateKeyIST } from './src/constants/nseHolidays';
 import { setBackgroundTickHandler, syncBackgroundMonitor } from './src/services/backgroundMonitorService';
-import { istClockString } from './src/services/marketdata/lockSchedule';
+import { isMarketHoursIst, istClockString } from './src/services/marketdata/lockSchedule';
+import { dhanHqFeedSocket } from './src/services/dhan/DhanHqFeedSocket';
 import { startPositionMonitor, stopPositionMonitor } from './src/execution/positionMonitor';
 
 export default function App() {
@@ -53,6 +54,8 @@ export default function App() {
     // Reads the wall clock each time, so a late tick after the timers were paused still sees the real time.
     const evaluateClock = () => {
       setIstTime(istClockString());
+      // A socket that stalled or closed while the app was in the background is reopened from here, not on the next foreground
+      if (isMarketHoursIst()) dhanHqFeedSocket.ensureAlive();
       runClockEvaluation();
     };
     const clockTimer = setInterval(() => {

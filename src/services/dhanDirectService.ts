@@ -744,6 +744,34 @@ class DhanDirectService {
   }
 
   /**
+   * Previous close, today's open and today's high of an index, from Dhan's OHLC snapshot. Returns null when the
+   * snapshot has no OHLC, so a missing value is never shown as the last price.
+   */
+  public async fetchIndexDayStats(
+    scripId: string | number,
+    seg: string = 'IDX_I'
+  ): Promise<{ prevClose: number; open: number; high: number } | null> {
+    await this.initialize();
+    if (!this.cachedClientId || !this.cachedAccessToken) return null;
+
+    const idStr = String(scripId);
+    const batchIds = [DHAN_NIFTY_INDEX_ID, DHAN_BANKNIFTY_INDEX_ID, DHAN_FINNIFTY_INDEX_ID, DHAN_SENSEX_INDEX_ID];
+    const requestIds = seg === 'IDX_I' && batchIds.includes(idStr) ? batchIds.map((id) => parseInt(id, 10)) : [parseInt(idStr, 10)];
+    try {
+      const res = await this.postDhan('/marketfeed/ohlc', { [seg]: requestIds });
+      if (!res.ok) return null;
+      const json = await res.json();
+      const ohlc = (json?.data?.[seg]?.[idStr] || json?.[seg]?.[idStr])?.ohlc;
+      if (!ohlc) return null;
+      // For an index, Dhan's ohlc.close is the previous session's close
+      const stats = { prevClose: Number(ohlc.close || 0), open: Number(ohlc.open || 0), high: Number(ohlc.high || 0) };
+      return stats.prevClose > 0 || stats.open > 0 || stats.high > 0 ? stats : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Fetches live NIFTY 50 Index quote directly from Dhan HQ
    */
   public async fetchNiftyIndexQuote(): Promise<{ ltp: number; open: number; high: number; low: number; close: number } | null> {

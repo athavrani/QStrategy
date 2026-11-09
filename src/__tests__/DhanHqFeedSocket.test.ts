@@ -228,6 +228,52 @@ describe('DhanHqFeedSocket Service Suite', () => {
     expect((socketInstance as any).reconnectAttempts).toBe(0);
   });
 
+  describe('ensureAlive (background liveness check)', () => {
+    const OPEN = (global as any).WebSocket?.OPEN ?? 1;
+    const openSocket = () => ({ readyState: OPEN, close: jest.fn() });
+
+    beforeEach(() => {
+      socketInstance.subscribe({ exchangeSegment: 'NSE_FNO', securityId: '101' });
+      (socketInstance as any).isExplicitlyStopped = false;
+    });
+
+    test('does nothing while packets are arriving', () => {
+      const start = jest.spyOn(socketInstance, 'start').mockResolvedValue();
+      (socketInstance as any).socket = openSocket();
+      (socketInstance as any).lastPacketTimestamp = Date.now() - 2000;
+      expect(socketInstance.ensureAlive()).toBe(false);
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    test('reconnects an open socket that has been silent too long', () => {
+      const start = jest.spyOn(socketInstance, 'start').mockResolvedValue();
+      const socket = openSocket();
+      (socketInstance as any).socket = socket;
+      (socketInstance as any).lastPacketTimestamp = Date.now() - 15000;
+      expect(socketInstance.ensureAlive()).toBe(true);
+      expect(socket.close).toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+
+    test('reopens a closed socket, but not twice within the repair gap', () => {
+      const start = jest.spyOn(socketInstance, 'start').mockResolvedValue();
+      (socketInstance as any).socket = null;
+      expect(socketInstance.ensureAlive()).toBe(true);
+      expect(socketInstance.ensureAlive()).toBe(false);
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+
+    test('leaves a stopped, halted or unsubscribed feed alone', () => {
+      const start = jest.spyOn(socketInstance, 'start').mockResolvedValue();
+      (socketInstance as any).reconnectHalted = true;
+      expect(socketInstance.ensureAlive()).toBe(false);
+      (socketInstance as any).reconnectHalted = false;
+      (socketInstance as any).isExplicitlyStopped = true;
+      expect(socketInstance.ensureAlive()).toBe(false);
+      expect(start).not.toHaveBeenCalled();
+    });
+  });
+
   test('launches Dhan mobile app via deep linking Intent or fallback URL', async () => {
     const canOpenSpy = jest.spyOn(Linking, 'canOpenURL').mockResolvedValue(true);
     const openSpy = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);

@@ -75,6 +75,40 @@ export class DhanHqFeedSocket {
     }
   };
 
+  private lastLivenessRepairAt = 0;
+
+  /**
+   * Called from the background loop, whose timers keep running while the screen's are throttled. Reopens a socket that
+   * is closed, or that is open but has delivered nothing for `maxSilenceMs`. Returns true when it started a reconnect.
+   * Only call this while the market is open, since a quiet feed outside market hours is normal.
+   */
+  public ensureAlive(maxSilenceMs = 10000, minRepairGapMs = 8000): boolean {
+    if (this.isExplicitlyStopped || this.reconnectHalted) return false;
+    if (this.registeredInstruments.size === 0) return false;
+    const now = Date.now();
+    if (now - this.lastLivenessRepairAt < minRepairGapMs) return false;
+
+    const socket = this.socket;
+    const connecting = socket !== null && socket.readyState === WebSocket.CONNECTING;
+    if (connecting) return false;
+    const open = socket !== null && socket.readyState === WebSocket.OPEN;
+    const silent = open && this.lastPacketTimestamp > 0 && now - this.lastPacketTimestamp > maxSilenceMs;
+    if (open && !silent) return false;
+    // A scheduled reconnect is already counting down for a socket that is gone
+    if (!open && this.reconnectTimer) return false;
+
+    this.lastLivenessRepairAt = now;
+    this.reconnectAttempts = 0;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {}
+      this.socket = null;
+    }
+    this.start().catch(() => {});
+    return true;
+  }
+
   /**
    * Initializes and starts live WebSocket connection to official DhanHQ v2 feed
    */

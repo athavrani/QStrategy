@@ -29,6 +29,7 @@ import {
   diffSubscriptions,
   mergeRefreshedChain,
 } from '../utils/optionChainRefresh';
+import { IndexDayStats, mergeLiveHigh } from '../utils/indexDayStats';
 import * as Haptics from 'expo-haptics';
 
 export interface UnderlyingPreset {
@@ -45,6 +46,8 @@ export const UNDERLYING_PRESETS: UnderlyingPreset[] = [
   { symbol: 'FINNIFTY', name: 'FIN NIFTY', scripId: 27, segment: 'IDX_I', strikeStep: 50 },
   { symbol: 'SENSEX', name: 'BSE SENSEX', scripId: 51, segment: 'IDX_I', strikeStep: 100 },
 ];
+
+const DAY_STATS_REFRESH_MS = 30_000;
 
 type ViewMode = 'QUOTES_OI' | 'GREEKS';
 export type StrikeRange = '6' | '10' | 'ALL';
@@ -85,6 +88,7 @@ export function OptionChainScreen(): React.JSX.Element {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [chainData, setChainData] = useState<OptionChainResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [dayStats, setDayStats] = useState<{ scripId: number; stats: IndexDayStats } | null>(null);
 
   const niftySpotFromStore = useRadarStore((s) => s.niftySpot);
   const bankNiftySpotFromStore = useRadarStore((s) => s.bankNiftySpot);
@@ -278,6 +282,25 @@ export function OptionChainScreen(): React.JSX.Element {
     };
   }, [selectedPreset.scripId, selectedPreset.strikeStep, selectedPreset.symbol, selectedPreset.segment]);
 
+  // Previous close, today's open and high of the selected index; the high is also lifted by the live spot below
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const stats = await dhanDirectService.fetchIndexDayStats(selectedPreset.scripId, selectedPreset.segment);
+        if (!cancelled && stats) setDayStats({ scripId: selectedPreset.scripId, stats });
+      } catch {
+        // Keeps the previous values; the strip shows dashes until a snapshot arrives
+      }
+    };
+    load();
+    const timer = setInterval(load, DAY_STATS_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [selectedPreset.scripId, selectedPreset.segment]);
+
   const storeSpot = useMemo(() => {
     switch (selectedPreset.symbol) {
       case 'NIFTY':
@@ -308,6 +331,11 @@ export function OptionChainScreen(): React.JSX.Element {
   const atmStrike = (isChainForCurrentPreset && chainData?.atmStrike)
     ? chainData.atmStrike
     : (activeSpot ? Math.round(activeSpot / selectedPreset.strikeStep) * selectedPreset.strikeStep : null);
+
+  const shownDayStats = useMemo(
+    () => mergeLiveHigh(dayStats && dayStats.scripId === selectedPreset.scripId ? dayStats.stats : null, activeSpot),
+    [dayStats, selectedPreset.scripId, activeSpot]
+  );
 
   // Filter strikes around ATM for responsive, high-density mobile viewing (6 ITM + 1 ATM + 6 OTM)
   const displayedStrikes = useMemo(() => {
@@ -568,6 +596,26 @@ export function OptionChainScreen(): React.JSX.Element {
               <Text style={styles.expiryTag}>📅 {formatExpiryDate(chainData.expiry)}</Text>
             ) : null}
           </View>
+          <View style={styles.dayStatsRow} testID="index-day-stats">
+            {([
+              ['PREV CLOSE', shownDayStats?.prevClose],
+              ['OPEN', shownDayStats?.open],
+              ['HIGH', shownDayStats?.high],
+            ] as const).map(([label, value]) => (
+              <View key={label} style={styles.dayStat}>
+                <Text style={styles.dayStatLabel}>{label}</Text>
+                <FinancialValue
+                  value={value && value > 0 ? value : null}
+                  format="currency"
+                  size="xs"
+                  weight="bold"
+                  colorize={false}
+                  fallback="—"
+                  style={styles.dayStatValue}
+                />
+              </View>
+            ))}
+          </View>
         </View>
 
         <View style={styles.headerRightGroup}>
@@ -806,6 +854,23 @@ const useThemedStyles = createThemedStyles((colors, theme) => ({
     fontSize: theme.typography.sizes.sm,
     fontFamily: theme.typography.fontMono,
     fontWeight: theme.typography.weights.bold,
+  },
+  dayStatsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+  },
+  dayStat: {
+    gap: 1,
+  },
+  dayStatLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.sizes.micro,
+    fontFamily: theme.typography.fontMono,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  dayStatValue: {
+    color: theme.colors.textPrimary,
   },
   spotPriceText: {
     color: theme.colors.textPrimary,

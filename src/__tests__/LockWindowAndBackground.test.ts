@@ -4,7 +4,12 @@ import { sensexOptionFeedService } from '../services/sensexOptionFeedService';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { formatDateKeyIST } from '../constants/nseHolidays';
 import { lockWindowContracts } from '../services/marketdata/candleOpens';
-import { backgroundTickDelayMs, istClockString } from '../services/marketdata/lockSchedule';
+import {
+  backgroundTickDelayMs,
+  chainSyncIntervalMs,
+  isMarketHoursIst,
+  istClockString,
+} from '../services/marketdata/lockSchedule';
 
 const row = (ce: number, pe: number, id: string) => ({
   ceLtp: ce,
@@ -228,5 +233,31 @@ describe('lock schedule helpers', () => {
   it('wakes the background task every second around 09:20 and every five seconds otherwise', () => {
     expect(backgroundTickDelayMs(new Date(Date.UTC(2026, 10, 3, 3, 50, 5)))).toBe(1000);
     expect(backgroundTickDelayMs(new Date(Date.UTC(2026, 10, 3, 4, 30, 0)))).toBe(5000);
+  });
+});
+
+describe('chain refresh schedule', () => {
+  const at = (h: number, m: number, sec = 0) => h * 3600 + m * 60 + sec;
+
+  it('refreshes every 2 s from 09:19:00 to 09:21:10, every 8 s through the day, and never outside market hours', () => {
+    expect(chainSyncIntervalMs(at(9, 18, 59))).toBe(8000);
+    expect(chainSyncIntervalMs(at(9, 19, 0))).toBe(2000);
+    expect(chainSyncIntervalMs(at(9, 21, 10))).toBe(2000);
+    expect(chainSyncIntervalMs(at(9, 21, 11))).toBe(8000);
+    expect(chainSyncIntervalMs(at(15, 30))).toBe(8000);
+    expect(chainSyncIntervalMs(at(15, 31))).toBeNull();
+    expect(chainSyncIntervalMs(at(8, 59))).toBeNull();
+    expect(chainSyncIntervalMs(null)).toBeNull();
+  });
+
+  it('starts waking the background task every second from 09:18:50', () => {
+    expect(backgroundTickDelayMs(new Date(Date.UTC(2026, 10, 3, 3, 49, 0)))).toBe(1000);
+    expect(backgroundTickDelayMs(new Date(Date.UTC(2026, 10, 3, 3, 48, 40)))).toBe(5000);
+  });
+
+  it('knows market hours in IST and skips weekends', () => {
+    expect(isMarketHoursIst(new Date(Date.UTC(2026, 10, 3, 3, 50, 0)))).toBe(true); // Tue 09:20 IST
+    expect(isMarketHoursIst(new Date(Date.UTC(2026, 10, 3, 10, 5, 0)))).toBe(false); // 15:35 IST
+    expect(isMarketHoursIst(new Date(Date.UTC(2026, 10, 7, 3, 50, 0)))).toBe(false); // Saturday
   });
 });

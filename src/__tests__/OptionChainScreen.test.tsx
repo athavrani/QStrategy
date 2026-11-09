@@ -1,6 +1,8 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { OptionChainScreen, formatOi, UNDERLYING_PRESETS } from '../screens/OptionChainScreen';
+import { dhanDirectService } from '../services/dhanDirectService';
+import { mergeLiveHigh } from '../utils/indexDayStats';
 import { DhanOptionChainService, OptionChainResult, OptionStrikeData } from '../services/dhan/DhanOptionChainService';
 
 jest.setTimeout(25000);
@@ -288,5 +290,75 @@ describe('Option Chain: 13-Strike Range and Moneyness', () => {
     expect(texts.some((txt) => txt.includes('51,250'))).toBe(false);
 
     getOptionChainSpy.mockRestore();
+  });
+});
+
+describe('Option Chain: index day stats strip', () => {
+  const textsOf = (tree: renderer.ReactTestRenderer) =>
+    tree.root.findAllByType(require('react-native').Text).map((t) => {
+      const c = t.props.children;
+      return Array.isArray(c) ? c.join('') : String(c ?? '');
+    });
+
+  test('shows previous close, open and high of the selected index and refetches when the index changes', async () => {
+    jest.spyOn(DhanOptionChainService.prototype, 'getOptionChain').mockResolvedValue(null as any);
+    const stats = jest.spyOn(dhanDirectService, 'fetchIndexDayStats').mockImplementation(async (scripId) =>
+      Number(scripId) === 25
+        ? { prevClose: 51000, open: 51100, high: 51400 }
+        : { prevClose: 24900, open: 24950, high: 25080 }
+    );
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<OptionChainScreen />);
+    });
+    activeTrees.push(tree);
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(stats).toHaveBeenCalledWith(13, 'IDX_I');
+    let texts = textsOf(tree);
+    expect(texts).toEqual(expect.arrayContaining(['PREV CLOSE', 'OPEN', 'HIGH']));
+    expect(texts.some((t) => t.includes('24,900'))).toBe(true);
+    expect(texts.some((t) => t.includes('24,950'))).toBe(true);
+    expect(texts.some((t) => t.includes('25,080'))).toBe(true);
+
+    const chip = tree.root
+      .findAllByType(require('react-native').TouchableOpacity)
+      .find((op) => op.findAllByType(require('react-native').Text).some((t) => t.props.children === 'BANKNIFTY'));
+    await act(async () => {
+      chip?.props.onPress();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(stats).toHaveBeenCalledWith(25, 'IDX_I');
+    texts = textsOf(tree);
+    expect(texts.some((t) => t.includes('51,400'))).toBe(true);
+    expect(texts.some((t) => t.includes('25,080'))).toBe(false);
+  });
+
+  test('shows dashes when the snapshot has no values', async () => {
+    jest.spyOn(DhanOptionChainService.prototype, 'getOptionChain').mockResolvedValue(null as any);
+    jest.spyOn(dhanDirectService, 'fetchIndexDayStats').mockResolvedValue(null);
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<OptionChainScreen />);
+    });
+    activeTrees.push(tree);
+    const strip = tree.root.findByProps({ testID: 'index-day-stats' });
+    const values = strip.findAllByType(require('react-native').Text).map((t) => String(t.props.children));
+    expect(values.filter((v) => v.includes('—')).length).toBe(3);
+  });
+
+  test('mergeLiveHigh lifts the high only when the live spot exceeds it', () => {
+    const stats = { prevClose: 100, open: 101, high: 105 };
+    expect(mergeLiveHigh(stats, 104)).toBe(stats);
+    expect(mergeLiveHigh(stats, 106)).toEqual({ prevClose: 100, open: 101, high: 106 });
+    expect(mergeLiveHigh(stats, null)).toBe(stats);
+    expect(mergeLiveHigh(null, 106)).toBeNull();
+    expect(mergeLiveHigh({ ...stats, high: 0 }, 106)?.high).toBe(0);
   });
 });

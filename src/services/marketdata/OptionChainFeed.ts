@@ -53,10 +53,13 @@ export interface OptionChainFeedDeps {
   fetchChain?: (expiryYmd: string, underlying: string) => Promise<ChainFetchResult | null>;
   market?: Pick<MarketDataService, 'acquire' | 'release' | 'isConnected'> & Partial<Pick<MarketDataService, 'getQuote'>>;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export const CHAIN_FRESH_MAX_AGE_MS = 5000;
 export const CHAIN_AGING_MAX_AGE_MS = 15000;
+/** A failed REST sync is tried once more after this pause, so one dropped request does not age the chain by a whole poll. */
+export const CHAIN_SYNC_RETRY_DELAY_MS = 1000;
 
 export class OptionChainFeed {
   chain: OptionChainRows | null = null;
@@ -69,11 +72,13 @@ export class OptionChainFeed {
   private readonly fetchChain: NonNullable<OptionChainFeedDeps['fetchChain']>;
   private readonly market: NonNullable<OptionChainFeedDeps['market']>;
   private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly config: OptionChainFeedConfig, deps: OptionChainFeedDeps = {}) {
     this.fetchChain = deps.fetchChain ?? ((expiry, underlying) => dhanDirectService.fetchOptionChain(expiry, underlying));
     this.market = deps.market ?? marketData;
     this.now = deps.now ?? Date.now;
+    this.sleep = deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
   /** Concurrent callers share one in-flight sync. Other underlyings are fetched but never stored here. */
@@ -106,11 +111,23 @@ export class OptionChainFeed {
 
   getQuoteFreshness(): Freshness {
     if (!this.market.isConnected()) return 'DISCONNECTED';
-    if (!this.lastSyncTime) return 'STALE';
-    const age = this.now() - this.lastSyncTime;
+    const lastQuoteAt = this.latestQuoteTime();
+    if (!lastQuoteAt) return 'STALE';
+    const age = this.now() - lastQuoteAt;
     if (age < CHAIN_FRESH_MAX_AGE_MS) return 'FRESH';
     if (age < CHAIN_AGING_MAX_AGE_MS) return 'AGING';
     return 'STALE';
+  }
+
+  /** The newest of the last REST snapshot and the last streamed tick: a live socket keeps the quotes fresh between polls. */
+  private latestQuoteTime(): number {
+    let latest = this.lastSyncTime;
+    if (!this.chain) return latest;
+    for (const row of Object.values(this.chain)) {
+      if (row.ceUpdatedTime !== undefined && row.ceUpdatedTime > latest) latest = row.ceUpdatedTime;
+      if (row.peUpdatedTime !== undefined && row.peUpdatedTime > latest) latest = row.peUpdatedTime;
+    }
+    return latest;
   }
 
   updateFromTick(securityId: string, ltp: number, bid?: number, ask?: number): void {
@@ -172,6 +189,18 @@ export class OptionChainFeed {
   }
 
   private async doSync(): Promise<boolean> {
+    if (await this.syncOnce()) return true;
+    await this.sleep(CHAIN_SYNC_RETRY_DELAY_MS);
+    if (await this.syncOnce()) return true;
+    console.warn(
+      `[OptionChainFeed] ${this.config.underlying} chain sync failed twice; last snapshot is ${Math.round(
+        (this.now() - this.lastSyncTime) / 1000
+      )}s old`
+    );
+    return false;
+  }
+
+  private async syncOnce(): Promise<boolean> {
     try {
       const startedAt = this.now();
       const res = await this.fetchChain(this.config.resolveExpiryYmd(), this.config.underlying);
