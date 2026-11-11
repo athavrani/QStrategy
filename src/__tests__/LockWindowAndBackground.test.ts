@@ -261,3 +261,175 @@ describe('chain refresh schedule', () => {
     expect(isMarketHoursIst(new Date(Date.UTC(2026, 10, 7, 3, 50, 0)))).toBe(false); // Saturday
   });
 });
+
+describe('lock does not wait for a strike that never traded', () => {
+  const sensex: any = sensexOptionFeedService;
+  const nifty: any = niftyOptionFeedService;
+  afterEach(() => jest.restoreAllMocks());
+
+  const opens = (map: Record<string, number>) =>
+    jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockImplementation(async (secId: any) => {
+      const open = map[String(secId)];
+      return open ? (bar0920(open) as any) : ({ open: [], start_Time: [] } as any);
+    });
+
+  it('SENSEX locks at 09:20:06 although an untraded strike has no 09:20 bar', async () => {
+    await sensexOptionFeedService.resetAnchor(true);
+    sensex.chainFeed.chain = { 80900: row(98, 300, '1'), 81000: row(300, 101, '2'), 82000: row(0, 0, '3') };
+    opens({ c1: 98, p1: 300, c2: 300, p2: 101 });
+    sensex.lastCandleFetchAt = 0;
+    sensex.getOrCreateDayAnchor(81000, '09:20:06 AM');
+    await sensex.candleFetchInflight;
+    const anchor = sensex.getOrCreateDayAnchor(81000, '09:20:07 AM');
+    expect(anchor.isConfirmed).toBe(true);
+    expect(anchor.ceStrike).toBe(80900);
+    expect(anchor.peStrike).toBe(81000);
+  });
+
+  it('NIFTY locks at 09:20:06 although an untraded strike has no 09:20 bar', async () => {
+    await niftyOptionFeedService.resetAnchor(true);
+    nifty.chainFeed.chain = { 22650: row(62, 300, '1'), 22700: row(300, 60, '2'), 23500: row(0, 0, '3') };
+    opens({ c1: 62, p1: 300, c2: 300, p2: 60 });
+    nifty.lastCandleFetchAt = 0;
+    nifty.getOrCreateDayAnchor(22700, '09:20:06 AM');
+    await nifty.candleFetchInflight;
+    const anchor = nifty.getOrCreateDayAnchor(22700, '09:20:07 AM');
+    expect(anchor.isConfirmed).toBe(true);
+    expect(anchor.ceStrike).toBe(22650);
+  });
+
+  it('still waits for a strike that has a live price but no 09:20 bar yet', async () => {
+    await sensexOptionFeedService.resetAnchor(true);
+    sensex.chainFeed.chain = { 80900: row(98, 300, '1'), 81000: row(300, 101, '2'), 82000: row(110, 0, '3') };
+    opens({ c1: 98, p1: 300, c2: 300, p2: 101 });
+    sensex.lastCandleFetchAt = 0;
+    sensex.getOrCreateDayAnchor(81000, '09:20:06 AM');
+    await sensex.candleFetchInflight;
+    expect(sensex.getOrCreateDayAnchor(81000, '09:20:07 AM').isConfirmed).toBe(false);
+  });
+});
+
+describe('a failed 09:20 lock says why', () => {
+  const sensex: any = sensexOptionFeedService;
+  const nifty: any = niftyOptionFeedService;
+  afterEach(() => {
+    jest.restoreAllMocks();
+    (global as any).fetch = originalFetch;
+  });
+  const originalFetch = (global as any).fetch;
+
+  it('names a missing option chain', async () => {
+    await sensexOptionFeedService.resetAnchor(true);
+    sensex.chainFeed.chain = {};
+    sensex.lastCandleFetchAt = Date.now();
+    const a = sensex.getOrCreateDayAnchor(81000, '09:30:00 AM');
+    expect(a.isLockFailed).toBe(true);
+    expect(a.lockFailureReason).toBe('Sensex 09:20 candle open unavailable (option chain not loaded)');
+  });
+
+  it('names the Dhan error when the candle request is refused', async () => {
+    await dhanDirectService.saveCredentials('1100345678', 'header.payload.signature-long-enough-token');
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => '{"errorCode":"DH-904","errorMessage":"Too many requests"}',
+    });
+    expect(await dhanDirectService.fetchHistoricalIntraday('1', '2026-11-11 09:20:00', '2026-11-11 09:21:00', 'NSE_FNO')).toBeNull();
+    expect(dhanDirectService.getLastIntradayFailure()).toContain('Dhan HTTP 429');
+    expect(dhanDirectService.getLastIntradayFailure()).toContain('DH-904');
+
+    await niftyOptionFeedService.resetAnchor(true);
+    nifty.chainFeed.chain = { 22650: row(62, 300, '1') };
+    nifty.lastCandleFetchAt = Date.now();
+    nifty.candleFetchAttempts = 1;
+    const a = nifty.getOrCreateDayAnchor(22700, '09:30:00 AM');
+    expect(a.isLockFailed).toBe(true);
+    expect(a.lockFailureReason).toContain('09:20 candle open unavailable (Dhan HTTP 429');
+  });
+
+  it('clears the reason once a request succeeds', async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: bar0920(50) }) });
+    expect(await dhanDirectService.fetchHistoricalIntraday('1', '2026-11-11 09:20:00', '2026-11-11 09:21:00')).not.toBeNull();
+    expect(dhanDirectService.getLastIntradayFailure()).toBeNull();
+  });
+
+  it('reports an empty reply and a network error', async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ status: 'failure', errorMessage: 'no data' }) });
+    await dhanDirectService.fetchHistoricalIntraday('1', 'a', 'b');
+    expect(dhanDirectService.getLastIntradayFailure()).toBe('Dhan returned no candle data: no data');
+
+    (global as any).fetch = jest.fn().mockRejectedValue(new Error('Network request failed'));
+    await dhanDirectService.fetchHistoricalIntraday('1', 'a', 'b');
+    expect(dhanDirectService.getLastIntradayFailure()).toBe('network error: Network request failed');
+  });
+});
+
+describe('Retry lock on live prices after a slow, failing candle fetch', () => {
+  const sensex: any = sensexOptionFeedService;
+  const nifty: any = niftyOptionFeedService;
+  afterEach(() => jest.restoreAllMocks());
+
+  // Quotes in the chain are 10 s old when the candle requests finish, as they are when every request is paced and fails
+  const aged = (svc: any, rows: Record<number, any>) => {
+    svc.chainFeed.chain = rows;
+    Object.values(rows).forEach((r: any) => {
+      r.ceUpdatedTime = Date.now() - 10_000;
+      r.peUpdatedTime = Date.now() - 10_000;
+    });
+  };
+  const freshen = (svc: any) => () => {
+    Object.values(svc.chainFeed.chain as Record<number, any>).forEach((r: any) => {
+      r.ceUpdatedTime = Date.now();
+      r.peUpdatedTime = Date.now();
+    });
+    return Promise.resolve(true);
+  };
+
+  it('SENSEX locks on live prices because the chain is refreshed after the candle attempt', async () => {
+    await sensexOptionFeedService.resetAnchor(true);
+    jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null as any);
+    const sync = jest.spyOn(sensexOptionFeedService, 'syncLiveOptionChain');
+    let calls = 0;
+    sync.mockImplementation(() => {
+      calls++;
+      // The first sync happens before the slow candle fetch and its quotes age; the second is the refresh
+      return calls === 1 ? Promise.resolve(true) : freshen(sensex)();
+    });
+    aged(sensex, { 80900: row(98, 300, '1'), 81000: row(300, 101, '2') });
+    sensex.candleFetchAttempts = 1;
+
+    const result = await sensexOptionFeedService.retryLock(81000, '15:12:00');
+    expect(calls).toBe(2);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('live prices');
+    expect(sensex.getOrCreateDayAnchor(81000, '15:12:05').ceStrike).toBe(80900);
+  });
+
+  it('NIFTY locks on live prices because the chain is refreshed after the candle attempt', async () => {
+    await niftyOptionFeedService.resetAnchor(true);
+    jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null as any);
+    let calls = 0;
+    jest.spyOn(niftyOptionFeedService, 'syncLiveOptionChain').mockImplementation(() => {
+      calls++;
+      return calls === 1 ? Promise.resolve(true) : freshen(nifty)();
+    });
+    aged(nifty, { 22650: row(62, 300, '1'), 22700: row(300, 60, '2') });
+    nifty.candleFetchAttempts = 1;
+
+    const result = await niftyOptionFeedService.retryLock(22700, '15:12:00');
+    expect(calls).toBe(2);
+    expect(result.ok).toBe(true);
+    expect(nifty.getOrCreateDayAnchor(22700, '15:12:05').ceStrike).toBe(22650);
+  });
+
+  it('says so when the refresh after the candle attempt fails', async () => {
+    await sensexOptionFeedService.resetAnchor(true);
+    jest.spyOn(dhanDirectService, 'fetchHistoricalIntraday').mockResolvedValue(null as any);
+    let calls = 0;
+    jest.spyOn(sensexOptionFeedService, 'syncLiveOptionChain').mockImplementation(() => Promise.resolve(++calls === 1));
+    aged(sensex, { 80900: row(98, 300, '1'), 81000: row(300, 101, '2') });
+    const result = await sensexOptionFeedService.retryLock(81000, '15:12:00');
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('Could not fetch the latest option prices');
+  });
+});

@@ -176,7 +176,8 @@ describe('NIFTY Retry after a failed lock', () => {
     const [a, b] = [niftyOptionFeedService.retryLock(22700, '11:02:10 AM'), niftyOptionFeedService.retryLock(22700, '11:02:10 AM')];
     expect(a).toBe(b);
     expect((await a).ok).toBe(true);
-    expect(niftyOptionFeedService.syncLiveOptionChain).toHaveBeenCalledTimes(1);
+    // One retry syncs the chain twice (before the candle requests and again before the live fallback), never once per tap
+    expect(niftyOptionFeedService.syncLiveOptionChain).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -150,10 +150,13 @@ export async function fetchCandleOpens(args: {
   zeroIsFinal: boolean;
   concurrency?: number;
   pick?: (data: CandleBars | null) => number;
+  /** Whether an unanswered contract keeps the lock waiting; defaults to every contract. */
+  blocksLock?: (contract: CandleContract) => boolean;
 }): Promise<boolean> {
   const { state, contracts, load, zeroIsFinal } = args;
   const pick = args.pick ?? candleOpenAt0920;
   const size = args.concurrency ?? CANDLE_FETCH_CONCURRENCY;
+  const blocksLock = args.blocksLock ?? (() => true);
   const todo = contracts.filter((c) => state.opens[c.key] === undefined);
   for (let i = 0; i < todo.length; i += size) {
     await Promise.all(
@@ -168,9 +171,15 @@ export async function fetchCandleOpens(args: {
       })
     );
   }
-  state.pending = contracts.filter((c) => state.opens[c.key] === undefined).length;
+  state.pending = contracts.filter((c) => state.opens[c.key] === undefined && blocksLock(c)).length;
   return contracts.length > 0 && state.pending === 0;
 }
+
+/**
+ * A contract that has not traded today (no live price) cannot be the strike nearest the target, so the lock does not
+ * wait for its answer. It is still fetched, and counts if it did open in the minute.
+ */
+export const lockBlockedBy = (contract: CandleContract): boolean => contract.liveLtp > 0;
 
 /** Every contract's lock-time open for the Retry button, or null unless all of them answered (a failed request is tried once more). */
 export async function fetchRetryOpens(args: {

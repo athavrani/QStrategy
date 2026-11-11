@@ -32,6 +32,7 @@ import {
   clearCandleOpens,
   clockAfter0920,
   fetchCandleOpens,
+  lockBlockedBy,
   fetchRetryOpens,
   loadCandleOpens,
   lockWindowContracts,
@@ -533,6 +534,16 @@ export class SensexOptionFeedService {
     return Object.keys(this.cachedLiveOptionChain ?? {}).length > 0;
   }
 
+  /** What stopped the 09:20 candle opens from arriving, so a failed lock says why. */
+  private candleFailureDetail(): string {
+    if (!this.hasOptionChain()) return ' (option chain not loaded)';
+    const failure = dhanDirectService.getLastIntradayFailure();
+    if (failure) return ` (${failure})`;
+    const opens = this.candleOpens0920;
+    if (opens && opens.pending > 0) return ` (${opens.pending} contracts have no 09:20 candle yet)`;
+    return ' (Dhan returned no 09:20 candles)';
+  }
+
   /** A retry looks at every contract in the window, so the lock waits for those answers before it decides again. */
   private widenCandleSearch(): void {
     if (this.candleOpens0920) this.candleOpens0920.pending = Math.max(1, this.candleOpens0920.pending);
@@ -573,6 +584,7 @@ export class SensexOptionFeedService {
       contracts,
       load: (secId) => dhanDirectService.fetchHistoricalIntraday(secId, from, to, 'BSE_FNO', 'OPTIDX', '1'),
       zeroIsFinal: zerosFinal,
+      blocksLock: lockBlockedBy,
     });
     void saveCandleOpens('sensex', this.candleOpens0920);
     return done;
@@ -732,7 +744,7 @@ export class SensexOptionFeedService {
           isProvisionalLock = true;
         } else {
           isLockFailed = true;
-          lockFailureReason = 'Sensex 09:20 candle open unavailable';
+          lockFailureReason = `Sensex 09:20 candle open unavailable${this.candleFailureDetail()}`;
           this.logLockFailure(lockFailureReason);
         }
         // Past the failure point the fetch keeps going, so a late answer still locks the correct strikes.
@@ -830,6 +842,10 @@ export class SensexOptionFeedService {
       pick: openAtOrAfter(CANDLE_0920_IST_SEC),
       zeroIsFinal: zeroIsFinalAfter(totalSeconds, CANDLE_0920_IST_SEC),
     });
+
+    // The candle requests can take far longer than the 6 s a quote may age, so the prices are refreshed before the live fallback
+    const refreshed = await this.syncLiveOptionChain().catch(() => false);
+    if (!refreshed) return { ok: false, message: 'Could not fetch the latest option prices. Check the connection and retry.' };
 
     this.manualLock = { opens };
     let anchor: SensexOobtstDayAnchor;

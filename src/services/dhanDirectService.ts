@@ -803,6 +803,13 @@ class DhanDirectService {
    * Fetches intraday 1-minute historical candles from Dhan API
    * POST /v2/charts/intraday
    */
+  /** Why the last intraday-candle request failed, or null when it worked; shown when a 09:20 lock cannot be taken. */
+  private lastIntradayFailure: string | null = null;
+
+  public getLastIntradayFailure(): string | null {
+    return this.lastIntradayFailure;
+  }
+
   public async fetchHistoricalIntraday(
     securityId: string | number,
     fromDate: string,
@@ -821,7 +828,10 @@ class DhanDirectService {
     open_interest?: number[];
   } | null> {
     await this.initialize();
-    if (!this.cachedClientId || !this.cachedAccessToken) return null;
+    if (!this.cachedClientId || !this.cachedAccessToken) {
+      this.lastIntradayFailure = 'Dhan credentials are not loaded';
+      return null;
+    }
     try {
       const res = await this.postDhan('/charts/intraday', {
         securityId: String(securityId),
@@ -832,10 +842,20 @@ class DhanDirectService {
         toDate,
         ...(withOi ? { oi: true } : {}),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        const detail = String(res.errorText ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+        this.lastIntradayFailure = `Dhan HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+        return null;
+      }
       const json = await res.json();
-      return json?.data ?? null;
-    } catch {
+      if (!json?.data) {
+        this.lastIntradayFailure = `Dhan returned no candle data${json?.errorMessage ? `: ${String(json.errorMessage).slice(0, 100)}` : ''}`;
+        return null;
+      }
+      this.lastIntradayFailure = null;
+      return json.data;
+    } catch (err: any) {
+      this.lastIntradayFailure = `network error: ${String(err?.message ?? err).slice(0, 100)}`;
       return null;
     }
   }
