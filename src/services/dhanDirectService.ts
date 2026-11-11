@@ -809,7 +809,8 @@ class DhanDirectService {
     toDate: string,
     exchangeSegment: string = 'NSE_FNO',
     instrument: string = 'OPTIDX',
-    interval: string = '1'
+    interval: string = '1',
+    withOi: boolean = false
   ): Promise<{
     open?: number[];
     high?: number[];
@@ -817,6 +818,7 @@ class DhanDirectService {
     close?: number[];
     volume?: number[];
     start_Time?: number[];
+    open_interest?: number[];
   } | null> {
     await this.initialize();
     if (!this.cachedClientId || !this.cachedAccessToken) return null;
@@ -828,6 +830,7 @@ class DhanDirectService {
         interval,
         fromDate,
         toDate,
+        ...(withOi ? { oi: true } : {}),
       });
       if (!res.ok) return null;
       const json = await res.json();

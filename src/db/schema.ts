@@ -226,4 +226,39 @@ CREATE TABLE IF NOT EXISTS app_positions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_state ON app_positions(state);
+
+-- 8. Candle instruments: the indexes and option contracts whose one-minute candles are recorded today
+CREATE TABLE IF NOT EXISTS candle_instruments (
+  inst_key TEXT PRIMARY KEY,
+  segment TEXT NOT NULL,
+  security_id TEXT NOT NULL,
+  underlying TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  strike REAL,
+  expiry TEXT,
+  symbol TEXT NOT NULL,
+  trade_date TEXT NOT NULL
+);
+
+-- 9. One-minute candles; ts is the epoch second at which the minute starts, source is LIVE (from ticks) or API (Dhan, after the close)
+CREATE TABLE IF NOT EXISTS candles_1m (
+  inst_key TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  open REAL NOT NULL,
+  high REAL NOT NULL,
+  low REAL NOT NULL,
+  close REAL NOT NULL,
+  volume INTEGER NOT NULL DEFAULT 0,
+  oi INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL,
+  PRIMARY KEY (inst_key, ts)
+) WITHOUT ROWID;
 `;
+
+/** Column order of candles_1m; the repository's INSERT and the in-memory test driver both follow it. */
+export const CANDLE_COLUMNS = ['inst_key', 'ts', 'open', 'high', 'low', 'close', 'volume', 'oi', 'source'] as const;
+
+/** Column order of candle_instruments; the repository's INSERT and the in-memory test driver both follow it. */
+export const CANDLE_INSTRUMENT_COLUMNS = [
+  'inst_key', 'segment', 'security_id', 'underlying', 'kind', 'strike', 'expiry', 'symbol', 'trade_date',
+] as const;

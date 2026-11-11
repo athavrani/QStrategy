@@ -17,6 +17,7 @@ import type { CarryTrade } from '../engine/types';
 import { dhanDirectService } from '../services/dhanDirectService';
 import { dhanHqFeedSocket } from '../services/dhan/DhanHqFeedSocket';
 import { marketData } from '../services/marketdata/MarketDataService';
+import { candleRecorder } from '../services/candles/candleRecorderInstance';
 import { InstrumentSubscription, DhanFeedResponseCode } from '../services/dhan/DhanBinaryCodec';
 import {
   DHAN_SECURITY_MAP,
@@ -748,6 +749,8 @@ export const useRadarStore = create<RadarStoreState>((set, get) => ({
     marketData.start();
     marketData.watch('radar', subscriptions);
     dhanHqFeedSocket.start();
+    // One-minute candles of the indexes and nearby options, recorded from the same feed
+    candleRecorder.start().catch(() => {});
 
     // 4. Register high-frequency 250ms micro-batch listener (composite segment:securityId keys only)
     marketData.onBatch((tickBatch) => {

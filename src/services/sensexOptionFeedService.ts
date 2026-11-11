@@ -173,6 +173,16 @@ export class SensexOptionFeedService {
     return this.targetPremium;
   }
 
+  /** Contracts of today's confirmed 09:20 lock, so their candles are recorded even when far from the money. */
+  public getLockedContracts(): Array<{ type: 'CE' | 'PE'; strike: number; secId: string; expiry: string }> {
+    const a = this.cachedAnchor;
+    if (!a || a.tradeDate !== formatDateKeyIST() || !a.isConfirmed || a.isLockFailed) return [];
+    const out: Array<{ type: 'CE' | 'PE'; strike: number; secId: string; expiry: string }> = [];
+    if (a.ceSecId) out.push({ type: 'CE', strike: a.ceStrike, secId: String(a.ceSecId), expiry: a.expiryStr });
+    if (a.peSecId) out.push({ type: 'PE', strike: a.peStrike, secId: String(a.peSecId), expiry: a.expiryStr });
+    return out;
+  }
+
   public async loadSavedTargetPremium(): Promise<number> {
     if (this.isTargetPremiumLoaded) return this.targetPremium;
     try {

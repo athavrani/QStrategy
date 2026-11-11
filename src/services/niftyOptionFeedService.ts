@@ -258,6 +258,29 @@ class NiftyOptionFeedService {
     return this.targetPremium;
   }
 
+  /** Contracts of today's 09:20 OOBTST lock and 09:25 breakout lock, so their candles are recorded even when far from the money. */
+  public getLockedContracts(): Array<{ type: 'CE' | 'PE'; strike: number; secId: string; expiry: string }> {
+    const chain = this.cachedLiveOptionChain;
+    const today = formatDateKeyIST();
+    const out: Array<{ type: 'CE' | 'PE'; strike: number; secId: string; expiry: string }> = [];
+    const add = (type: 'CE' | 'PE', strike: number, expiry: string) => {
+      const row = chain?.[strike];
+      const secId = type === 'CE' ? row?.ceSecId : row?.peSecId;
+      if (secId) out.push({ type, strike, secId: String(secId), expiry });
+    };
+    const anchor = this.cachedAnchor;
+    if (anchor && anchor.tradeDate === today && anchor.isConfirmed && !anchor.isLockFailed) {
+      add('CE', anchor.ceStrike, anchor.expiryStr);
+      add('PE', anchor.peStrike, anchor.expiryStr);
+    }
+    const breakout = this.cachedBreakout180;
+    if (breakout && breakout.date === today && breakout.isLocked && !breakout.isLockFailed) {
+      add('CE', breakout.ceStrike, breakout.expiryStr);
+      add('PE', breakout.peStrike, breakout.expiryStr);
+    }
+    return out;
+  }
+
   public async loadSavedTargetPremium(): Promise<number> {
     if (this.isTargetPremiumLoaded) return this.targetPremium;
     try {

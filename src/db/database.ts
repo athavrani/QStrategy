@@ -3,7 +3,15 @@
  * Wraps expo-sqlite with migrations, type-safe query helpers, and in-memory test fallback.
  */
 
-import { DATABASE_NAME, CURRENT_SCHEMA_VERSION, CREATE_TABLES_SQL, ORDER_COLUMNS, POSITION_COLUMNS } from './schema';
+import {
+  DATABASE_NAME,
+  CURRENT_SCHEMA_VERSION,
+  CREATE_TABLES_SQL,
+  ORDER_COLUMNS,
+  POSITION_COLUMNS,
+  CANDLE_COLUMNS,
+  CANDLE_INSTRUMENT_COLUMNS,
+} from './schema';
 
 export interface DatabaseDriver {
   exec(sql: string): Promise<void>;
@@ -23,6 +31,66 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   public async run(sql: string, params: any[] = []): Promise<{ lastInsertRowId?: number; changes: number }> {
     const trimmed = sql.trim().toUpperCase();
 
+    if (trimmed.startsWith('INSERT') && sql.includes('INTO candles_1m')) {
+      const table = this.getOrCreateTable('candles_1m');
+      const merge = sql.includes('ON CONFLICT');
+      const width = CANDLE_COLUMNS.length;
+      let changes = 0;
+      for (let i = 0; i + width <= params.length; i += width) {
+        const row: Record<string, any> = {};
+        CANDLE_COLUMNS.forEach((col, j) => {
+          row[col] = params[i + j];
+        });
+        const pk = `${row.inst_key}::${row.ts}`;
+        const old = table.get(pk);
+        if (!old || !merge) {
+          table.set(pk, row);
+        } else if (old.source === 'LIVE') {
+          old.high = Math.max(old.high, row.high);
+          old.low = Math.min(old.low, row.low);
+          old.close = row.close;
+          old.volume = Math.max(old.volume, row.volume);
+          if (row.oi > 0) old.oi = row.oi;
+        } else {
+          continue;
+        }
+        changes++;
+      }
+      return { changes };
+    }
+
+    if (trimmed.startsWith('INSERT') && sql.includes('INTO candle_instruments')) {
+      const row: Record<string, any> = {};
+      CANDLE_INSTRUMENT_COLUMNS.forEach((col, i) => {
+        row[col] = params[i];
+      });
+      this.getOrCreateTable('candle_instruments').set(row.inst_key, row);
+      return { changes: 1 };
+    }
+
+    if (trimmed.startsWith('DELETE') && sql.includes('FROM candles_1m')) {
+      const table = this.getOrCreateTable('candles_1m');
+      let changes = 0;
+      for (const [key, row] of table.entries()) {
+        if (row.ts < params[0]) {
+          table.delete(key);
+          changes++;
+        }
+      }
+      return { changes };
+    }
+
+    if (trimmed.startsWith('DELETE') && sql.includes('FROM candle_instruments')) {
+      const table = this.getOrCreateTable('candle_instruments');
+      let changes = 0;
+      for (const [key, row] of table.entries()) {
+        if (row.trade_date < params[0]) {
+          table.delete(key);
+          changes++;
+        }
+      }
+      return { changes };
+    }
     if (trimmed.startsWith('INSERT') && sql.includes('INTO app_positions')) {
       const row: Record<string, any> = {};
       POSITION_COLUMNS.forEach((col, i) => {
@@ -254,6 +322,18 @@ class InMemoryDatabaseDriver implements DatabaseDriver {
   }
 
   public async getAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    if (sql.includes('FROM candles_1m')) {
+      const [instKey, fromTs, toTs] = params;
+      return Array.from(this.getOrCreateTable('candles_1m').values())
+        .filter((r) => r.inst_key === instKey && r.ts >= fromTs && r.ts < toTs)
+        .sort((a, b) => a.ts - b.ts) as T[];
+    }
+
+    if (sql.includes('FROM candle_instruments')) {
+      return Array.from(this.getOrCreateTable('candle_instruments').values()).filter(
+        (r) => r.trade_date === params[0]
+      ) as T[];
+    }
     if (sql.includes('FROM app_positions')) {
       return Array.from(this.getOrCreateTable('app_positions').values()) as T[];
     }

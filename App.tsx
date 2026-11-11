@@ -11,6 +11,7 @@ import { formatDateKeyIST } from './src/constants/nseHolidays';
 import { setBackgroundTickHandler, syncBackgroundMonitor } from './src/services/backgroundMonitorService';
 import { isMarketHoursIst, istClockString } from './src/services/marketdata/lockSchedule';
 import { dhanHqFeedSocket } from './src/services/dhan/DhanHqFeedSocket';
+import { candleRecorder } from './src/services/candles/candleRecorderInstance';
 import { startPositionMonitor, stopPositionMonitor } from './src/execution/positionMonitor';
 
 export default function App() {
@@ -56,6 +57,8 @@ export default function App() {
       setIstTime(istClockString());
       // A socket that stalled or closed while the app was in the background is reopened from here, not on the next foreground
       if (isMarketHoursIst()) dhanHqFeedSocket.ensureAlive();
+      // Flushes, selects contracts and reconciles candles; runs from the background loop too
+      candleRecorder.tick();
       runClockEvaluation();
     };
     const clockTimer = setInterval(() => {
